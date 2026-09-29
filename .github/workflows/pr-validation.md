@@ -13,12 +13,16 @@ permissions:
   contents: read
   pull-requests: read
   issues: read
+  copilot-requests: write
 
 tools:
   github:
     mode: "gh-proxy"
 
 strict: true
+
+features:
+  copilot-requests: true
 
 safe-outputs:
   update-pull-request:
