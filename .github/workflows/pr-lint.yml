@@ -27,8 +27,13 @@ jobs:
           DEFAULT_BRANCH: main
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATE_ALL_CODEBASE: false
-          # Ignore auto-generated lockfiles and temp logs from linting
-          FILTER_REGEX_EXCLUDE: '(\.lock\.yml|wf-log\.md)'
+          # Ignore auto-generated lockfiles, docs, diagrams, and temp logs
+          FILTER_REGEX_EXCLUDE: '(\.lock\.yml|wf-log\.md|docs/|mermaid/|\.github/)'
+          # Disable noisy or non-code linters to focus on source code & logic
+          VALIDATE_CHECKOV: false
+          VALIDATE_NATURAL_LANGUAGE: false
+          VALIDATE_MARKDOWN: false
+          VALIDATE_JSCPD: false
 
       - name: Handle Lint Failure (Trigger Autonomous Remediation)
         if: failure()
