@@ -1,0 +1,25 @@
+flowchart LR
+    subgraph CI [Standard CI Gates]
+        Gate[PR Gatekeeper]
+        Lint[Linters]
+        Sec[CodeQL / GHAS]
+        Test[Coverage < 80%]
+        Doc[Doc Drift]
+    end
+
+    subgraph GHAW [gh-aw Agentic Remediation Loops]
+        direction TB
+        A1[Agent: Enrich / Fix PR Metadata]
+        A2[Agent: Auto-fix Formatting]
+        A3[Agent / Copilot Autofix: Patch Vulns]
+        A4[Agent: Generate Missing Unit Tests]
+        A5[Agent: Generate / Update Docs]
+    end
+
+    Gate -->|Fail| A1 -->|Commit/Update| CI
+    Lint -->|Fail| A2 -->|Commit Fix| CI
+    Sec  -->|Alert| A3 -->|Suggest PR/Patch| CI
+    Test -->|Fail| A4 -->|Commit Tests| CI
+    Doc  -->|Fail| A5 -->|Commit Docs| CI
+
+    CI -->|All Pass| Review[AI & Human Review]

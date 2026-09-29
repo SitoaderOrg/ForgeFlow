@@ -1,0 +1,47 @@
+flowchart TD
+    Start([PR Created / Synchronize]) --> Gate[1. PR Gatekeepers\n- Branch name check\n- PR template check]
+    
+    Gate -->|Pass| ParallelRuns{Parallel CI Execution}
+    Gate -->|Fail| BlockGate[❌ CI Halted / PR Blocked\nNo further checks run]
+
+    subgraph FastValidation [Fast Feedback]
+        ParallelRuns --> Lint[2. Linters & Formatters\n- Prettier, ESLint, Style]
+    end
+
+    subgraph SecurityScan [GHAS Security - Dedicated]
+        ParallelRuns --> Sec[3. Security & Quality\n- Secret Scanning\n- CodeQL SAST\n- Dependabot]
+    end
+
+    subgraph TestCoverage [Test & Coverage Gate]
+        ParallelRuns --> Test[4. Automated Tests & Coverage]
+    end
+
+    subgraph DocGate [Documentation Gate]
+        ParallelRuns --> DocCheck[5. Doc Drift & TypeCheck]
+    end
+
+    %% Test failure loop
+    Test -->|< 80% Coverage| CovFail[Exit 1: Output uncovered lines\nApply label: 'test-required']
+    CovFail --> AgentTest[🤖 Copilot Agent Workflow\nTrigger: PR labeled 'test-required']
+    AgentTest --> LoadTestPrompt[Load .github/prompts/unit-test-coverage.prompt.md]
+    LoadTestPrompt --> RunCopilotTest[Copilot CLI / Agent generates tests\nPushes commit to PR branch]
+    RunCopilotTest --> RemoveTestLabel[Remove 'test-required' label]
+    RemoveTestLabel --> Start
+
+    %% Doc failure loop
+    DocCheck -->|Docs Missing| DocFail[Exit 1: Report missing docs\nApply label: 'docs-required']
+    DocFail --> AgentDoc[🤖 Copilot Agent Workflow\nTrigger: PR labeled 'docs-required']
+    AgentDoc --> LoadDocPrompt[Load .github/prompts/doc-needs.prompt.md]
+    LoadDocPrompt --> RunCopilotDoc[Copilot CLI generates documentation\nPushes commit to PR branch]
+    RunCopilotDoc --> RemoveDocLabel[Remove 'docs-required' label]
+    RemoveDocLabel --> Start
+
+    %% Success path
+    Lint -->|Pass| GateCheck{All Passed?}
+    Sec -->|Pass| GateCheck
+    Test -->|>= 80% Coverage| GateCheck
+    DocCheck -->|Pass| GateCheck
+
+    GateCheck -->|Yes| AICodeReview[6. GitHub Copilot Code Review\nAI architectural / diff review]
+    AICodeReview --> HumanReview[7. Human Code Review & Approval]
+    HumanReview --> Merge([🚀 Merge PR])

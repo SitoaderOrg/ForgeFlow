@@ -1,0 +1,20 @@
+flowchart TD
+    PR[Pull Request Created] --> Gate[1. PR Gatekeepers]
+    Gate -->|Pass| Parallel{Automated Checks}
+    Gate -->|Fail| Block[❌ Block PR: CI Halted]
+
+    subgraph CI_Quality [Automated Quality & Security Gates]
+        Parallel --> Lint[Linters & Formatters]
+        Parallel --> CodeQuality[3. Code Quality & Security\n- CodeQL static rules & bugs\n- GHAS Secret & Dep scanning]
+        Parallel --> Tests[4. Tests & Coverage Gate]
+        Parallel --> Docs[5. Docs & Build Gate]
+    end
+
+    CI_Quality -->|All Automated Checks Pass| ReviewStage{Review Stage}
+
+    subgraph Code_Review [Code Review Stage]
+        ReviewStage --> CopilotReview[6. GitHub Copilot Code Review\n- AI semantic & architecture review\n- Actionable diff suggestions]
+        CopilotReview --> HumanReview[7. Human Peer Review\n- Business logic & final sign-off]
+    end
+
+    HumanReview --> Merge([🚀 Merge])
