@@ -19,7 +19,12 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const pr = context.payload.pull_request;
+            // Fetch live PR data to ensure latest title and description are validated
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
             const branchName = pr.head.ref;
             const title = pr.title.trim();
             const body = (pr.body || '').trim();
