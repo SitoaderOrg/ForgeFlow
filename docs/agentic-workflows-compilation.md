@@ -1,4 +1,4 @@
-# Workflow Compilation & Lockfile Validation
+# Agentic Workflows Compilation & Automated Remediation
 
 This workflow ensures that human-authored agentic workflow markdown files (`.github/workflows/*.md`) and their compiled GitHub Actions specifications (`.github/workflows/*.lock.yml`) remain completely synchronized.
 
@@ -16,7 +16,7 @@ This CI check guarantees that every change to an agentic workflow is recompiled 
 
 ---
 
-## Workflow Specification (`.github/workflows/validate-compilation.yml`)
+## Workflow Specification (`.github/workflows/agentic-workflows-compilation.yml`)
 
 ### Triggers
 Runs on **both pull requests and commits (`push`)**, strictly filtered so it only triggers when workflow markdown files change:
@@ -33,16 +33,23 @@ on:
 
 - **Zero overhead**: Regular pull requests touching application code, tests, or documentation will not trigger this job.
 
-### Verification Steps
+### Verification & Automated Remediation Steps
 1. **Installs `gh-aw`**: Bootstraps the official CLI compiler on the runner.
 2. **Executes `gh aw compile --validate`**: Recompiles all markdown workflows while checking GitHub Actions schema conformance, action SHA pinning, and container digests.
-3. **Drift Detection**: Runs `git diff --exit-code .github/workflows/*.lock.yml` to ensure the generated lockfiles match the committed files exactly.
+3. **Drift Detection & Automated Remediation PR**:
+   - If `.github/workflows/*.lock.yml` files are unchanged, the check passes immediately.
+   - If drift is detected (i.e. someone committed `.md` changes without recompiling):
+     - An automated branch `chore/recompile-agentic-workflows-<target>` is created and pushed with the updated lockfiles.
+     - An automated remediation PR is created (or updated if one exists).
+     - The label **`human-review-needed`** is applied to the PR.
+     - **`@sitoader`** is assigned as reviewer to review and approve the compiled changes.
+     - The current CI check exits with failure to block the uncompiled commit until the remediation PR is reviewed and merged.
 
 ---
 
-## How to Resolve Failures Locally
+## How to Resolve Failures Locally (Alternative)
 
-If this check fails on your PR or commit:
+If you prefer to compile locally before pushing:
 
 1. Open your terminal at the repository root.
 2. Run the compiler:
