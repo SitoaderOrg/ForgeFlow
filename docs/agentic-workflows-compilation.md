@@ -19,11 +19,13 @@ This CI check guarantees that every change to an agentic workflow is recompiled 
 ## Workflow Specification (`.github/workflows/agentic-workflows-compilation.yml`)
 
 ### Triggers
-Runs on **both pull requests and commits (`push`)**, strictly filtered so it only triggers when workflow markdown files change:
+Runs on **pull requests** that modify workflow markdown files, and on **commits pushed directly to `main`**:
 
 ```yaml
 on:
   push:
+    branches:
+      - main
     paths:
       - '.github/workflows/*.md'
   pull_request:
@@ -31,7 +33,19 @@ on:
       - '.github/workflows/*.md'
 ```
 
+- **Branch-isolated**: Feature branches only execute verification within pull requests, preventing redundant runs during feature branch updates.
 - **Zero overhead**: Regular pull requests touching application code, tests, or documentation will not trigger this job.
+
+### Permissions
+Requires elevated permissions to generate and push lockfile fixes:
+```yaml
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  workflows: write
+```
+> **Note**: `workflows: write` is strictly required for the action to push branch updates that touch `.github/workflows/*` files.
 
 ### Verification & Automated Remediation Steps
 1. **Installs `gh-aw`**: Bootstraps the official CLI compiler on the runner.
