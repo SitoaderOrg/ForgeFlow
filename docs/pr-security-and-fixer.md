@@ -1,6 +1,6 @@
 # Step 3: GitHub Code Security & Autonomous Remediation
 
-This step implements security gates powered by **GitHub Code Security** combined with specialized, autonomous AI remediation loops for vulnerable dependencies and static code vulnerabilities.
+This step implements security gates powered by **GitHub Code Security** combined with specialized, autonomous AI remediation loops for vulnerable dependencies, static code vulnerabilities, and exposed secrets.
 
 ---
 
@@ -13,21 +13,28 @@ flowchart TD
     subgraph GitHub_Code_Security [GitHub Code Security Engines]
         SecGate --> DepReview[Dependency Review Action\nChecks PR diff for CVEs / license issues]
         SecGate --> CodeQL[CodeQL SAST Analysis\nScans code for security vulnerabilities]
+        SecGate --> SecScan[Secret Protection & Scanning\nChecks for exposed credentials & tokens]
     end
 
     DepReview -->|❌ High/Crit CVE| AddDepLabel[Apply 'dependency-alert' Label]
     CodeQL -->|❌ Code Vulnerability| AddCodeqlLabel[Apply 'codeql-alert' Label]
+    SecScan -->|❌ Hardcoded Secret| AddSecretLabel[Apply 'secret-alert' Label]
 
     AddDepLabel --> DepFixer[2a. Autonomous Dependency Fixer\n.github/workflows/pr-dependency-fixer.md]
-    DepFixer --> BumpDep[Bump to Minimum Secure Version in Manifest]
-    DepFixer --> StackedPRDep[Create Stacked Remediation PR\nTargeting author's feature branch]
+    DepFixer --> BumpDep[Bump to Minimum Secure Versions in Manifest]
+    DepFixer --> StackedPRDep[Create Batched Stacked PR\nItemized commit titles per dependency]
 
     AddCodeqlLabel --> CodeqlFixer[2b. Autonomous CodeQL Fixer\n.github/workflows/pr-codeql-fixer.md]
     CodeqlFixer --> AutofixCheck[Query Copilot Autofix or Synthesize Fix]
-    CodeqlFixer --> StackedPRCodeql[Create Stacked Remediation PR\nTargeting author's feature branch]
+    CodeqlFixer --> StackedPRCodeql[Create Batched Stacked PR\nItemized commit titles per vulnerability]
+
+    AddSecretLabel --> SecretFixer[2c. Autonomous Secret Fixer\n.github/workflows/pr-secret-fixer.md]
+    SecretFixer --> ScrubSecret[Scrub Secrets & Add Env Var Lookups]
+    SecretFixer --> StackedPRSecret[Create Batched Stacked PR\nItemized commit titles per secret]
 
     StackedPRDep --> DevReview([Developer Reviews & Merges Stacked PR])
     StackedPRCodeql --> DevReview
+    StackedPRSecret --> DevReview
 
     DevReview --> Recheck([Feature Branch Updated & Security Gate Re-evaluated])
     Recheck -->|✅ Passed| ClearLabels[Security Gatekeeper Clears Labels]
@@ -48,17 +55,21 @@ The deterministic security gate leverages native GitHub Code Security features:
   - Applies the **`dependency-alert`** label on failure.
 - **GitHub CodeQL SAST (`github/codeql-action`)**:
   - Automatically runs CodeQL with `autobuild` across detected languages.
-  - Identifies security vulnerabilities like injection attacks, path traversal, hardcoded secrets, and insecure cryptographic usage.
+  - Identifies security vulnerabilities like injection attacks, path traversal, and insecure cryptographic usage.
   - Applies the **`codeql-alert`** label on failure.
+- **GitHub Secret Protection & Scanning**:
+  - Repositories configure native GitHub Push Protection to reject hardcoded secrets server-side at `git push`.
+  - The security gatekeeper inspects open secret alerts via GitHub's Secret Scanning API for web edits or bypassed secrets.
+  - Applies the **`secret-alert`** label on failure.
 - **Autonomous Label Management**:
-  - Labels are managed independently: if only dependencies fail, only `dependency-alert` is applied.
-  - When the developer merges the stacked PR, the security gate re-runs on their feature branch and automatically removes the label.
+  - Each label is independent: if only one check fails, only its specific alert label is attached.
+  - When the developer merges the stacked PR, the security gate re-runs on their feature branch and automatically clears the labels.
 
 ---
 
 ## 2. Stacked PR Autonomous Remediation Loops
 
-Rather than modifying the contributor's in-flight feature branch directly without consent, both remediators propose their solutions as **Stacked Pull Requests**:
+Rather than modifying the contributor's in-flight feature branch directly without consent, remediators propose their solutions as **Stacked Pull Requests**:
 
 ```mermaid
 gitGraph
@@ -75,19 +86,27 @@ gitGraph
 
 ### 2a. PR Dependency Fixer (`.github/workflows/pr-dependency-fixer.md`)
 - **Trigger**: Activates on the **`dependency-alert`** label.
-- **Analysis**: Reads Dependency Review failure logs to identify the vulnerable package, version constraint, and CVE/GHSA advisory.
-- **Remediation**: Updates the package manifest (e.g. `package.json`, `requirements.txt`, `go.mod`) to the minimum safe patched version.
-- **Stacked PR Creation**:
-  - Calls `create-pull-request` with `base` set to the developer's feature branch.
-  - Labels the stacked PR with `security-remediation` and `human-review-needed`.
-  - Comments on the parent PR directing the author to review and merge the stacked PR to clear the gate.
+- **Batched Remediation**: Reads Dependency Review failure logs and updates all vulnerable packages across manifests in a single stacked PR.
+- **Itemized Commit-Style Structure**:
+  - The PR body details each package bump with a distinct commit title (e.g. `fix(deps): bump <package> from <old> to <new> to resolve <CVE>`), CVE/GHSA advisory details, and version deltas.
+  - Opens the stacked PR against the developer's feature branch and adds a notification comment on the parent PR.
 
 ### 2b. PR CodeQL Fixer (`.github/workflows/pr-codeql-fixer.md`)
 - **Trigger**: Activates on the **`codeql-alert`** label.
-- **GitHub Copilot Autofix Integration**:
+- **Copilot Autofix Integration**:
   - Queries `gh api repos/{owner}/{repo}/code-scanning/alerts/<alert-number>/autofix` and PR review suggestions for an existing Copilot Autofix recommendation.
-  - If a valid Copilot Autofix suggestion exists, it incorporates the patch into the remediation branch.
-  - If Copilot Autofix is not enabled or produces no fix, the agent performs autonomous defensive refactoring (parameterizing queries, adding path sanitization, validating input) using CodeQL taint analysis.
-- **Stacked PR Creation**:
-  - Opens a stacked PR targeting the developer's feature branch containing the defensive fix.
-  - Comments on the parent PR with an explanation of the CWE/vulnerability resolved and instructions to merge.
+  - If a valid Copilot Autofix suggestion exists, it incorporates the patch into the remediation.
+  - If Copilot Autofix is not enabled or produces no fix, the agent performs autonomous defensive refactoring using CodeQL taint analysis.
+- **Itemized Commit-Style Structure**:
+  - Remediates all open CodeQL alerts together in a single stacked PR.
+  - The PR body documents each vulnerability resolved with a distinct commit title (e.g. `fix(security): sanitize input to prevent path traversal in <file>`), CWE number, sink, and defensive pattern.
+
+### 2c. PR Secret Fixer (`.github/workflows/pr-secret-fixer.md`)
+- **Trigger**: Activates on the **`secret-alert`** label.
+- **Secret Scrubbing**:
+  - Identifies exposed secrets from secret scanning alerts.
+  - Scrubs hardcoded credentials from source files and replaces them with standard environment variable lookups (`process.env.SECRET_NAME`, `os.environ.get(...)`).
+  - Adds dummy placeholder entries in `.env.example`.
+- **Rotation Warning & Stacked PR**:
+  - Opens a stacked PR targeting the author's feature branch with itemized commit titles for each scrubbed secret.
+  - Posts a high-priority warning comment on the parent PR reminding the author to **immediately revoke and rotate the exposed credential** with the issuing provider.

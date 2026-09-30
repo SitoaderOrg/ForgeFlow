@@ -110,6 +110,30 @@ jobs:
               labelsToRemove.push('codeql-alert');
             }
 
+            // Evaluate GitHub Secret Scanning
+            let hasSecretAlerts = false;
+            try {
+              const { data: secretAlerts } = await github.rest.secretScanning.listAlertsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 30
+              });
+              if (secretAlerts && secretAlerts.length > 0) {
+                hasSecretAlerts = true;
+              }
+            } catch (e) {
+              core.info(`Secret scanning status check: ${e.message}`);
+            }
+
+            if (hasSecretAlerts) {
+              if (!existingLabels.includes('secret-alert')) {
+                labelsToAdd.push('secret-alert');
+              }
+            } else if (existingLabels.includes('secret-alert')) {
+              labelsToRemove.push('secret-alert');
+            }
+
             // Remove legacy security-alert label if present
             if (existingLabels.includes('security-alert')) {
               labelsToRemove.push('security-alert');
@@ -143,7 +167,7 @@ jobs:
               }
             }
 
-            const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure';
+            const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure' || hasSecretAlerts;
 
             if (hasFailure) {
               let summary = '### ❌ Security Gatekeeper Failed\n\n' +
