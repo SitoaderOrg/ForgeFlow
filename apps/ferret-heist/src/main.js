@@ -2,10 +2,13 @@ import { GameEngine } from './game/engine.js';
 import { GameRenderer } from './game/render.js';
 import { SoundEffects } from './game/audio.js';
 import { GAME_STATES } from './game/constants.js';
+import { BanditLeaderboard } from './game/leaderboard.js';
 
 window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('gameCanvas');
   const sfx = new SoundEffects();
+  const leaderboard = new BanditLeaderboard();
+  leaderboard.initPlayerFromQuery();
 
   const engine = new GameEngine({
     onEvent: (event, payload) => {
