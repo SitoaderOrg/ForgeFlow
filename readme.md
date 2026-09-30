@@ -7,7 +7,23 @@
 5. **GitHub Security & Quality**: Native CodeQL static analysis, Secret Scanning, and Dependabot dependency reviews.
 6. **Documentation Drift Verification**: Detects when significant code logic is introduced without documentation.
 7. **Autonomous `gh-aw` Remediation Loops**: Proposes fixes as stacked PRs when gates fail.
-8. **Semantic Review & Merge**: Once all gates pass, GitHub Copilot performs review before human approval and merge.
+8. **Automated Consolidation & Auto-Merge**: Automatically squashes validated remediation PRs into the feature branch with full audit trails.
+9. **Semantic Review & Merge**: GitHub Copilot performs review before human approval and final merge.
+
+### 💡 Why This Framework is Relevant: Solving Review Fatigue
+
+Without consolidation, autonomous agents running in parallel can overwhelm engineers with disjointed pull requests, repetitive CI runs, and constant context switching:
+
+- **Zero Human Churn**: Developers aren't interrupted every 5 minutes to review 4 minor stacked PRs. The pipeline auto-merges them into the feature branch.
+- **Auditability & Traceability**: Because each agent created its own stacked PR, there is a clean git history and PR record for *why* a test was added or a security patch was merged.
+- **Transparency via Comments**: Commenting on the parent PR keeps the author informed of everything that was auto-merged.
+- **Final Single Review**: Copilot reviews the final, clean, remediated branch, and the human author only does **one comprehensive review** of all auto-remediated changes plus Copilot's review feedback.
+
+| Metric | Traditional Human-Only CI/CD | Our Autonomous PR Lifecycle |
+| :--- | :--- | :--- |
+| **Average Time-to-Merge (TTM)** | **2 to 5 business days** (waiting for peer reviewers to wake up, point out missing tests, request formatting fixes, wait for changes, re-review) | **15 to 45 minutes** |
+| **CI/CD Pipeline Run Time** | 3 to 10 minutes per push | 2 to 5 minutes per push |
+| **Review Cycles** | 3–4 back-and-forth round trips over days | **1 single review session** by the developer |
 
 ### Architectural Rule of Thumb
 
