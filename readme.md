@@ -57,5 +57,17 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 - **PR Validation (`pr-validation.md`)**: Triggered on `needs-metadata` label. Summarizes broad diffs into clean, template-compliant PR descriptions and Conventional Commit titles when missing.
 - **PR Lint Fixer (`pr-lint-fixer.md`)**: Triggered on `lint-failed`. Automatically formats and resolves linter errors on the PR branch.
 - **PR Test Generator (`pr-test-generator.md`)**: Triggered on `test-required`. Drafts missing unit tests and boundary cases in a stacked PR.
-- **Security Fixers (`pr-codeql-fixer.md`, `pr-dependency-fixer.md`, `pr-secret-fixer.md`)**: Remediates vulnerabilities and alerts via stacked PRs.
-- **Documentation Evaluator & Updater (`pr-doc-updater.md`)**: Semantically evaluates PR diffs against documentation criteria (public APIs, schemas, architecture) and authors missing guides via stacked PRs.
+- [Security Fixers (`pr-codeql-fixer.md`, `pr-dependency-fixer.md`, `pr-secret-fixer.md`)](.github/workflows/pr-codeql-fixer.md): Remediates vulnerabilities and alerts via stacked PRs.
+- [Documentation Evaluator & Updater (`pr-doc-updater.md`)](.github/workflows/pr-doc-updater.md): Semantically evaluates PR diffs against documentation criteria (public APIs, schemas, architecture) and authors missing guides via stacked PRs.
+
+### 3. Sample Application: Ferret Heist (`apps/ferret-heist`)
+
+A standalone, zero-deployment 2D stealth action browser game built for testing the PR gatekeeper and autonomous remediation loops:
+
+- **Run Directly**: Open `dist/index.html` or `apps/ferret-heist/index.html` in any browser, or run `npm run dev` / `npm run preview`.
+- **Verify Build**: `npm run build` (builds bundled assets into `dist/`).
+- **Execute Tests & Coverage**: `npm test` or `npm run test:cov` (runs Vitest with diff-scoped coverage verification >= 80%).
+- **Chaos Testing**:
+  - Break a test in `tests/ferret.test.js` to trigger the **PR Test Generator** loop.
+  - Introduce lint formatting issues in `apps/ferret-heist/` to trigger the **PR Lint Fixer** loop.
+  - Break compilation or syntax to trigger the **PR Build Gatekeeper** loop.

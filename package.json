@@ -1,0 +1,28 @@
+{
+  "name": "ferret-heist",
+  "version": "1.0.0",
+  "description": "Ferret Heist: The Stash Under the Couch - A mischievous 2D stealth action game",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:cov": "vitest run --coverage",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "game",
+    "ferret",
+    "stealth",
+    "html5-canvas",
+    "vitest"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitest/coverage-v8": "^5.0.1",
+    "vite": "^6.2.0",
+    "vitest": "^5.0.1"
+  }
+}

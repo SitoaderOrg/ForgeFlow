@@ -1,2 +1,9 @@
 # Workflow logs
 wf-log.md
+
+# Dependencies & Build outputs
+node_modules/
+dist/
+coverage/
+.vitest/
+

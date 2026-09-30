@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ferret Heist: The Stash Under the Couch</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="game-container">
+    <header class="game-header">
+      <h1 class="game-title">🐾 Ferret Heist: Stash Under the Couch</h1>
+      <p class="game-subtitle">Sneak, swipe shiny treasures, and stash them before the human wakes up!</p>
+    </header>
+
+    <div class="canvas-wrapper">
+      <canvas id="gameCanvas" width="800" height="600"></canvas>
+    </div>
+
+    <div class="controls-bar">
+      <div class="instructions-guide">
+        <p>🐾 <span>Arrow Keys / WASD</span>: Slither around</p>
+        <p>⚡ <span>SPACE</span>: Weasel War Dance (Speed & Chaos!)</p>
+        <p>🛋️ Drag stolen items to the Couch at bottom-left</p>
+      </div>
+
+      <div class="virtual-controls">
+        <div class="dpad">
+          <div></div>
+          <button id="btn-up" class="control-btn" aria-label="Up">▲</button>
+          <div></div>
+          <button id="btn-left" class="control-btn" aria-label="Left">◄</button>
+          <div></div>
+          <button id="btn-right" class="control-btn" aria-label="Right">►</button>
+          <div></div>
+          <button id="btn-down" class="control-btn" aria-label="Down">▼</button>
+          <div></div>
+        </div>
+
+        <button id="btn-dance" class="control-btn btn-dance">🐾 War Dance</button>
+        <button id="btn-restart" class="control-btn btn-secondary">🔄 Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
