@@ -8,7 +8,7 @@ flowchart TD
         Parallel --> Build[3. Build & Compilation Gate]
         Parallel --> Tests[4. Tests & Coverage Gate]
         Parallel --> CodeQuality[5. Code Quality & Security\n- CodeQL static rules\n- Secret & Dep scanning]
-        Parallel --> Docs[6. Documentation Drift Gate]
+        Parallel --> DocEval[6. Semantic Doc Evaluation\ngh-aw agentic evaluator]
     end
 
     CI_Quality -->|All Automated Checks Pass| ReviewStage{Review Stage}

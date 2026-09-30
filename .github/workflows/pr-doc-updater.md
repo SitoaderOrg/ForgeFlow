@@ -5,7 +5,7 @@ emoji: "📚"
 
 on:
   pull_request:
-    types: [labeled]
+    types: [opened, synchronize, reopened, labeled]
   labels: ["docs-required"]
   workflow_dispatch:
 
@@ -30,12 +30,16 @@ safe-outputs:
   create-pull-request:
     title-prefix: "docs: "
     labels: ["doc-remediation", "human-review-needed"]
+  add-labels:
+    allowed: ["docs-required"]
+  remove-labels:
+    allowed: ["docs-required"]
   add-comment:
     max: 1
 ---
 
 ## Objective
-Analyze newly introduced or modified functionality in this pull request and draft accurate, clear, and comprehensive documentation updates in a stacked PR to resolve documentation drift and clear the `docs-required` label.
+Semantically evaluate the pull request diff to determine if documentation updates are required. If documentation is needed and missing, autonomously draft accurate, clear documentation in a stacked pull request and apply the `docs-required` label. If documentation is already present or not required, clear the label cleanly.
 
 ## 📋 Documentation Decision Criteria
 
@@ -61,14 +65,15 @@ Analyze newly introduced or modified functionality in this pull request and draf
 - You may **ONLY** create or update markdown files (`README.md`, `docs/**/*.md`, `*.md`) or documentation references.
 - Any pull request that proposes changes to source code or non-documentation files will be rejected.
 
-## Step 1: Analyze Pull Request Diff & Scope
+## Step 1: Semantic Evaluation of PR Diff & Scope
 1. Query the pull request details and diff using GitHub CLI:
    - `gh pr view --json number,title,body,headRefName,files`
    - `gh pr diff`
-2. Identify all newly added or modified:
-   - Public functions, methods, classes, and exported interfaces
-   - CLI flags, environment variables, or configuration parameters
-   - Architectural workflows or external behaviors
+2. Check if the PR already includes documentation changes (`.md` files or `docs/` updates):
+   - If appropriate documentation is already included in the PR, call `remove-labels` with `docs-required` (if present) and conclude gracefully.
+3. Compare source changes against the **Documentation Decision Criteria**:
+   - If the PR contains only changes in the **❌ Skip** list, call `remove-labels` with `docs-required` (if present) and exit. No documentation needed.
+   - If the PR introduces changes matching the **✅ Document** list without documentation, proceed to Step 2.
 
 ## Step 2: Discover Existing Documentation Conventions
 1. Inspect the repository for existing documentation structure:
@@ -87,13 +92,14 @@ Analyze newly introduced or modified functionality in this pull request and draf
 1. Ensure all new markdown files have valid headers, code fences, and relative links that resolve properly.
 2. Verify formatting matches the rest of the repository.
 
-## Step 5: Propose Stacked Pull Request
+## Step 5: Propose Stacked Pull Request & Update Labels
 Apply safe outputs:
-1. Call `create-pull-request` to open a stacked pull request:
+1. Call `add-labels` to apply `docs-required` to the parent PR to track needed documentation.
+2. Call `create-pull-request` to open a stacked pull request:
    - Set `base` to the parent PR branch (`headRefName`).
    - Set `title`: `docs: update documentation for PR changes`
    - Set `body`: Provide a clear breakdown of:
      - **Updated Documents**: List of files updated or added.
      - **Summary of Documentation Added**: Overview of new APIs/features documented.
      - **Instructions**: "Merge this stacked PR into your branch to include the documentation and satisfy the gatekeeper."
-2. Call `add-comment` on the parent PR notifying the author that a stacked PR containing the documentation updates has been created for review.
+3. Call `add-comment` on the parent PR notifying the author that a stacked PR containing the documentation updates has been created for review.

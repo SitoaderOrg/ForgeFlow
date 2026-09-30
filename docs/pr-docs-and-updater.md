@@ -1,6 +1,8 @@
-# Step 6: Documentation Drift & Autonomous Documentation Updater
+# Step 6: Semantic Documentation Evaluator & Autonomous Updater
 
-This module prevents documentation drift by detecting significant source code modifications made without corresponding documentation updates, and autonomously drafting missing guides and API references in a stacked PR.
+Documentation drift is fundamentally semantic: a shell script cannot discern whether newly introduced code represents public interface changes, complex business logic, or trivial private refactoring. 
+
+Rather than relying on brittle line counts or regex filename heuristics, this step delegates documentation evaluation to a specialized **GitHub Agentic Workflow (`.github/workflows/pr-doc-updater.md`)** that semantically comprehends code changes and authors missing documentation in a stacked pull request.
 
 ---
 
@@ -8,52 +10,59 @@ This module prevents documentation drift by detecting significant source code mo
 
 ```mermaid
 flowchart TD
-    PR[PR Created / Synchronized] --> DocGate[Documentation Gatekeeper\n.github/workflows/pr-docs.yml]
+    PR[PR Created / Synchronized] --> DocAgent[Autonomous Doc Evaluator & Updater\n.github/workflows/pr-doc-updater.md]
     
-    DocGate --> CheckDrift{Detect Documentation Drift\n(>=30 source lines added without doc updates?)}
+    DocAgent --> SemanticEval{Semantically Evaluate Diff\nagainst Documentation Criteria}
 
-    CheckDrift -->|❌ Drift Detected| AddLabel[Apply 'docs-required' Label\nFail Fast / Halt Pipeline]
-    CheckDrift -->|✅ Docs Present / Minor Change| ClearLabel[Clear 'docs-required' Label\nProceed to Next CI Gate]
+    SemanticEval -->|Skip: Refactor / Typos / Internal| DoneNoAction[No Docs Needed / Clear 'docs-required']
+    SemanticEval -->|Docs Already Present| ClearLabel[Clear 'docs-required' / Exit Cleanly]
+    SemanticEval -->|Docs Missing for Public API/Schema/Logic| ApplyLabel[Apply 'docs-required' Label]
 
-    AddLabel --> DocAgent[Autonomous Doc Updater\n.github/workflows/pr-doc-updater.md]
-    DocAgent --> Analyze[Analyze PR Diff & Public API Changes]
-    DocAgent --> AuthorDocs[Draft Usage Examples & API Docs in Markdown]
-    DocAgent --> StackedPR[Open Batched Stacked PR\nTargeting author's feature branch]
+    ApplyLabel --> AuthorDocs[Draft Idiomatic Markdown & API Usage]
+    AuthorDocs --> StackedPR[Open Batched Stacked PR\nTargeting author's feature branch]
 
     StackedPR --> DevReview([Developer Reviews & Merges Stacked PR])
     DevReview --> Recheck([Feature Branch Updated & Checks Re-evaluated])
-    Recheck -->|✅ Passed| ClearLabel
+    Recheck --> DoneNoAction
 ```
 
 ---
 
-## 1. Deterministic Documentation Gate (`.github/workflows/pr-docs.yml`)
+## 1. Documentation Decision Criteria
 
-The deterministic runner verifies documentation drift:
+The agent evaluates every PR diff using strict semantic rules:
 
-- **Drift Detection Criteria**:
-  - Compares source code changes (`.ts`, `.js`, `.py`, `.go`, etc.) against documentation changes (`.md`, `docs/`, `README`).
-  - **Triggers Documentation Requirement**:
-    - **Substantial logic additions**: ≥ 30 added source lines without corresponding docs.
-    - **Database Schemas & Data Models**: Added entities, modified tables, migrations, or `.sql` files without documentation.
-    - **New Dependencies & Integrations**: Added packages in manifests (`package.json`, `go.mod`, `Cargo.toml`, etc.) without docs.
-    - **Public APIs & Interfaces**: Exported endpoints, classes, or public functions.
-  - **Skips Documentation Requirement**:
-    - Minor refactorings, formatting, linting fixes, private helpers, typo fixes, or patch updates.
-  - Attaches `docs-required` to signal that documentation is required.
-  - Automatically clears `docs-required` once documentation is added.
+### ✅ Document These:
+- **Public APIs & Interfaces**: Exported functions, classes, interfaces, or HTTP/REST endpoints.
+- **Complex Logic & Calculations**: Complex algorithms, non-obvious business rules, or mathematical formulas.
+- **Architectural & Workflow Changes**: New CI/CD steps, state machines, or orchestrations.
+- **Breaking Changes**: Changed function signatures, renamed parameters, or modified contracts.
+- **New Dependencies & Integrations**: Added third-party packages, SDKs, or cloud services.
+- **Security & Auth Models**: Permission changes, cryptographic rules, or authentication changes.
+- **Database Schemas & Data Models**: Database migrations, entity models, or schema updates.
+
+### ❌ Skip These (No Documentation Required):
+- Minor refactorings, style updates, or lint fixes.
+- Private internal helpers with straightforward implementation.
+- Trivial typo fixes, comments, or variable renaming.
+- Pure code moves or imports reorganization without behavior changes.
+- Patch-level dependency bumps.
 
 ---
 
 ## 2. Autonomous Documentation Updater (`.github/workflows/pr-doc-updater.md`)
 
-When a PR introduces new or modified logic without docs, this GitHub Agentic Workflow drafts documentation according to clear triage rules:
-
-### Decision Matrix:
-- **✅ Document**: Public APIs/interfaces, complex algorithms, architectural changes, breaking changes, new dependencies, security/auth additions, and database schemas.
-- **❌ Skip**: Minor refactoring, internal helpers, typo fixes, code moves, and patch dependency updates.
-
-### Workflow Capabilities:
+- **Autonomous Execution**:
+  - Triggers directly on `pull_request: [opened, synchronize, reopened, labeled]`.
+  - Comprehends whether docs are required.
+  - If required, attaches `docs-required`, writes documentation matching project conventions (`README.md`, `docs/`), and proposes changes in a stacked PR.
+  - If not required or already addressed, removes `docs-required` cleanly.
+- **🔒 Strict Guardrail: Documentation Files Only**:
+  - The agent is **strictly prohibited from touching application code, business logic, tests, or build configuration**.
+  - It only authors or modifies Markdown documentation files.
+- **Stacked Pull Request**:
+  - Generates all documentation changes in a single stacked pull request targeting the author's feature branch.
+  - Leaves a parent PR comment directing the author to review and merge the doc updates.
 1. **Analyze Diff & Public APIs**: Identifies newly added functions, exported types, configuration options, or CLI flags.
 2. **Discover Existing Structure**: Discovers project documentation style in `README.md` or `docs/`.
 3. **Draft Idiomatic Markdown**:

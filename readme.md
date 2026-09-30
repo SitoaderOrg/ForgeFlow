@@ -32,19 +32,11 @@
 - **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts.
 - **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check.
 - **Security Scanning (`pr-security.yml`)**: CodeQL, Dependency Review, and Secret Scanning.
-- **Documentation Gate (`pr-docs.yml`)**: Verifies code-to-doc parity.
-
-
-
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)
 
-
-
-- **Unit Test Generator** (triggered on `test-required` label): Reads uncovered line numbers and changed files, drafts unit tests matching project conventions, and commits to the PR branch.
-
-- **Documentation Updater** (triggered on `docs-required` label): Analyzes API/feature diffs and generates matching markdown documentation updates.
-
-- **Security & Vulnerability Remediation**: Analyzes complex CodeQL alerts or dependency alerts and proposes a surgical patch PR.
-
-- **PR Validation** (`pr-validation.md`): Triggered on `needs-metadata` label. Summarizes broad diffs into clean, template-compliant PR descriptions and Conventional Commit titles when missing.
+- **PR Validation (`pr-validation.md`)**: Triggered on `needs-metadata` label. Summarizes broad diffs into clean, template-compliant PR descriptions and Conventional Commit titles when missing.
+- **PR Lint Fixer (`pr-lint-fixer.md`)**: Triggered on `lint-failed`. Automatically formats and resolves linter errors on the PR branch.
+- **PR Test Generator (`pr-test-generator.md`)**: Triggered on `test-required`. Drafts missing unit tests and boundary cases in a stacked PR.
+- **Security Fixers (`pr-codeql-fixer.md`, `pr-dependency-fixer.md`, `pr-secret-fixer.md`)**: Remediates vulnerabilities and alerts via stacked PRs.
+- **Documentation Evaluator & Updater (`pr-doc-updater.md`)**: Semantically evaluates PR diffs against documentation criteria (public APIs, schemas, architecture) and authors missing guides via stacked PRs.
