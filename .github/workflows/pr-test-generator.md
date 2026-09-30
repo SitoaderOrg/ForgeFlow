@@ -37,9 +37,9 @@ safe-outputs:
 Automatically generate missing unit tests or repair broken test assertions for code introduced or modified in this pull request to achieve at least 80% test coverage and unblock the PR Tests Gatekeeper. Propose all tests in a single batched stacked pull request targeting the author's feature branch.
 
 ## 🔒 STRICT GUARDRAIL: TEST FILES ONLY
-- **YOU ARE STRICTLY PROHIBITED FROM MODIFYING PRODUCTION/APPLICATION CODE, BUSINESS LOGIC, OR CONFIGURATION FILES.**
-- You may **ONLY** create or edit test files (files matching `*test*`, `*spec*`, or located inside test folders like `tests/`, `test/`, `__tests__/`).
-- If an existing test failed, fix or adapt the test assertion—**NEVER modify the application code under test**.
+- **YOU ARE STRICTLY PROHIBITED FROM MODIFYING PRODUCTION/APPLICATION CODE, BUSINESS LOGIC, OR CORE CONFIGURATION.**
+- You may **ONLY** create or edit test files (unit tests, test cases, test fixtures, test mocks, or test helpers).
+- If an existing test failed, fix or adapt the test assertions—**NEVER modify the application code under test**.
 - Any pull request that proposes changes to non-test files will be rejected.
 
 ## Instructions
@@ -47,14 +47,12 @@ Automatically generate missing unit tests or repair broken test assertions for c
 2. Inspect the failed CI logs and coverage report for the `PR Tests & Coverage Gatekeeper` workflow:
    - Run `gh run list --workflow=pr-test.yml` and `gh run view <run-id> --log-failed`.
    - Identify which functions and line ranges were flagged as uncovered or below the 80% threshold.
-3. Discover test location and naming conventions:
-   - Search the repository for existing tests using `git ls-files '*test*' '*spec*'`.
-   - Determine whether the repo uses:
-     - Dedicated test folders (e.g. `tests/`, `test/`, `__tests__/`, `spec/`)
-     - Co-located test files (e.g. `src/foo.test.js`, `src/foo_test.go`, `src/foo.spec.ts`)
-   - **You MUST place new test files in the matching directory and follow the existing naming convention.**
+3. Discover test conventions, framework, and structure:
+   - Inspect project configuration files (e.g., `jest.config.*`, `vitest.config.*`, `pyproject.toml`, `setup.cfg`, `Cargo.toml`, `pom.xml`, `Makefile`), test scripts in package manifests, and existing test suites across the repository.
+   - Discern the project's exact testing conventions, assertion libraries, test placement (whether dedicated test folders, integration suites, or co-located test files), and naming patterns.
+   - **Place all new tests in the matching locations following the project's idiomatic structure and conventions.**
 4. Author comprehensive, idiomatic unit tests:
-   - Use the existing test runner and assertions already used in the repo (e.g. Jest, Vitest, Mocha, PyTest, Go testing, Cargo test).
+   - Use the existing test runner and assertion style already established in the repository.
    - Write targeted test cases covering uncovered branches, boundary inputs, error handlers, and edge cases to exceed 80% coverage.
 5. Apply safe outputs:
    - Call `create-pull-request` to open a stacked pull request:

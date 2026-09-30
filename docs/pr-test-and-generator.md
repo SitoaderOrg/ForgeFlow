@@ -59,10 +59,8 @@ When unit tests fail or code changes lack test coverage, this GitHub Agentic Wor
 
 - **Trigger**: Activates automatically when the **`test-required`** label is added to a PR.
 - **Test Location & Convention Discovery**:
-  - Automatically queries the repository using `git ls-files '*test*' '*spec*'` to detect whether the project places tests in:
-    - Dedicated test directories: `tests/`, `test/`, `__tests__/`, `spec/`
-    - Co-located next to implementation files: `src/*.test.ts`, `src/*_test.go`
-  - Enforces that new tests are placed in the matching directory using identical naming patterns.
+  - Automatically inspects project configuration files (`jest.config.*`, `vitest.config.*`, `pyproject.toml`, `setup.cfg`, `Cargo.toml`, `pom.xml`), test scripts in manifests, and existing test suites to discern the project's exact testing conventions, assertion libraries, placement (dedicated vs co-located), and naming patterns.
+  - Enforces that new tests are placed in the matching directory and follow the project's idiomatic structure.
 - **80% Coverage Target**:
   - Reads coverage failure reports from `pr-test.yml` to identify specific uncovered lines, error branches, and edge cases.
   - Generates targeted test cases that bring coverage above 80%.
