@@ -6,18 +6,19 @@ flowchart TD
 
     subgraph FastValidation [Fast Feedback]
         ParallelRuns --> Lint[2. Linters & Formatters\n- Prettier, ESLint, Style]
-    end
-
-    subgraph SecurityScan [GHAS Security - Dedicated]
-        ParallelRuns --> Sec[3. Security & Quality\n- Secret Scanning\n- CodeQL SAST\n- Dependabot]
+        ParallelRuns --> Build[3. Build Verification\n- TypeScript, Go, Rust, .NET]
     end
 
     subgraph TestCoverage [Test & Coverage Gate]
-        ParallelRuns --> Test[4. Automated Tests & Coverage]
+        ParallelRuns --> Test[4. Automated Tests & Coverage\n- Diff-scoped >= 80% coverage]
+    end
+
+    subgraph SecurityScan [GHAS Security - Dedicated]
+        ParallelRuns --> Sec[5. Security & Quality\n- Secret Scanning\n- CodeQL SAST\n- Dependabot]
     end
 
     subgraph DocGate [Documentation Gate]
-        ParallelRuns --> DocCheck[5. Doc Drift & TypeCheck]
+        ParallelRuns --> DocCheck[6. Doc Drift Verification]
     end
 
     %% Test failure loop

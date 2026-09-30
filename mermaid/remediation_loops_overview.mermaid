@@ -2,8 +2,9 @@ flowchart LR
     subgraph CI [Standard CI Gates]
         Gate[PR Gatekeeper]
         Lint[Linters]
-        Sec[CodeQL / GHAS]
+        Build[Build Verification]
         Test[Coverage < 80%]
+        Sec[CodeQL / GHAS]
         Doc[Doc Drift]
     end
 
@@ -11,15 +12,16 @@ flowchart LR
         direction TB
         A1[Agent: Enrich / Fix PR Metadata]
         A2[Agent: Auto-fix Formatting]
-        A3[Agent / Copilot Autofix: Patch Vulns]
         A4[Agent: Generate Missing Unit Tests]
+        A3[Agent / Copilot Autofix: Patch Vulns]
         A5[Agent: Generate / Update Docs]
     end
 
-    Gate -->|Fail| A1 -->|Commit/Update| CI
+    Gate -->|Fail| A1 -->|Update PR| CI
     Lint -->|Fail| A2 -->|Commit Fix| CI
-    Sec  -->|Alert| A3 -->|Suggest PR/Patch| CI
-    Test -->|Fail| A4 -->|Commit Tests| CI
-    Doc  -->|Fail| A5 -->|Commit Docs| CI
+    Build -->|Fail| CI
+    Test -->|Fail| A4 -->|Stacked PR| CI
+    Sec  -->|Alert| A3 -->|Stacked PR| CI
+    Doc  -->|Fail| A5 -->|Stacked PR| CI
 
     CI -->|All Pass| Review[AI & Human Review]

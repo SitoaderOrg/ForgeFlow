@@ -1,0 +1,132 @@
+name: PR Build Gatekeeper
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  build:
+    name: Build & Compilation Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Build & Compilation
+        id: verify-build
+        run: |
+          echo "🔨 Checking build and compilation for project manifests..."
+          BUILD_FOUND=false
+
+          # 1. Node.js / TypeScript
+          if [ -f "package.json" ]; then
+            npm ci 2>/dev/null || npm install --prefer-offline --no-audit
+            if grep -q '"build"' package.json; then
+              BUILD_FOUND=true
+              echo "📦 Building Node.js / TypeScript project..."
+              npm run build
+            elif [ -f "tsconfig.json" ]; then
+              BUILD_FOUND=true
+              echo "📦 Compiling TypeScript via tsc..."
+              npx tsc --noEmit
+            fi
+          fi
+
+          # 2. Go
+          if [ -f "go.mod" ] || ls *.go 1>/dev/null 2>&1; then
+            BUILD_FOUND=true
+            echo "🐹 Building Go project..."
+            go build -v ./...
+          fi
+
+          # 3. Rust
+          if [ -f "Cargo.toml" ]; then
+            BUILD_FOUND=true
+            echo "🦀 Checking Rust project compilation..."
+            cargo check
+          fi
+
+          # 4. Java / Kotlin (Maven / Gradle)
+          if [ -f "pom.xml" ]; then
+            BUILD_FOUND=true
+            echo "☕ Compiling Maven project..."
+            if [ -f "./mvnw" ]; then ./mvnw compile -q; else mvn compile -q; fi
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            BUILD_FOUND=true
+            echo "☕ Compiling Gradle project..."
+            if [ -f "./gradlew" ]; then ./gradlew classes -q; else gradle classes -q; fi
+          fi
+
+          # 5. C# / .NET
+          if ls *.sln 1>/dev/null 2>&1 || ls *.csproj 1>/dev/null 2>&1; then
+            BUILD_FOUND=true
+            echo "🔷 Building .NET project..."
+            dotnet build -c Release
+          fi
+
+          if [ "$BUILD_FOUND" = "false" ]; then
+            echo "ℹ️ No compilation step needed for this project. Build check passed cleanly."
+          else
+            echo "✅ Build and compilation verification passed."
+          fi
+
+      - name: Handle Build Failure (Trigger Autonomous Remediation)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (!existingLabels.includes('build-failed')) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['build-failed']
+                });
+                core.info("Applied 'build-failed' label.");
+              } catch (e) {
+                core.warning(`Failed to add build-failed label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ❌ PR Build Gatekeeper Failed\n\n' +
+              '> 🔨 **Build Failure**: Project compilation or build failed. Added `build-failed` label.\n';
+            await core.summary.addRaw(summary).write();
+            core.setFailed('Project build or compilation failed.');
+
+      - name: Handle Build Success (Clear Remediation Label)
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (existingLabels.includes('build-failed')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'build-failed'
+                });
+                core.info("Removed 'build-failed' label.");
+              } catch (e) {
+                core.warning(`Failed to remove build-failed label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ✅ PR Build Gatekeeper Passed\n\n' +
+              'Project builds and compiles successfully.\n';
+            await core.summary.addRaw(summary).write();

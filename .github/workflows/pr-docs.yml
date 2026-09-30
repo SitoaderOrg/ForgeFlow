@@ -1,0 +1,105 @@
+name: PR Documentation Gatekeeper
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  docs:
+    name: Documentation Drift Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Documentation Drift
+        id: check-docs
+        run: |
+          BASE_BRANCH="origin/${{ github.base_ref || 'main' }}"
+          echo "📚 Checking for documentation drift against $BASE_BRANCH..."
+
+          # Changed source code files (excluding tests, configs, hidden files)
+          CHANGED_SRC=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '\.(js|ts|jsx|tsx|py|go|rs|java|cs|php|rb)$' | grep -vE '(test|spec|__tests__|__mocks__)' || true)
+          # Changed documentation files
+          CHANGED_DOCS=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '(\.md$|\.markdown$|docs/|README|DOCUMENTATION)' || true)
+
+          echo "Changed source files:"
+          echo "$CHANGED_SRC"
+          echo "Changed documentation files:"
+          echo "$CHANGED_DOCS"
+
+          ADDED_LINES=0
+          if [ -n "$CHANGED_SRC" ]; then
+            ADDED_LINES=$(git diff --numstat "$BASE_BRANCH...HEAD" -- $CHANGED_SRC 2>/dev/null | awk '{s+=$1} END {print s+0}')
+          fi
+
+          echo "Added lines in source files: $ADDED_LINES"
+
+          # Rule: If >= 30 lines of source code added/modified and zero doc files touched, flag documentation drift
+          if [ "$ADDED_LINES" -ge 30 ] && [ -z "$CHANGED_DOCS" ]; then
+            echo "::error::Significant new functionality added (${ADDED_LINES} lines in source files) with zero documentation updates."
+            exit 1
+          else
+            echo "✅ Documentation drift check passed."
+          fi
+
+      - name: Handle Doc Drift Failure (Trigger Autonomous Remediation)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (!existingLabels.includes('docs-required')) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['docs-required']
+                });
+                core.info("Applied 'docs-required' label to trigger pr-doc-updater workflow.");
+              } catch (e) {
+                core.warning(`Failed to add docs-required label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ❌ PR Documentation Gatekeeper Failed\n\n' +
+              '> 📚 **Documentation Drift**: Significant code changes detected without corresponding documentation updates. Added `docs-required` label. The **PR Documentation Updater** agent will analyze your changes and open a **Stacked PR** with updated documentation.\n';
+            await core.summary.addRaw(summary).write();
+            core.setFailed('Documentation drift detected.');
+
+      - name: Handle Doc Success (Clear Remediation Label)
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (existingLabels.includes('docs-required')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'docs-required'
+                });
+                core.info("Removed 'docs-required' label.");
+              } catch (e) {
+                core.warning(`Failed to remove docs-required label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ✅ PR Documentation Gatekeeper Passed\n\n' +
+              'Documentation requirements are satisfied.\n';
+            await core.summary.addRaw(summary).write();

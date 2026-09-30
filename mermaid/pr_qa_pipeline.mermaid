@@ -4,10 +4,11 @@ flowchart TD
     Gate -->|Fail| Block[❌ Block PR: CI Halted]
 
     subgraph CI_Quality [Automated Quality & Security Gates]
-        Parallel --> Lint[Linters & Formatters]
-        Parallel --> CodeQuality[3. Code Quality & Security\n- CodeQL static rules & bugs\n- GHAS Secret & Dep scanning]
+        Parallel --> Lint[2. Linters & Formatters]
+        Parallel --> Build[3. Build & Compilation Gate]
         Parallel --> Tests[4. Tests & Coverage Gate]
-        Parallel --> Docs[5. Docs & Build Gate]
+        Parallel --> CodeQuality[5. Code Quality & Security\n- CodeQL static rules\n- Secret & Dep scanning]
+        Parallel --> Docs[6. Documentation Drift Gate]
     end
 
     CI_Quality -->|All Automated Checks Pass| ReviewStage{Review Stage}
