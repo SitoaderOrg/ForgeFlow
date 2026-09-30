@@ -42,17 +42,18 @@ flowchart TD
 The deterministic test runner automatically discovers and executes test suites based on repository manifests:
 
 - **Universal & Polyglot**:
-  - **JavaScript / TypeScript**: Discovers `package.json` test scripts (`npm test` / `npm run test:cov`).
-  - **Python**: Discovers `pytest` / `unittest` test suites (`test_*.py`) and validates line coverage (`--cov-fail-under=80`).
-  - **Go**: Discovers `go.mod` and executes `go test -v -coverprofile=coverage.out ./...`, validating that total line coverage meets or exceeds **80%**.
-  - **Java / Kotlin**: Discovers `pom.xml` (`mvn test`) or `build.gradle` (`gradle test jacocoTestReport`).
-  - **C# / .NET**: Discovers `*.csproj` or `*.sln` and executes `dotnet test --collect:"XPlat Code Coverage"`.
+  - **Configurable Coverage Threshold**: Configured via repository variable `COVERAGE_THRESHOLD` (e.g. `vars.COVERAGE_THRESHOLD`), defaulting to `80`% if not set.
+  - **JavaScript / TypeScript**: Discovers `package.json` configurations and runner configs (`vitest` / `jest`), scoping tests and coverage to PR diff changes (`--changed` / `--changedSince=origin/<base>`) with the configurable line coverage threshold (`--coverage.thresholds.lines` or `--coverageThreshold`), with clean fallback to `npm run test:cov` / `npm test`.
+  - **Python**: Scopes pytest coverage to modified source files via `git diff` with `--cov=<changed_modules> --cov-fail-under=${COVERAGE_THRESHOLD}`.
+  - **Go**: Scopes `go test` to modified packages via `git diff` and validates that line coverage meets or exceeds `${COVERAGE_THRESHOLD}%`.
+  - **Java / Kotlin**: Discovers `pom.xml` (`mvn verify`) or `build.gradle` (`gradle test jacocoTestCoverageVerification`).
+  - **C# / .NET**: Discovers `*.csproj` or `*.sln` and runs `dotnet test` with `CoveragePercentTarget=${COVERAGE_THRESHOLD}`.
   - **Rust**: Discovers `Cargo.toml` and runs `cargo test`.
-  - **Ruby**: Discovers `Gemfile` and runs `bundle exec rspec` or `rake test`.
-  - **PHP**: Discovers `composer.json` and runs `phpunit --coverage-text`.
+  - **Ruby**: Discovers `Gemfile` and runs `COVERAGE_MIN=${COVERAGE_THRESHOLD} bundle exec rspec`.
+  - **PHP**: Discovers `composer.json` and runs `phpunit --min-covered-elements=${COVERAGE_THRESHOLD}`.
   - **Zero Noise**: Repositories without test suites or manifests skip cleanly without failing the check.
 - **Fail-Fast & Triggering Remediation**:
-  - If test assertions fail, or if test coverage is below the **80% threshold**, the gatekeeper fails and attaches the **`test-required`** label.
+  - If test assertions fail, or if test coverage is below the configured threshold, the gatekeeper fails and attaches the **`test-required`** label.
   - When all tests pass and coverage requirements are met, the `test-required` label is automatically cleared.
 
 ---
