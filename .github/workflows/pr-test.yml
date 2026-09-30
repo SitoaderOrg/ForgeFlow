@@ -24,33 +24,50 @@ jobs:
         id: run-tests
         run: |
           TESTS_FOUND=false
+          COVERAGE_PASSED=true
+
+          echo "🔍 Scanning repository for test suites and coverage configuration..."
 
           # 1. Node.js / TypeScript (npm / yarn / pnpm)
           if [ -f "package.json" ]; then
             if grep -q '"test"' package.json; then
               TESTS_FOUND=true
-              echo "📦 Detected Node.js project with test script. Running npm test..."
+              echo "📦 Detected Node.js project. Running tests with coverage..."
               npm ci 2>/dev/null || npm install --prefer-offline --no-audit
-              npm test
+              
+              # Run test suite with coverage if supported, otherwise standard test
+              if npm run | grep -q "test:cov"; then
+                npm run test:cov
+              elif npm test -- --coverage --coverageReporters="text-summary" 2>/dev/null; then
+                echo "Coverage report generated."
+              else
+                npm test
+              fi
             fi
           fi
 
-          # 2. Python (pytest / unittest)
+          # 2. Python (pytest with coverage)
           if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
             if find . -maxdepth 3 -name "*test*.py" | grep -q .; then
               TESTS_FOUND=true
-              echo "🐍 Detected Python project with tests. Running pytest..."
+              echo "🐍 Detected Python project. Running pytest with 80% coverage check..."
               pip install pytest pytest-cov 2>/dev/null || true
-              pytest --maxfail=5 || python -m unittest discover
+              pytest --cov=. --cov-fail-under=80 || python -m unittest discover
             fi
           fi
 
-          # 3. Go (go test)
+          # 3. Go (go test with coverage threshold)
           if [ -f "go.mod" ] || ls *.go 1>/dev/null 2>&1; then
             if find . -maxdepth 3 -name "*_test.go" | grep -q .; then
               TESTS_FOUND=true
-              echo "🐹 Detected Go project with tests. Running go test..."
-              go test -v -cover ./...
+              echo "🐹 Detected Go project. Running go test with coverage..."
+              go test -v -coverprofile=coverage.out ./...
+              COVERAGE=$(go tool cover -func=coverage.out | grep "total:" | awk '{print substr($3, 1, length($3)-1)}')
+              echo "Total Go coverage: ${COVERAGE}%"
+              if (( $(echo "$COVERAGE < 80.0" | bc -l 2>/dev/null || awk "BEGIN {print ($COVERAGE < 80.0)}") )); then
+                echo "::error::Go test coverage is ${COVERAGE}%, which is below the required 80% threshold."
+                exit 1
+              fi
             fi
           fi
 
