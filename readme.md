@@ -33,6 +33,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ### Documentation & Implemented Modules
 
+- [Prerequisites & Repository Settings](prereqs.md)
 - [Pre-Flight PR Gatekeeper & Validation](docs/pr-gatekeeper-and-validation.md)
 - [Agentic Workflows Compilation & Verification](docs/agentic-workflows-compilation.md)
 - [Polyglot Linters & PR Lint Fixer](docs/pr-lint-and-fixer.md)
