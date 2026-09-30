@@ -23,17 +23,16 @@ flowchart TD
 
     %% Test failure loop
     Test -->|< 80% Coverage| CovFail[Exit 1: Output uncovered lines\nApply label: 'test-required']
-    CovFail --> AgentTest[🤖 Copilot Agent Workflow\nTrigger: PR labeled 'test-required']
-    AgentTest --> LoadTestPrompt[Load .github/prompts/unit-test-coverage.prompt.md]
-    LoadTestPrompt --> RunCopilotTest[Copilot CLI / Agent generates tests\nPushes commit to PR branch]
-    RunCopilotTest --> RemoveTestLabel[Remove 'test-required' label]
-    RemoveTestLabel --> Start
+    CovFail --> AgentTest[🤖 PR Test Generator\nTrigger: PR labeled 'test-required']
+    AgentTest --> RunCopilotTest[Copilot analyzes diff & test logs\nGenerates unit tests >= 80% coverage\nOpens Stacked Remediation PR]
+    RunCopilotTest --> AutoMergeTest[Auto-Merge Stacked PR into Branch\n.github/workflows/pr-stacked-merge.yml]
+    AutoMergeTest --> Start
 
     %% Doc semantic evaluation loop
     DocEval -->|Docs Missing for APIs/Schemas| AgentDoc[🤖 PR Documentation Updater\nTrigger: PR opened / sync / labeled]
     AgentDoc --> RunCopilotDoc[Copilot analyzes diff & APIs\nDrafts Markdown guides & examples\nOpens Stacked Remediation PR]
-    RunCopilotDoc --> DevMergeDoc[Developer Reviews & Merges Stacked PR]
-    DevMergeDoc --> Start
+    RunCopilotDoc --> AutoMergeDoc[Auto-Merge Stacked PR into Branch\n.github/workflows/pr-stacked-merge.yml]
+    AutoMergeDoc --> Start
 
     %% Success path
     Lint -->|Pass| GateCheck{All Passed?}
@@ -42,6 +41,7 @@ flowchart TD
     Test -->|>= 80% Coverage| GateCheck
     DocEval -->|Docs Satisfied| GateCheck
 
-    GateCheck -->|Yes| AICodeReview[6. GitHub Copilot Code Review\nAI architectural / diff review]
-    AICodeReview --> HumanReview[7. Human Code Review & Approval]
-    HumanReview --> Merge([🚀 Merge PR])
+    GateCheck -->|Yes| Dispatcher[8. PR Review Dispatcher\nPost summary & assign Copilot]
+    Dispatcher --> AICodeReview[GitHub Copilot Code Review\nAI architectural & diff review]
+    AICodeReview --> HumanReview[Developer Final Sign-Off & Review]
+    HumanReview --> Merge([🚀 Merge PR into Main])

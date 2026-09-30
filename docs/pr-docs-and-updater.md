@@ -21,8 +21,8 @@ flowchart TD
     ApplyLabel --> AuthorDocs[Draft Idiomatic Markdown & API Usage]
     AuthorDocs --> StackedPR[Open Batched Stacked PR\nTargeting author's feature branch]
 
-    StackedPR --> DevReview([Developer Reviews & Merges Stacked PR])
-    DevReview --> Recheck([Feature Branch Updated & Checks Re-evaluated])
+    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml]
+    AutoMerge --> Recheck([Feature Branch Updated & Checks Re-evaluated])
     Recheck --> DoneNoAction
 ```
 

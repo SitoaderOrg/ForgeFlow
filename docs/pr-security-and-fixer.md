@@ -1,4 +1,4 @@
-# Step 3: GitHub Code Security & Autonomous Remediation
+# Step 5: GitHub Code Security & Autonomous Remediation
 
 This step implements security gates powered by **GitHub Code Security** combined with specialized, autonomous AI remediation loops for vulnerable dependencies, static code vulnerabilities, and exposed secrets.
 
@@ -32,11 +32,11 @@ flowchart TD
     SecretFixer --> ScrubSecret[Scrub Secrets & Add Env Var Lookups]
     SecretFixer --> StackedPRSecret[Create Batched Stacked PR\nItemized commit titles per secret]
 
-    StackedPRDep --> DevReview([Developer Reviews & Merges Stacked PR])
-    StackedPRCodeql --> DevReview
-    StackedPRSecret --> DevReview
+    StackedPRDep --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml]
+    StackedPRCodeql --> AutoMerge
+    StackedPRSecret --> AutoMerge
 
-    DevReview --> Recheck([Feature Branch Updated & Security Gate Re-evaluated])
+    AutoMerge --> Recheck([Feature Branch Updated & Security Gate Re-evaluated])
     Recheck -->|✅ Passed| ClearLabels[Security Gatekeeper Clears Labels]
 ```
 

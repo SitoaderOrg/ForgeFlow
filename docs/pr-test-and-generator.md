@@ -22,7 +22,7 @@ flowchart TD
     RunGo --> StatusCheck
     RunCargo --> StatusCheck
 
-    StatusCheck -->|✅ Pass| NextGate[Downstream CI Gates\nDoc Drift & Build]
+    StatusCheck -->|✅ Pass| NextGate[Downstream CI Gates\nSecurity, Docs, Review]
     StatusCheck -->|❌ Tests Fail / Missing| AddLabel[Apply 'test-required' Label\nFail Fast / Halt Pipeline]
 
     AddLabel --> Generator[2. Autonomous Test Generator\n.github/workflows/pr-test-generator.md]
@@ -30,8 +30,8 @@ flowchart TD
     Generator --> Synthesize[Synthesize Idiomatic Unit Tests\nCover boundary cases & edge scenarios]
     Generator --> StackedPR[Create Batched Stacked PR\nTargeting author's feature branch]
 
-    StackedPR --> DevReview([Developer Reviews & Merges Stacked PR])
-    DevReview --> Recheck([Feature Branch Updated & Tests Re-evaluated])
+    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml]
+    AutoMerge --> Recheck([Feature Branch Updated & Tests Re-evaluated])
     Recheck -->|✅ Passed| ClearLabel[Gatekeeper Clears 'test-required']
 ```
 
