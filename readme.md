@@ -13,6 +13,7 @@
 
 - **Regular GitHub Actions:** Deterministic, binary (pass/fail), fast, reproducible tasks (compiling, running test runners, linting, scanning). -> (fast, zero token cost, reproducible).
 - **`gh-aw` (English Agentic Workflows):** Tasks requiring **reasoning, semantic understanding, synthesis, or code generation**. -> (using English in Markdown).
+- **Auto-Cancellation & Concurrency Control:** All PR gatekeepers use `concurrency` with `cancel-in-progress: true`. Whenever an author or automated agent pushes a new commit or fix to a PR, any active workflows running on the obsolete commit are immediately cancelled to save CI minutes and avoid race conditions.
 
 ### Documentation & Implemented Modules
 
