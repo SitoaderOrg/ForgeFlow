@@ -25,6 +25,7 @@
 - [Agentic Workflows Compilation & Verification](docs/agentic-workflows-compilation.md)
 - [Polyglot Linters & PR Lint Fixer](docs/pr-lint-and-fixer.md)
 - [GitHub Code Security & PR Security Fixer](docs/pr-security-and-fixer.md)
+- [Polyglot Automated Testing & PR Test Generator](docs/pr-test-and-generator.md)
 
 ### 1. Standard GitHub Actions Workflows
 
