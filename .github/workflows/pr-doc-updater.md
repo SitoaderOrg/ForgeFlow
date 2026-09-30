@@ -37,6 +37,25 @@ safe-outputs:
 ## Objective
 Analyze newly introduced or modified functionality in this pull request and draft accurate, clear, and comprehensive documentation updates in a stacked PR to resolve documentation drift and clear the `docs-required` label.
 
+## 📋 Documentation Decision Criteria
+
+### ✅ Document These:
+- **Public APIs & Interfaces**: Exported functions, methods, classes, and HTTP/REST endpoints.
+- **Complex Logic & Algorithms**: Non-obvious workflows, calculations, or business rules requiring explanation.
+- **Architectural & Workflow Changes**: New lifecycle steps, pipeline integrations, or architectural patterns.
+- **Breaking Changes**: Altered method signatures, renamed configuration keys, or changed behaviors.
+- **New Dependencies & Integrations**: Added third-party packages, SDKs, or external services.
+- **Security & Performance Changes**: New authentication requirements, encryption models, or caching layers.
+- **Database Schemas & Data Models**: Added entities, modified tables, migrations, or data structures.
+- **Unit & Integration Test Guides**: How to run and structure tests for newly introduced modules.
+
+### ❌ Skip These (Do Not Generate Docs):
+- Minor refactoring, formatting, or lint corrections.
+- Internal private helpers with self-explanatory implementation.
+- Trivial typo fixes, comments, or variable renaming.
+- Pure code moves or imports reorganization without behavior changes.
+- Patch-level dependency bumps.
+
 ## 🔒 STRICT GUARDRAIL: DOCUMENTATION FILES ONLY
 - **YOU ARE STRICTLY PROHIBITED FROM MODIFYING PRODUCTION CODE, BUSINESS LOGIC, TESTS, OR BUILD CONFIGURATION.**
 - You may **ONLY** create or update markdown files (`README.md`, `docs/**/*.md`, `*.md`) or documentation references.

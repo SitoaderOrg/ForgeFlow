@@ -31,9 +31,15 @@ flowchart TD
 
 The deterministic runner verifies documentation drift:
 
-- **Drift Detection**:
+- **Drift Detection Criteria**:
   - Compares source code changes (`.ts`, `.js`, `.py`, `.go`, etc.) against documentation changes (`.md`, `docs/`, `README`).
-  - If a pull request adds or alters substantial business logic (≥ 30 added lines across source files) without modifying any documentation files, the gate flags **documentation drift**.
+  - **Triggers Documentation Requirement**:
+    - **Substantial logic additions**: ≥ 30 added source lines without corresponding docs.
+    - **Database Schemas & Data Models**: Added entities, modified tables, migrations, or `.sql` files without documentation.
+    - **New Dependencies & Integrations**: Added packages in manifests (`package.json`, `go.mod`, `Cargo.toml`, etc.) without docs.
+    - **Public APIs & Interfaces**: Exported endpoints, classes, or public functions.
+  - **Skips Documentation Requirement**:
+    - Minor refactorings, formatting, linting fixes, private helpers, typo fixes, or patch updates.
   - Attaches `docs-required` to signal that documentation is required.
   - Automatically clears `docs-required` once documentation is added.
 
@@ -41,7 +47,11 @@ The deterministic runner verifies documentation drift:
 
 ## 2. Autonomous Documentation Updater (`.github/workflows/pr-doc-updater.md`)
 
-When a PR introduces new or modified logic without docs, this GitHub Agentic Workflow drafts documentation:
+When a PR introduces new or modified logic without docs, this GitHub Agentic Workflow drafts documentation according to clear triage rules:
+
+### Decision Matrix:
+- **✅ Document**: Public APIs/interfaces, complex algorithms, architectural changes, breaking changes, new dependencies, security/auth additions, and database schemas.
+- **❌ Skip**: Minor refactoring, internal helpers, typo fixes, code moves, and patch dependency updates.
 
 ### Workflow Capabilities:
 1. **Analyze Diff & Public APIs**: Identifies newly added functions, exported types, configuration options, or CLI flags.

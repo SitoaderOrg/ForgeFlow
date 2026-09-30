@@ -35,10 +35,16 @@ jobs:
           # Changed documentation files
           CHANGED_DOCS=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '(\.md$|\.markdown$|docs/|README|DOCUMENTATION)' || true)
 
-          echo "Changed source files:"
-          echo "$CHANGED_SRC"
-          echo "Changed documentation files:"
-          echo "$CHANGED_DOCS"
+          # Check for new dependencies/manifest additions
+          CHANGED_MANIFESTS=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '(package\.json|go\.mod|Cargo\.toml|pom\.xml|build\.gradle|requirements\.txt|pyproject\.toml|composer\.json)' || true)
+
+          # Check for schema/migration additions
+          CHANGED_SCHEMAS=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '(schema|migration|models?|entities|\.sql)' || true)
+
+          echo "Changed source files: $CHANGED_SRC"
+          echo "Changed documentation files: $CHANGED_DOCS"
+          echo "Changed manifests: $CHANGED_MANIFESTS"
+          echo "Changed schemas/models: $CHANGED_SCHEMAS"
 
           ADDED_LINES=0
           if [ -n "$CHANGED_SRC" ]; then
@@ -47,9 +53,30 @@ jobs:
 
           echo "Added lines in source files: $ADDED_LINES"
 
-          # Rule: If >= 30 lines of source code added/modified and zero doc files touched, flag documentation drift
-          if [ "$ADDED_LINES" -ge 30 ] && [ -z "$CHANGED_DOCS" ]; then
-            echo "::error::Significant new functionality added (${ADDED_LINES} lines in source files) with zero documentation updates."
+          # Criteria for documentation requirement:
+          # 1. Substantial source additions (>= 30 lines) without doc updates
+          # 2. Database schema/migration additions without doc updates
+          # 3. New manifest dependencies/integrations added without doc updates
+          DOCS_NEEDED=false
+
+          if [ -z "$CHANGED_DOCS" ]; then
+            if [ "$ADDED_LINES" -ge 30 ]; then
+              echo "::warning::Substantial new functionality added (${ADDED_LINES} lines in source files) with zero documentation updates."
+              DOCS_NEEDED=true
+            elif [ -n "$CHANGED_SCHEMAS" ]; then
+              echo "::warning::Database schema, model, or migration changes detected with zero documentation updates."
+              DOCS_NEEDED=true
+            elif [ -n "$CHANGED_MANIFESTS" ]; then
+              # Check if a new dependency was added in the manifest diff
+              if git diff -U0 "$BASE_BRANCH...HEAD" -- $CHANGED_MANIFESTS 2>/dev/null | grep -E '^\+[ ]*["'\'']?[a-zA-Z0-9_\-\/]+["'\'']?:' | grep -v 'version' | grep -q .; then
+                echo "::warning::New dependencies or integrations detected in manifest diff without documentation."
+                DOCS_NEEDED=true
+              fi
+            fi
+          fi
+
+          if [ "$DOCS_NEEDED" = "true" ]; then
+            echo "::error::Documentation drift detected. Code changes meet criteria for documentation updates."
             exit 1
           else
             echo "✅ Documentation drift check passed."
