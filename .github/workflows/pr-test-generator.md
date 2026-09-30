@@ -17,6 +17,7 @@ permissions:
 
 tools:
   edit: true
+  bash: true
   github:
     mode: "gh-proxy"
 
@@ -42,24 +43,64 @@ Automatically generate missing unit tests or repair broken test assertions for c
 - If an existing test failed, fix or adapt the test assertions—**NEVER modify the application code under test**.
 - Any pull request that proposes changes to non-test files will be rejected.
 
-## Instructions
+## Step 1: Detect Project Language, Framework & Test Runner
+Inspect repository configuration files and manifests to identify the language, testing framework, and coverage command:
+
+| Ecosystem | Manifest File(s) | Common Test Frameworks | Typical Test & Coverage Command |
+| :--- | :--- | :--- | :--- |
+| **TypeScript / JavaScript** | `package.json` | Vitest, Jest, Mocha | `npm test`, `npm run test:coverage`, `npx vitest run --coverage` |
+| **Python** | `pyproject.toml`, `requirements.txt`, `setup.py` | Pytest, Unittest | `pytest --cov=.`, `python -m unittest` |
+| **Go** | `go.mod` | Go `testing` package, Testify | `go test -coverprofile=coverage.out ./...` |
+| **Java / Kotlin** | `pom.xml`, `build.gradle` | JUnit 5, TestNG, Mockito | `./mvnw test`, `./gradlew test jacocoTestReport` |
+| **C# / .NET** | `*.csproj`, `*.sln` | xUnit, NUnit, MSTest | `dotnet test --collect:"XPlat Code Coverage"` |
+| **Rust** | `Cargo.toml` | Built-in test harness | `cargo test`, `cargo llvm-cov` |
+| **Ruby** | `Gemfile` | RSpec, Minitest | `bundle exec rspec`, `rake test` |
+| **PHP** | `composer.json` | PHPUnit, Pest | `vendor/bin/phpunit --coverage-text` |
+
+Read the manifest or root test scripts to identify the exact coverage command used in CI.
+
+## Step 2: Analyze Uncovered Code in PR Diff
 1. Inspect the pull request using `gh pr diff` and `gh pr view --json number,files,commits,headRefName`.
 2. Inspect the failed CI logs and coverage report for the `PR Tests & Coverage Gatekeeper` workflow:
    - Run `gh run list --workflow=pr-test.yml` and `gh run view <run-id> --log-failed`.
-   - Identify which functions and line ranges were flagged as uncovered or below the 80% threshold.
-3. Discover test conventions, framework, and structure:
-   - Inspect project configuration files (e.g., `jest.config.*`, `vitest.config.*`, `pyproject.toml`, `setup.cfg`, `Cargo.toml`, `pom.xml`, `Makefile`), test scripts in package manifests, and existing test suites across the repository.
-   - Discern the project's exact testing conventions, assertion libraries, test placement (whether dedicated test folders, integration suites, or co-located test files), and naming patterns.
-   - **Place all new tests in the matching locations following the project's idiomatic structure and conventions.**
-4. Author comprehensive, idiomatic unit tests:
-   - Use the existing test runner and assertion style already established in the repository.
-   - Write targeted test cases covering uncovered branches, boundary inputs, error handlers, and edge cases to exceed 80% coverage.
-5. Apply safe outputs:
-   - Call `create-pull-request` to open a stacked pull request:
-     - Set `base` to the parent PR branch (`headRefName`).
-     - Set `title`: `test: add unit test coverage for PR changes`
-     - Set `body`: Provide an itemized breakdown of:
-       - **New Test Files & Cases**: List of test files and functions added.
-       - **Uncovered Paths Addressed**: How the new tests bring coverage above 80%.
-       - **Instructions**: "Merge this stacked PR into your feature branch to include the tests and clear the test gate."
-   - Call `add-comment` on the parent PR informing the developer that a stacked PR containing the required unit tests has been opened for their review and approval.
+3. Identify all newly added or modified source files and testable logic:
+   - Functions, methods, classes, and handlers
+   - Conditional branches (`if/else`, `switch/match`)
+   - Data transformations and validations
+   - Error handling and exception paths
+4. Determine existing test file naming and location conventions in the repository:
+   - **Colocated tests**: e.g., `src/foo.test.ts`, `src/foo_test.go`, `src/test_foo.py`
+   - **Centralized test suites**: e.g., `tests/`, `test/`, `spec/`, `src/test/java/`
+5. Review any repository-specific instructions (e.g., `.github/instructions/` or `CONTRIBUTING.md`) for architectural rules and mock conventions.
+
+## Step 3: Implement Comprehensive Tests
+Write clean, idiomatic unit or integration tests matching the project's existing testing style:
+1. **Happy Paths**: Verify standard inputs produce expected outputs, correct return types, or status codes.
+2. **Boundary & Edge Cases**:
+   - Empty collections, zero values, empty strings
+   - Null / nil / undefined / None inputs
+   - Extreme boundary values and off-by-one conditions
+3. **Error Handling & Invalidation**:
+   - Malformed data, missing required fields, or illegal arguments
+   - Verify proper exception raising or error return types
+4. **Mocking & Isolation**:
+   - Follow the repo's existing patterns to mock external I/O, database connections, third-party APIs, or network requests.
+   - Ensure tests are deterministic, fast, and free of side effects.
+
+## Step 4: Validate Tests Locally
+1. Run the project's test suite and coverage command identified in Step 1 using bash.
+2. Verify that:
+   - All tests pass with zero errors or regressions.
+   - Code coverage for modified source files meets or exceeds the required threshold (80%).
+3. If any test fails or coverage is insufficient, refine the tests and re-run until all checks pass.
+
+## Step 5: Propose Stacked Pull Request
+Apply safe outputs:
+1. Call `create-pull-request` to open a stacked pull request:
+   - Set `base` to the parent PR branch (`headRefName`).
+   - Set `title`: `test: add unit test coverage for PR changes`
+   - Set `body`: Provide an itemized breakdown of:
+     - **New Test Files & Cases**: List of test files and functions added.
+     - **Uncovered Paths Addressed**: How the new tests bring coverage above 80%.
+     - **Instructions**: "Merge this stacked PR into your feature branch to include the tests and clear the test gate."
+2. Call `add-comment` on the parent PR informing the developer that a stacked PR containing the validated unit tests has been opened for their review and approval.
