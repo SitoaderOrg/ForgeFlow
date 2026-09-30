@@ -20,8 +20,8 @@ flowchart LR
     Gate -->|Fail| A1 -->|Update PR| CI
     Lint -->|Fail| A2 -->|Commit Fix| CI
     Build -->|Fail| CI
-    Test -->|Fail| A4 -->|Stacked PR| CI
-    Sec  -->|Alert| A3 -->|Stacked PR| CI
-    Doc  -->|Fail| A5 -->|Stacked PR| CI
+    Test -->|Fail| A4 -->|Stacked PR| AutoMerge[Auto-Merge & Link] --> CI
+    Sec  -->|Alert| A3 -->|Stacked PR| AutoMerge --> CI
+    Doc  -->|Fail| A5 -->|Stacked PR| AutoMerge --> CI
 
-    CI -->|All Pass| Review[AI & Human Review]
+    CI -->|All Pass| Dispatcher[Dispatcher: Summary & Copilot Review] --> Review[Developer Final Sign-Off & Merge]

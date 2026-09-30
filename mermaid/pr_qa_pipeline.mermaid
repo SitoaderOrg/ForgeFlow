@@ -11,11 +11,14 @@ flowchart TD
         Parallel --> DocEval[6. Semantic Doc Evaluation\ngh-aw agentic evaluator]
     end
 
+    CI_Quality -->|Remediations Generated| AutoConsolidate[7. Auto-Merge Stacked PRs\nSquash into feature branch & post audit links]
+    AutoConsolidate --> Parallel
     CI_Quality -->|All Automated Checks Pass| ReviewStage{Review Stage}
 
     subgraph Code_Review [Code Review Stage]
-        ReviewStage --> CopilotReview[6. GitHub Copilot Code Review\n- AI semantic & architecture review\n- Actionable diff suggestions]
-        CopilotReview --> HumanReview[7. Human Peer Review\n- Business logic & final sign-off]
+        ReviewStage --> Dispatcher[8. PR Review Dispatcher\nPost summary & assign Copilot]
+        Dispatcher --> CopilotReview[GitHub Copilot Code Review\n- AI semantic & architecture review\n- 1-click commit suggestions]
+        CopilotReview --> HumanReview[Human Peer Review & Sign-Off\n- Final business check & merge]
     end
 
-    HumanReview --> Merge([🚀 Merge])
+    HumanReview --> Merge([🚀 Merge into Main])

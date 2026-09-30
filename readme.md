@@ -24,6 +24,7 @@
 - [Polyglot Automated Testing & PR Test Generator](docs/pr-test-and-generator.md)
 - [GitHub Code Security & PR Security Fixers](docs/pr-security-and-fixer.md)
 - [Documentation Drift & Autonomous Documentation Updater](docs/pr-docs-and-updater.md)
+- [Automated Consolidation, Copilot Review & Developer Sign-Off](docs/pr-review-and-consolidation.md)
 
 ### 1. Standard GitHub Actions Workflows
 
@@ -32,6 +33,8 @@
 - **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts.
 - **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check.
 - **Security Scanning (`pr-security.yml`)**: CodeQL, Dependency Review, and Secret Scanning.
+- **Stacked PR Auto-Merger (`pr-stacked-merge.yml`)**: Automatically merges verified remediation PRs into the feature branch.
+- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries.
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)
 

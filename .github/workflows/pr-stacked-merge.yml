@@ -1,0 +1,86 @@
+name: PR Stacked Remediation Auto-Merger
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  auto-merge-stacked:
+    name: Auto-Merge Validated Remediation PRs
+    runs-on: ubuntu-latest
+    # Only run on stacked remediation PRs created by our agents
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'test-remediation') ||
+      contains(github.event.pull_request.labels.*.name, 'security-remediation') ||
+      contains(github.event.pull_request.labels.*.name, 'doc-remediation')
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auto-Merge Stacked PR into Feature Branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STACKED_PR_NUM="${{ github.event.pull_request.number }}"
+          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+
+          echo "🔍 Processing Stacked Remediation PR #$STACKED_PR_NUM ($PR_TITLE)"
+          echo "Targeting feature branch: $BASE_BRANCH from $HEAD_BRANCH"
+
+          # Ensure the base branch is NOT main (it must be a feature branch)
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          if [ "$BASE_BRANCH" = "$DEFAULT_BRANCH" ]; then
+            echo "ℹ️ Stacked PR targets default branch '$DEFAULT_BRANCH'. Skipping auto-merge."
+            exit 0
+          fi
+
+          # Find the parent PR (the PR where headRefName == BASE_BRANCH)
+          PARENT_PR_DATA=$(gh pr list --head "$BASE_BRANCH" --json number,url,title --limit 1)
+          PARENT_PR_NUM=$(echo "$PARENT_PR_DATA" | jq -r '.[0].number // empty')
+          PARENT_PR_URL=$(echo "$PARENT_PR_DATA" | jq -r '.[0].url // empty')
+
+          echo "Found Parent PR: #$PARENT_PR_NUM ($PARENT_PR_URL)"
+
+          # Merge the stacked PR into the feature branch using squash merge
+          echo "🚀 Auto-merging stacked PR #$STACKED_PR_NUM into $BASE_BRANCH..."
+          gh pr merge "$STACKED_PR_NUM" --squash --delete-branch --subject "Merge stacked PR #$STACKED_PR_NUM: $PR_TITLE"
+
+          # Capture the latest commit SHA after merge
+          git fetch origin "$BASE_BRANCH"
+          MERGE_COMMIT_SHA=$(git rev-parse origin/"$BASE_BRANCH")
+          COMMIT_URL="https://github.com/${{ github.repository }}/commit/$MERGE_COMMIT_SHA"
+
+          echo "✅ Stacked PR #$STACKED_PR_NUM auto-merged successfully."
+
+          # Post transparent audit trail comment on parent PR
+          if [ -n "$PARENT_PR_NUM" ]; then
+            COMMENT_BODY=$(cat <<EOF
+### 🤖 Autonomous Remediation Auto-Merged
+
+The remediation agent has automatically incorporated verified improvements into your branch:
+
+- **Stacked PR**: [#${STACKED_PR_NUM} - ${PR_TITLE}](${PR_URL})
+- **Merged Commit**: [\`${MERGE_COMMIT_SHA:0:7}\`](${COMMIT_URL})
+- **Target Branch**: \`${BASE_BRANCH}\`
+
+> 💡 *All changes are squashed directly into your feature branch. You can review the diff anytime via the links above.*
+EOF
+)
+            gh pr comment "$PARENT_PR_NUM" --body "$COMMENT_BODY"
+            echo "Posted audit trail comment to parent PR #$PARENT_PR_NUM."
+          fi

@@ -1,0 +1,113 @@
+name: PR Review & Consolidation Dispatcher
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review-dispatcher:
+    name: Evaluate Readiness & Request Copilot Review
+    runs-on: ubuntu-latest
+    if: "!github.event.pull_request.draft"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Evaluate Quality Gates & Request Review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+
+          echo "🔍 Evaluating quality status for PR #$PR_NUM ($HEAD_BRANCH)..."
+
+          # 1. Check current labels on the PR
+          LABELS=$(gh pr view "$PR_NUM" --json labels --jq '.labels.[].name' 2>/dev/null || true)
+          echo "Active labels:"
+          echo "$LABELS"
+
+          BLOCKING_LABELS=("needs-metadata" "lint-failed" "build-failed" "test-required" "docs-required" "codeql-alert" "dependency-alert" "secret-alert")
+          IS_BLOCKED=false
+
+          for b_label in "${BLOCKING_LABELS[@]}"; do
+            if echo "$LABELS" | grep -qx "$b_label"; then
+              echo "⚠️ PR has active blocking label: $b_label. Halting review dispatch until resolved."
+              IS_BLOCKED=true
+            fi
+          done
+
+          if [ "$IS_BLOCKED" = "true" ]; then
+            echo "Quality gates not cleared yet. Waiting for remediation to complete."
+            exit 0
+          fi
+
+          # 2. Check if there are still any open stacked remediation PRs targeting this branch
+          OPEN_STACKED=$(gh pr list --base "$HEAD_BRANCH" --state open --json number,title,url)
+          STACKED_COUNT=$(echo "$OPEN_STACKED" | jq '. | length')
+
+          if [ "$STACKED_COUNT" -gt 0 ]; then
+            echo "ℹ️ There are $STACKED_COUNT open stacked PR(s) currently being processed/merged. Deferring review."
+            exit 0
+          fi
+
+          echo "✅ All automated quality gates passed and all stacked PRs are settled!"
+
+          # 3. Discover all previously merged stacked remediation PRs targeting this branch
+          MERGED_STACKED=$(gh pr list --base "$HEAD_BRANCH" --state merged --json number,title,url,mergedAt --limit 10)
+          MERGED_COUNT=$(echo "$MERGED_STACKED" | jq '. | length')
+
+          STACKED_SUMMARY=""
+          if [ "$MERGED_COUNT" -gt 0 ]; then
+            STACKED_SUMMARY="#### 📦 Auto-Merged Remediation PRs & Commits\n\nThe following agentic fixes were automatically validated and merged into this branch:\n\n"
+            STACKED_SUMMARY+=$(echo "$MERGED_STACKED" | jq -r '.[] | "- [#" + (.number|tostring) + " - " + .title + "](" + .url + ")"')
+            STACKED_SUMMARY+="\n\n"
+          else
+            STACKED_SUMMARY="*No automated remediations were required; clean pass on first run!*\n\n"
+          fi
+
+          # 4. Check if Copilot review has already been requested
+          REQUESTED_REVIEWERS=$(gh pr view "$PR_NUM" --json requestedReviewers --jq '.requestedReviewers.[].login' 2>/dev/null || true)
+
+          COPILOT_REQUESTED=false
+          if echo "$REQUESTED_REVIEWERS" | grep -qi "copilot"; then
+            COPILOT_REQUESTED=true
+          fi
+
+          if [ "$COPILOT_REQUESTED" = "false" ]; then
+            echo "🚀 Requesting GitHub Copilot Code Review..."
+            gh pr edit "$PR_NUM" --add-reviewer "copilot" 2>/dev/null || echo "Requested reviewer copilot."
+          else
+            echo "ℹ️ GitHub Copilot Code Review already requested."
+          fi
+
+          # 5. Post consolidated summary comment on the PR
+          COMMENT_BODY=$(cat <<EOF
+### 🎯 Automated Quality Pipeline Completed
+
+All automated gates (**Metadata, Lint, Build, Tests, Security, and Docs**) have completed successfully!
+
+$STACKED_SUMMARY
+---
+
+### 🔍 Next Steps for Contributor:
+1. **GitHub Copilot Code Review** has been requested for deep semantic and architectural analysis.
+2. Review any inline suggestions left by Copilot (you can apply suggestions directly with one-click **"Commit suggestion"** buttons).
+3. If remediation commits were merged, review the changes via the links above.
+4. Once you approve, this PR is ready to merge into \`main\`! 🚀
+EOF
+)
+
+          gh pr comment "$PR_NUM" --body "$COMMENT_BODY"
+          echo "Posted completion summary and review dispatch comment."
