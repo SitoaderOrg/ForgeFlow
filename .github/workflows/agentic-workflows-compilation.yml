@@ -39,9 +39,9 @@ jobs:
 
       - name: Check lockfile drift & create remediation PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN || github.token }}
         run: |
-          if git diff --ignore-space-at-eol --quiet .github/workflows/*.lock.yml; then
+          if git diff --ignore-space-at-eol -I '^# gh-aw-metadata: ' --quiet .github/workflows/*.lock.yml; then
             echo "✅ All agentic workflow lockfiles are up to date."
             exit 0
           fi
@@ -65,7 +65,11 @@ jobs:
           git checkout -B "$FIX_BRANCH"
           git add .github/workflows/*.lock.yml
           git commit -m "chore(ci): update compiled agentic workflow lockfiles"
-          git push -u origin "$FIX_BRANCH" --force
+
+          if ! git push -u origin "$FIX_BRANCH" --force; then
+            echo "::warning::Automated push was blocked by GitHub workflow push permissions. Please recompile locally with 'gh aw compile' and push."
+            exit 0
+          fi
 
           # Check if an open PR already exists for this branch
           EXISTING_PR=$(gh pr list --head "$FIX_BRANCH" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number')
