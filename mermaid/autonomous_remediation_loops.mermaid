@@ -30,11 +30,10 @@ flowchart TD
 
     %% Doc failure loop
     DocCheck -->|Docs Missing| DocFail[Exit 1: Report missing docs\nApply label: 'docs-required']
-    DocFail --> AgentDoc[🤖 Copilot Agent Workflow\nTrigger: PR labeled 'docs-required']
-    AgentDoc --> LoadDocPrompt[Load .github/prompts/doc-needs.prompt.md]
-    LoadDocPrompt --> RunCopilotDoc[Copilot CLI generates documentation\nPushes commit to PR branch]
-    RunCopilotDoc --> RemoveDocLabel[Remove 'docs-required' label]
-    RemoveDocLabel --> Start
+    DocFail --> AgentDoc[🤖 PR Documentation Updater\nTrigger: PR labeled 'docs-required']
+    AgentDoc --> RunCopilotDoc[Copilot analyzes diff & APIs\nDrafts Markdown guides & examples\nOpens Stacked Remediation PR]
+    RunCopilotDoc --> DevMergeDoc[Developer Reviews & Merges Stacked PR]
+    DevMergeDoc --> Start
 
     %% Success path
     Lint -->|Pass| GateCheck{All Passed?}

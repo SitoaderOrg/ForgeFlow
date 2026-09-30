@@ -26,6 +26,7 @@
 - [Polyglot Linters & PR Lint Fixer](docs/pr-lint-and-fixer.md)
 - [GitHub Code Security & PR Security Fixer](docs/pr-security-and-fixer.md)
 - [Polyglot Automated Testing & PR Test Generator](docs/pr-test-and-generator.md)
+- [Build Verification & Autonomous Documentation Updater](docs/pr-build-and-docs.md)
 
 ### 1. Standard GitHub Actions Workflows
 
