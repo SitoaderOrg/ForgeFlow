@@ -19,6 +19,13 @@
 
 - **`gh-aw` (English Agentic Workflows):** Tasks requiring **reasoning, semantic understanding, synthesis, or code generation**. -> (using English in Markdown).
 
+### Documentation & Implemented Modules
+
+- [Pre-Flight PR Gatekeeper & Validation](docs/pr-gatekeeper-and-validation.md)
+- [Agentic Workflows Compilation & Verification](docs/agentic-workflows-compilation.md)
+- [Polyglot Linters & PR Lint Fixer](docs/pr-lint-and-fixer.md)
+- [GitHub Code Security & PR Security Fixer](docs/pr-security-and-fixer.md)
+
 ### 1. Standard GitHub Actions Workflows
 
 
