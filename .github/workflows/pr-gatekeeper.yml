@@ -37,8 +37,8 @@ jobs:
             const results = [];
 
             // 1. Branch Naming Check
-            // Convention: feat/*, fix/*, chore/*, docs/*, test/*, refactor/*, ci/*
-            const branchRegex = /^(feat|fix|chore|docs|test|refactor|ci)\/[a-zA-Z0-9_\-\.]+$/;
+            // Convention: feat/*, fix/*, chore/*, docs/*, test/*, refactor/*, ci/* (allows optional user prefix for worktree branches)
+            const branchRegex = /^([a-zA-Z0-9_\-]+[\/\-])?(feat|fix|chore|docs|test|refactor|ci|sample)[\/\-][a-zA-Z0-9_\-\.]+$/;
             if (branchRegex.test(branchName)) {
               results.push({ check: 'Branch Naming', status: '✅ PASS', details: `\`${branchName}\`` });
             } else {

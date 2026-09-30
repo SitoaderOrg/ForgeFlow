@@ -30,6 +30,7 @@ safe-outputs:
   create-pull-request:
     title-prefix: "test: "
     labels: ["test-remediation", "human-review-needed"]
+    allowed-base-branches: ["*"]
   add-comment:
     max: 1
 ---

@@ -69,18 +69,20 @@ jobs:
 
           # Post transparent audit trail comment on parent PR
           if [ -n "$PARENT_PR_NUM" ]; then
-            COMMENT_BODY=$(cat <<EOF
-### 🤖 Autonomous Remediation Auto-Merged
+            COMMENT_FILE=$(mktemp)
+            {
+              echo "### 🤖 Autonomous Remediation Auto-Merged"
+              echo ""
+              echo "The remediation agent has automatically incorporated verified improvements into your branch:"
+              echo ""
+              echo "- **Stacked PR**: [#${STACKED_PR_NUM} - ${PR_TITLE}](${PR_URL})"
+              echo "- **Merged Commit**: [\`${MERGE_COMMIT_SHA:0:7}\`](${COMMIT_URL})"
+              echo "- **Target Branch**: \`${BASE_BRANCH}\`"
+              echo ""
+              echo "> 💡 *All changes are squashed directly into your feature branch. You can review the diff anytime via the links above.*"
+            } > "$COMMENT_FILE"
 
-The remediation agent has automatically incorporated verified improvements into your branch:
-
-- **Stacked PR**: [#${STACKED_PR_NUM} - ${PR_TITLE}](${PR_URL})
-- **Merged Commit**: [\`${MERGE_COMMIT_SHA:0:7}\`](${COMMIT_URL})
-- **Target Branch**: \`${BASE_BRANCH}\`
-
-> 💡 *All changes are squashed directly into your feature branch. You can review the diff anytime via the links above.*
-EOF
-)
-            gh pr comment "$PARENT_PR_NUM" --body "$COMMENT_BODY"
+            gh pr comment "$PARENT_PR_NUM" --body-file "$COMMENT_FILE"
+            rm -f "$COMMENT_FILE"
             echo "Posted audit trail comment to parent PR #$PARENT_PR_NUM."
           fi

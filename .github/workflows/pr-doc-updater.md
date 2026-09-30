@@ -30,6 +30,7 @@ safe-outputs:
   create-pull-request:
     title-prefix: "docs: "
     labels: ["doc-remediation", "human-review-needed"]
+    allowed-base-branches: ["*"]
   add-labels:
     allowed: ["docs-required"]
   remove-labels:

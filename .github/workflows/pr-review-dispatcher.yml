@@ -93,21 +93,22 @@ jobs:
           fi
 
           # 5. Post consolidated summary comment on the PR
-          COMMENT_BODY=$(cat <<EOF
-### 🎯 Automated Quality Pipeline Completed
+          COMMENT_FILE=$(mktemp)
+          {
+            echo "### 🎯 Automated Quality Pipeline Completed"
+            echo ""
+            echo "All automated gates (**Metadata, Lint, Build, Tests, Security, and Docs**) have completed successfully!"
+            echo ""
+            echo -e "$STACKED_SUMMARY"
+            echo "---"
+            echo ""
+            echo "### 🔍 Next Steps for Contributor:"
+            echo "1. **GitHub Copilot Code Review** has been requested for deep semantic and architectural analysis."
+            echo "2. Review any inline suggestions left by Copilot (you can apply suggestions directly with one-click **\"Commit suggestion\"** buttons)."
+            echo "3. If remediation commits were merged, review the changes via the links above."
+            echo "4. Once you approve, this PR is ready to merge into \`main\`! 🚀"
+          } > "$COMMENT_FILE"
 
-All automated gates (**Metadata, Lint, Build, Tests, Security, and Docs**) have completed successfully!
-
-$STACKED_SUMMARY
----
-
-### 🔍 Next Steps for Contributor:
-1. **GitHub Copilot Code Review** has been requested for deep semantic and architectural analysis.
-2. Review any inline suggestions left by Copilot (you can apply suggestions directly with one-click **"Commit suggestion"** buttons).
-3. If remediation commits were merged, review the changes via the links above.
-4. Once you approve, this PR is ready to merge into \`main\`! 🚀
-EOF
-)
-
-          gh pr comment "$PR_NUM" --body "$COMMENT_BODY"
+          gh pr comment "$PR_NUM" --body-file "$COMMENT_FILE"
+          rm -f "$COMMENT_FILE"
           echo "Posted completion summary and review dispatch comment."
