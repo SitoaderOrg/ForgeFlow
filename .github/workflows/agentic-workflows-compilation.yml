@@ -41,7 +41,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if git diff --quiet .github/workflows/*.lock.yml; then
+          if git diff --ignore-space-at-eol --quiet .github/workflows/*.lock.yml; then
             echo "✅ All agentic workflow lockfiles are up to date."
             exit 0
           fi
