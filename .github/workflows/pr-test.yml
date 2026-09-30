@@ -32,10 +32,9 @@ jobs:
           if [ -f "package.json" ]; then
             if grep -q '"test"' package.json; then
               TESTS_FOUND=true
-              echo "📦 Detected Node.js project. Running tests with coverage..."
+              echo "📦 Detected Node.js / TypeScript project. Running tests with coverage..."
               npm ci 2>/dev/null || npm install --prefer-offline --no-audit
               
-              # Run test suite with coverage if supported, otherwise standard test
               if npm run | grep -q "test:cov"; then
                 npm run test:cov
               elif npm test -- --coverage --coverageReporters="text-summary" 2>/dev/null; then
@@ -71,11 +70,49 @@ jobs:
             fi
           fi
 
-          # 4. Rust (cargo test)
+          # 4. Java / Kotlin (Maven / Gradle)
+          if [ -f "pom.xml" ]; then
+            TESTS_FOUND=true
+            echo "☕ Detected Maven Java/Kotlin project. Running tests..."
+            if [ -f "./mvnw" ]; then ./mvnw test; else mvn test; fi
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            TESTS_FOUND=true
+            echo "☕ Detected Gradle Java/Kotlin project. Running tests..."
+            if [ -f "./gradlew" ]; then ./gradlew test; else gradle test; fi
+          fi
+
+          # 5. C# / .NET (dotnet test)
+          if ls *.sln 1>/dev/null 2>&1 || ls *.csproj 1>/dev/null 2>&1; then
+            TESTS_FOUND=true
+            echo "🔷 Detected .NET project. Running dotnet test with coverage..."
+            dotnet test --collect:"XPlat Code Coverage"
+          fi
+
+          # 6. Rust (cargo test)
           if [ -f "Cargo.toml" ]; then
             TESTS_FOUND=true
             echo "🦀 Detected Rust project. Running cargo test..."
             cargo test
+          fi
+
+          # 7. Ruby (RSpec / Minitest)
+          if [ -f "Gemfile" ]; then
+            if [ -d "spec" ] || [ -d "test" ]; then
+              TESTS_FOUND=true
+              echo "💎 Detected Ruby project. Running tests..."
+              bundle install 2>/dev/null || true
+              bundle exec rspec 2>/dev/null || rake test
+            fi
+          fi
+
+          # 8. PHP (PHPUnit / Pest)
+          if [ -f "composer.json" ]; then
+            if [ -d "tests" ] || [ -f "phpunit.xml" ]; then
+              TESTS_FOUND=true
+              echo "🐘 Detected PHP project. Running tests..."
+              composer install --prefer-dist --no-progress 2>/dev/null || true
+              vendor/bin/phpunit --coverage-text 2>/dev/null || phpunit
+            fi
           fi
 
           if [ "$TESTS_FOUND" = "false" ]; then

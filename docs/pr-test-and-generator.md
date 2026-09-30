@@ -45,7 +45,11 @@ The deterministic test runner automatically discovers and executes test suites b
   - **JavaScript / TypeScript**: Discovers `package.json` test scripts (`npm test` / `npm run test:cov`).
   - **Python**: Discovers `pytest` / `unittest` test suites (`test_*.py`) and validates line coverage (`--cov-fail-under=80`).
   - **Go**: Discovers `go.mod` and executes `go test -v -coverprofile=coverage.out ./...`, validating that total line coverage meets or exceeds **80%**.
+  - **Java / Kotlin**: Discovers `pom.xml` (`mvn test`) or `build.gradle` (`gradle test jacocoTestReport`).
+  - **C# / .NET**: Discovers `*.csproj` or `*.sln` and executes `dotnet test --collect:"XPlat Code Coverage"`.
   - **Rust**: Discovers `Cargo.toml` and runs `cargo test`.
+  - **Ruby**: Discovers `Gemfile` and runs `bundle exec rspec` or `rake test`.
+  - **PHP**: Discovers `composer.json` and runs `phpunit --coverage-text`.
   - **Zero Noise**: Repositories without test suites or manifests skip cleanly without failing the check.
 - **Fail-Fast & Triggering Remediation**:
   - If test assertions fail, or if test coverage is below the **80% threshold**, the gatekeeper fails and attaches the **`test-required`** label.
@@ -70,7 +74,7 @@ When unit tests fail or code changes lack test coverage, this GitHub Agentic Wor
 | **Ruby** | `Gemfile` | RSpec, Minitest | `bundle exec rspec`, `rake test` |
 | **PHP** | `composer.json` | PHPUnit, Pest | `vendor/bin/phpunit --coverage-text` |
 
-### 5-Step Execution Protocol
+### Execution:
 1. **Detect Framework & Runner**: Identifies the project's testing ecosystem and coverage commands from manifests.
 2. **Analyze Uncovered PR Diff**: Evaluates newly added/modified functions, conditional branches, error paths, and existing test file conventions (co-located vs centralized).
 3. **Implement Comprehensive Tests**: Writes clean, idiomatic unit tests covering happy paths, boundary values, error scenarios, and proper mocks.
