@@ -65,6 +65,9 @@ The deterministic security gate leverages native GitHub Code Security features:
 
 ### 2b. PR CodeQL Fixer (`.github/workflows/pr-codeql-fixer.md`)
 - **Trigger**: Activates on the **`codeql-alert`** label.
-- **Analysis**: Inspects CodeQL alerts and source sink/taint paths via GitHub code scanning alerts and run logs.
-- **Remediation**: Refactors the code defensively (parameterizing queries, adding path sanitization, validating input) while preserving business logic.
-- **Safe Outputs**: Pushes the code patch to the PR branch, comments explaining the CWE remediation, and clears `codeql-alert`.
+- **GitHub Copilot Autofix Integration**:
+  - CodeQL generates alerts, and when **Copilot Autofix** is enabled in the repository, GitHub automatically creates an AI-generated fix suggestion for the alert.
+  - The fixer first queries `gh api repos/{owner}/{repo}/code-scanning/alerts/<alert-number>/autofix` or inspects PR review suggestions for an existing Copilot Autofix recommendation.
+  - If a valid Copilot Autofix suggestion exists, it validates and applies it directly.
+  - If Copilot Autofix is not enabled or no suggestion exists, the agent performs autonomous defensive refactoring (parameterizing queries, adding path sanitization, validating input) using CodeQL taint analysis.
+- **Safe Outputs**: Pushes the code patch to the PR branch, comments explaining the CWE remediation (and whether Copilot Autofix or autonomous refactoring was applied), and clears `codeql-alert`.
