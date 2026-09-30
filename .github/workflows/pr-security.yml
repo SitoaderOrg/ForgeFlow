@@ -89,44 +89,70 @@ jobs:
             const depReviewResult = "${{ needs.dependency-review.result }}";
             const codeqlResult = "${{ needs.codeql-analysis.result }}";
 
+            const labelsToAdd = [];
+            const labelsToRemove = [];
+
+            // Evaluate Dependency Review
+            if (depReviewResult === 'failure') {
+              if (!existingLabels.includes('dependency-alert')) {
+                labelsToAdd.push('dependency-alert');
+              }
+            } else if (existingLabels.includes('dependency-alert')) {
+              labelsToRemove.push('dependency-alert');
+            }
+
+            // Evaluate CodeQL SAST
+            if (codeqlResult === 'failure') {
+              if (!existingLabels.includes('codeql-alert')) {
+                labelsToAdd.push('codeql-alert');
+              }
+            } else if (existingLabels.includes('codeql-alert')) {
+              labelsToRemove.push('codeql-alert');
+            }
+
+            // Remove legacy security-alert label if present
+            if (existingLabels.includes('security-alert')) {
+              labelsToRemove.push('security-alert');
+            }
+
+            if (labelsToAdd.length > 0) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: labelsToAdd
+                });
+                core.info(`Applied security labels: ${labelsToAdd.join(', ')}`);
+              } catch (e) {
+                core.warning(`Failed to add labels: ${e.message}`);
+              }
+            }
+
+            for (const label of labelsToRemove) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: label
+                });
+                core.info(`Removed label: ${label}`);
+              } catch (e) {
+                core.warning(`Failed to remove label ${label}: ${e.message}`);
+              }
+            }
+
             const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure';
 
             if (hasFailure) {
-              if (!existingLabels.includes('security-alert')) {
-                try {
-                  await github.rest.issues.addLabels({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: prNumber,
-                    labels: ['security-alert']
-                  });
-                  core.info("Applied 'security-alert' label to trigger pr-security-fixer workflow.");
-                } catch (e) {
-                  core.warning(`Failed to add security-alert label: ${e.message}`);
-                }
-              }
-
               let summary = '### ❌ Security Gatekeeper Failed\n\n' +
-                '> 🛡️ **Autonomous Remediation**: Added `security-alert` label. The **PR Security Fixer** workflow will analyze the GitHub Code Security findings (CodeQL SAST or Dependency Review), remediate vulnerabilities or update manifests, and push fixes to your branch.\n\n' +
+                '> 🛡️ **Autonomous Remediation**: Added ' + (labelsToAdd.length > 0 ? labelsToAdd.map(l => `\`${l}\``).join(', ') : 'security') + ' label(s). Specialized remediator workflows will analyze findings, update manifests or code, and push fixes to your branch.\n\n' +
                 `- **Dependency Review**: ${depReviewResult}\n` +
                 `- **CodeQL SAST**: ${codeqlResult}\n`;
               await core.summary.addRaw(summary).write();
               core.setFailed('Security vulnerabilities or insecure dependencies detected.');
             } else {
-              if (existingLabels.includes('security-alert')) {
-                try {
-                  await github.rest.issues.removeLabel({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: prNumber,
-                    name: 'security-alert'
-                  });
-                  core.info("Removed 'security-alert' label as all security checks passed.");
-                } catch (e) {
-                  core.warning(`Failed to remove security-alert label: ${e.message}`);
-                }
-              }
-
               let summary = '### ✅ Security Gatekeeper Passed\n\n' +
                 'All GitHub Code Security checks passed successfully.\n';
               await core.summary.addRaw(summary).write();
