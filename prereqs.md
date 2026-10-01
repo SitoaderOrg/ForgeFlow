@@ -33,6 +33,8 @@ Navigate to **Settings → Code security and analysis**:
 ### Static Analysis & Secret Protection
 - **CodeQL analysis**: Set up (Default or Advanced setup)
   > **Why**: Enables SAST static code scanning in `pr-security.yml` and feeds alerts to `pr-codeql-fixer.md`.
+- **Copilot Autofix for CodeQL**: Enabled (optional but recommended)
+  > **Why**: Generates AI-powered code fix suggestions on CodeQL alerts, which `pr-codeql-fixer.md` directly inspects and leverages to assemble defensive patches in stacked remediation PRs.
 - **Secret scanning**: Enabled
 - **Push protection**: Enabled
   > **Why**: Prevents secret leaks and feeds detections to `pr-secret-fixer.md`.
@@ -90,5 +92,6 @@ When developing and compiling workflows locally:
 | **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |
 | **Security** | Secret scanning & push protection | Settings → Code security | Secret Scanning Gatekeeper |
 | **Security** | CodeQL analysis | Settings → Code security | SAST Security Gatekeeper |
+| **Security** | Copilot Autofix for CodeQL | Settings → Code security | AI fix suggestions for SAST alerts |
 | **AI / Copilot** | Copilot license & access | Organization / User Settings | Agentic reasoning & remediation |
 | **Workflows** | `allowed-base-branches: ["*"]` | `.github/workflows/*.md` | Stacked PR target branching |
