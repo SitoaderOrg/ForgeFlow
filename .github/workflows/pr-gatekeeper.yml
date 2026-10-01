@@ -1,8 +1,10 @@
 name: PR Gatekeeper
 
 on:
+  workflow_call:
+  # Triggered directly on manual dispatch or labeled events
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [labeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

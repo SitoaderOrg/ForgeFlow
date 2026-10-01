@@ -1,0 +1,74 @@
+name: PR Quality Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  security-events: write
+
+jobs:
+  # Stage 1: Pre-flight & Lint (~30s, fail fast)
+  gatekeeper:
+    name: "Stage 1a: Metadata"
+    uses: ./.github/workflows/pr-gatekeeper.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+  lint:
+    name: "Stage 1b: Linters"
+    needs: [gatekeeper]
+    uses: ./.github/workflows/pr-lint.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+  # Stage 2: Compilation & Build (~30s)
+  build:
+    name: "Stage 2: Build"
+    needs: [lint]
+    uses: ./.github/workflows/pr-build.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+  # Stage 3: Deep Verification in Parallel (~1-2m)
+  test:
+    name: "Stage 3a: Tests & Coverage"
+    needs: [build]
+    uses: ./.github/workflows/pr-test.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+  security:
+    name: "Stage 3b: Security & CodeQL"
+    needs: [build]
+    uses: ./.github/workflows/pr-security.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      security-events: write
+
+  # Stage 4: Copilot Code Review Dispatcher (only when all gates pass)
+  dispatcher:
+    name: "Stage 4: Review Dispatcher"
+    needs: [test, security]
+    uses: ./.github/workflows/pr-review-dispatcher.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write

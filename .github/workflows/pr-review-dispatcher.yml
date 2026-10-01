@@ -1,8 +1,10 @@
 name: PR Review & Consolidation Dispatcher
 
 on:
+  workflow_call:
+  # Also evaluates on unlabeled events when a blocking remediation is merged
   pull_request:
-    types: [opened, synchronize, reopened, labeled, ready_for_review]
+    types: [unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

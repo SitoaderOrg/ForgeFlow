@@ -45,13 +45,14 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ### 1. Standard GitHub Actions Workflows
 
-- **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles.
-- **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter.
-- **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts.
-- **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check.
-- **Security Scanning (`pr-security.yml`)**: CodeQL, Dependency Review, and Secret Scanning.
+- **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows in a clean staged DAG.
+- **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable).
+- **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter (reusable).
+- **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts (reusable).
+- **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check (reusable).
+- **Security Scanning (`pr-security.yml`)**: CodeQL, Dependency Review, and Secret Scanning (reusable).
+- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable).
 - **Stacked PR Auto-Merger (`pr-stacked-merge.yml`)**: Automatically merges verified remediation PRs into the feature branch.
-- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries.
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)
 
