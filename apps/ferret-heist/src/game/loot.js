@@ -34,8 +34,7 @@ export function generateLootList() {
     { type: 'keys', x: 620, y: 260 },
     { type: 'remote', x: 420, y: 350 },
     { type: 'sock', x: 670, y: 480 },
-    { type: 'ring', x: 710, y: 190 },
-      { "type": "watch", "x": 670, "y": 190 }   
+    { type: 'ring', x: 710, y: 190 }
   ];
 
   return lootPositions.map(

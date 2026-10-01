@@ -82,16 +82,7 @@ export const LOOT_TYPES = {
     weight: 0.05,
     speedMultiplier: 0.98,
     noise: 0
-  },
-     "watch": {
-         "type": "watch",   
-         "name": "Grandpa's Golden Pocket Watch",
-         "emoji": "⏱️",   
-         "points": 100,
-         "weight": 0.6,
-         "speedMultiplier": 0.70,   
-         "noise": 35
-     }
+  }
 };
 
 export const HUMAN_STATES = {
