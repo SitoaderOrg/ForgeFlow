@@ -8,7 +8,7 @@ This step implements security gates powered by **GitHub Code Security** combined
 
 ```mermaid
 flowchart TD
-    PR[PR Created / Synchronized] --> SecGate[1. Security Gatekeeper\n.github/workflows/pr-security.yml]
+    BuildPass[Stage 2 Passed: Build OK] --> SecGate[Stage 3b: Security Gatekeeper\n.github/workflows/pr-security.yml]
     
     subgraph GitHub_Code_Security [GitHub Code Security Engines]
         SecGate --> DepReview[Dependency Review Action\nChecks PR diff for CVEs / license issues]
@@ -20,24 +20,22 @@ flowchart TD
     CodeQL -->|❌ Code Vulnerability| AddCodeqlLabel[Apply 'codeql-alert' Label]
     SecScan -->|❌ Hardcoded Secret| AddSecretLabel[Apply 'secret-alert' Label]
 
-    AddDepLabel --> DepFixer[2a. Autonomous Dependency Fixer\n.github/workflows/pr-dependency-fixer.md]
+    AddDepLabel --> DepFixer[Autonomous Dependency Fixer\n.github/workflows/pr-dependency-fixer.md]
     DepFixer --> BumpDep[Bump to Minimum Secure Versions in Manifest]
-    DepFixer --> StackedPRDep[Create Batched Stacked PR\nItemized commit titles per dependency]
+    DepFixer --> StackedPRDep[Create Stacked PR: security-remediation]
 
-    AddCodeqlLabel --> CodeqlFixer[2b. Autonomous CodeQL Fixer\n.github/workflows/pr-codeql-fixer.md]
+    AddCodeqlLabel --> CodeqlFixer[Autonomous CodeQL Fixer\n.github/workflows/pr-codeql-fixer.md]
     CodeqlFixer --> AutofixCheck[Query Copilot Autofix or Synthesize Fix]
-    CodeqlFixer --> StackedPRCodeql[Create Batched Stacked PR\nItemized commit titles per vulnerability]
+    CodeqlFixer --> StackedPRCodeql[Create Stacked PR: security-remediation]
 
-    AddSecretLabel --> SecretFixer[2c. Autonomous Secret Fixer\n.github/workflows/pr-secret-fixer.md]
+    AddSecretLabel --> SecretFixer[Autonomous Secret Fixer\n.github/workflows/pr-secret-fixer.md]
     SecretFixer --> ScrubSecret[Scrub Secrets & Add Env Var Lookups]
-    SecretFixer --> StackedPRSecret[Create Batched Stacked PR\nItemized commit titles per secret]
+    SecretFixer --> StackedPRSecret[Create Stacked PR: security-remediation]
 
-    StackedPRDep --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml]
-    StackedPRCodeql --> AutoMerge
-    StackedPRSecret --> AutoMerge
+    StackedPRDep & StackedPRCodeql & StackedPRSecret --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit, clears security labels & posts audit link]
 
-    AutoMerge --> Recheck([Feature Branch Updated & Security Gate Re-evaluated])
-    Recheck -->|✅ Passed| ClearLabels[Security Gatekeeper Clears Labels]
+    AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
+```
 ```
 
 ---

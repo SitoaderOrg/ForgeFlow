@@ -8,7 +8,7 @@ This step implements automated testing and coverage validation combined with an 
 
 ```mermaid
 flowchart TD
-    PR[PR Created / Synchronized] --> TestGate[1. Tests & Coverage Gatekeeper\n.github/workflows/pr-test.yml]
+    BuildPass[Stage 2 Passed: Build OK] --> TestGate[Stage 3a: Tests & Coverage Gatekeeper\n.github/workflows/pr-test.yml]
     
     TestGate --> PolyglotDetect{Detect Test Runner}
     PolyglotDetect -->|Node.js / TS| RunNpm[npm test]
@@ -17,22 +17,21 @@ flowchart TD
     PolyglotDetect -->|Rust| RunCargo[cargo test]
     PolyglotDetect -->|No tests configured| PassClean[Pass Cleanly / Skip]
 
-    RunNpm --> StatusCheck{All Tests Pass?}
+    RunNpm --> StatusCheck{All Tests Pass & >=80%?}
     RunPytest --> StatusCheck
     RunGo --> StatusCheck
     RunCargo --> StatusCheck
 
-    StatusCheck -->|✅ Pass| NextGate[Downstream CI Gates\nSecurity, Docs, Review]
-    StatusCheck -->|❌ Tests Fail / Missing| AddLabel[Apply 'test-required' Label\nFail Fast / Halt Pipeline]
+    StatusCheck -->|✅ Pass| NextGate[Stage 4: Copilot Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
+    StatusCheck -->|❌ Tests Fail / <80% Coverage| AddLabel[Apply 'test-required' Label\nFail Fast / Halt Pipeline]
 
-    AddLabel --> Generator[2. Autonomous Test Generator\n.github/workflows/pr-test-generator.md]
+    AddLabel --> Generator[Autonomous Test Generator\n.github/workflows/pr-test-generator.md]
     Generator --> Inspect[Inspect PR Diff & Failed Test Logs]
     Generator --> Synthesize[Synthesize Idiomatic Unit Tests\nCover boundary cases & edge scenarios]
-    Generator --> StackedPR[Create Batched Stacked PR\nTargeting author's feature branch]
+    Generator --> StackedPR[Create Stacked PR targeting feature branch\nTagged: test-remediation]
 
-    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml]
-    AutoMerge --> Recheck([Feature Branch Updated & Tests Re-evaluated])
-    Recheck -->|✅ Passed| ClearLabel[Gatekeeper Clears 'test-required']
+    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit, clears label & posts audit link]
+    AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
 ```
 
 ---

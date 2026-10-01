@@ -19,10 +19,10 @@ flowchart TD
     SemanticEval -->|Docs Missing for Public API/Schema/Logic| ApplyLabel[Apply 'docs-required' Label]
 
     ApplyLabel --> AuthorDocs[Draft Idiomatic Markdown & API Usage]
-    AuthorDocs --> StackedPR[Open Batched Stacked PR\nTargeting author's feature branch]
+    AuthorDocs --> StackedPR[Open Stacked PR on Feature Branch\nTagged: doc-remediation]
 
-    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml]
-    AutoMerge --> Recheck([Feature Branch Updated & Checks Re-evaluated])
+    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit, clears docs-required & posts audit link]
+    AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
     Recheck --> DoneNoAction
 ```
 

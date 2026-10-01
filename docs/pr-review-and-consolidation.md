@@ -27,19 +27,19 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ```mermaid
 flowchart TD
-    PR[Contributor Opens PR] --> Gates[Gates Run: Lint, Build, Test, Sec, Docs]
+    PR[Contributor Opens PR] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml\nStages 1-3: Lint, Build, Test, Sec, Docs]
     
-    Gates -->|Fails / Alerts| Agents[Agents Open Stacked PRs\n- Unit Tests\n- Security Patches\n- Markdown Docs]
+    Pipeline -->|Fails / Alerts| Agents[Remediation Agents Open Stacked PRs\n- Unit Tests: test-remediation\n- Security Patches: security-remediation\n- Markdown Docs: doc-remediation]
     
     subgraph Auto_Consolidation [Review & Auto-Consolidation Stage]
-        Agents --> AutoMerge[Auto-Merge Validated Stacked PRs\n.github/workflows/pr-stacked-merge.yml]
+        Agents --> AutoMerge[Auto-Merge Validated Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash commit & clear remediation labels]
         AutoMerge --> CommentParent[Post Audit Trail Comment on Parent PR\nDirect links to merged PR & commit SHA]
     end
 
     AutoMerge --> SyncBranch[Feature Branch Synchronized & Updated]
-    SyncBranch --> Gates
+    SyncBranch --> Pipeline
 
-    Gates -->|✅ All Gates Pass| Dispatcher[Review & Consolidation Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
+    Pipeline -->|✅ All Gates Pass & Labels Cleared| Dispatcher[Stage 4: Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
 
     Dispatcher --> RequestCopilot[Request GitHub Copilot Code Review\nDeep semantic & architectural analysis]
     Dispatcher --> PostSummary[Post Consolidated Summary on Parent PR\nItemized links to all auto-merged PRs]

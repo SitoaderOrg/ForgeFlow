@@ -8,7 +8,7 @@ This gatekeeper validates that pull requests compile and build without errors be
 
 ```mermaid
 flowchart TD
-    PR[PR Created / Synchronized] --> BuildGate[Build Gatekeeper\n.github/workflows/pr-build.yml]
+    Stage1Pass[Stage 1 Passed: Gatekeeper & Lint] --> BuildGate[Stage 2: Build Gatekeeper\n.github/workflows/pr-build.yml]
     
     BuildGate --> DetectLang{Detect Ecosystem}
     DetectLang -->|Node.js / TS| BuildNode[npm run build / npx tsc --noEmit]
@@ -25,7 +25,7 @@ flowchart TD
     BuildDotnet --> StatusCheck
 
     StatusCheck -->|❌ Compile Error| AddLabel[Apply 'build-failed' Label\nFail Fast / Halt Pipeline]
-    StatusCheck -->|✅ Build Success| ClearLabel[Clear 'build-failed' Label\nProceed to Parallel Gates]
+    StatusCheck -->|✅ Build Success| ClearLabel[Clear 'build-failed' Label\nProceed to Stage 3 Parallel Gates]
 ```
 
 ---

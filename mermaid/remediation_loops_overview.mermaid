@@ -1,27 +1,30 @@
 flowchart LR
-    subgraph CI [Standard CI Gates]
-        Gate[PR Gatekeeper]
-        Lint[Linters]
-        Build[Build Verification]
-        Test[Coverage < 80%]
-        Sec[CodeQL / GHAS]
-        Doc[Doc Drift]
+    subgraph Orchestrator [PR Pipeline DAG]
+        S1[Stage 1: Gatekeeper & Lint]
+        S2[Stage 2: Build Verification]
+        S3[Stage 3: Tests, Security, Docs]
     end
 
-    subgraph GHAW [gh-aw Agentic Remediation Loops]
+    subgraph DirectFix [Direct Fixes]
+        A1[Agent: Fix Metadata via API]
+        A2[Agent: Commit Lint Fix to Branch]
+    end
+
+    subgraph StackedRemediation [Autonomous Stacked Remediation]
         direction TB
-        A1[Agent: Enrich / Fix PR Metadata]
-        A2[Agent: Auto-fix Formatting]
-        A4[Agent: Generate Missing Unit Tests]
-        A3[Agent / Copilot Autofix: Patch Vulns]
-        A5[Agent: Generate / Update Docs]
+        A4[Agent: Generate Unit Tests]
+        A3[Agent / Autofix: Patch Vulns]
+        A5[Agent: Generate Docs]
+        StackedMerge[Auto-Merge & Link to Parent PR]
     end
 
-    Gate -->|Fail| A1 -->|Update PR| CI
-    Lint -->|Fail| A2 -->|Commit Fix| CI
-    Build -->|Fail| CI
-    Test -->|Fail| A4 -->|Stacked PR| AutoMerge[Auto-Merge & Link] --> CI
-    Sec  -->|Alert| A3 -->|Stacked PR| AutoMerge --> CI
-    Doc  -->|Fail| A5 -->|Stacked PR| AutoMerge --> CI
+    S1 -->|needs-metadata| A1 -->|Update PR| S1
+    S1 -->|lint-failed| A2 -->|Commit Fix| S1
+    S1 -->|Pass| S2 -->|Pass| S3
 
-    CI -->|All Pass| Dispatcher[Dispatcher: Summary & Copilot Review] --> Review[Developer Final Sign-Off & Merge]
+    S3 -->|test-required| A4 --> StackedMerge
+    S3 -->|security alerts| A3 --> StackedMerge
+    S3 -->|docs-required| A5 --> StackedMerge
+    StackedMerge -->|Squash, clear label & audit link| S1
+
+    S3 -->|All Pass & Settled| Dispatcher[Stage 4: Review Dispatcher] --> Review[Developer Final Sign-Off & Merge]

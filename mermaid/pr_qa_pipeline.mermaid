@@ -1,24 +1,39 @@
 flowchart TD
-    PR[Pull Request Created] --> Gate[1. PR Gatekeepers]
-    Gate -->|Pass| Parallel{Automated Checks}
-    Gate -->|Fail| Block[❌ Block PR: CI Halted]
+    PR[Pull Request Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
 
-    subgraph CI_Quality [Automated Quality & Security Gates]
-        Parallel --> Lint[2. Linters & Formatters]
-        Parallel --> Build[3. Build & Compilation Gate]
-        Parallel --> Tests[4. Tests & Coverage Gate]
-        Parallel --> CodeQuality[5. Code Quality & Security\n- CodeQL static rules\n- Secret & Dep scanning]
-        Parallel --> DocEval[6. Semantic Doc Evaluation\ngh-aw agentic evaluator]
+    subgraph Stage1 [Stage 1: Pre-Flight & Syntax Gate ~30s]
+        Pipeline --> Gate[1. PR Gatekeeper\nMetadata & branch convention]
+        Gate -->|Pass| Lint[2. Linters & Formatters\nSuper-Linter / ESLint / Prettier]
+        Gate -->|Fail: needs-metadata| FixMeta[🤖 PR Validation Agent\nDirect API Update]
+        Lint -->|Fail: lint-failed| FixLint[🤖 PR Lint Fixer\nDirect Commit Push]
     end
 
-    CI_Quality -->|Remediations Generated| AutoConsolidate[7. Auto-Merge Stacked PRs\nSquash into feature branch & post audit links]
-    AutoConsolidate --> Parallel
-    CI_Quality -->|All Automated Checks Pass| ReviewStage{Review Stage}
+    subgraph Stage2 [Stage 2: Build Verification ~30s]
+        Lint -->|Pass| Build[3. Build & Compilation Gate\nNode/TS, Go, Rust, Java, .NET]
+        Build -->|Fail: build-failed| BlockBuild[❌ Pipeline Halted]
+    end
 
-    subgraph Code_Review [Code Review Stage]
-        ReviewStage --> Dispatcher[8. PR Review Dispatcher\nPost summary & assign Copilot]
-        Dispatcher --> CopilotReview[GitHub Copilot Code Review\n- AI semantic & architecture review\n- 1-click commit suggestions]
-        CopilotReview --> HumanReview[Human Peer Review & Sign-Off\n- Final business check & merge]
+    subgraph Stage3 [Stage 3: Deep Verification in Parallel ~1-2m]
+        Build -->|Pass| Tests[4. Tests & Coverage Gate\nDiff-scoped >= 80%]
+        Build -->|Pass| Security[5. Code Quality & Security\nCodeQL SAST, Dep Review, Secrets]
+        Build -->|Pass| DocEval[6. Semantic Doc Evaluation\ngh-aw agentic evaluator]
+    end
+
+    subgraph Auto_Consolidation [Autonomous Remediation & Auto-Merge]
+        Tests -->|test-required| AgentTest[🤖 PR Test Generator]
+        Security -->|alerts| AgentSec[🤖 PR Security Fixers]
+        DocEval -->|docs-required| AgentDoc[🤖 PR Doc Updater]
+        AgentTest & AgentSec & AgentDoc --> StackedPRs[Stacked PRs targeting feature branch]
+        StackedPRs --> AutoConsolidate[7. Auto-Merge Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash into feature branch, clear labels & post audit links]
+    end
+
+    AutoConsolidate --> Pipeline
+    FixMeta & FixLint --> Pipeline
+
+    subgraph Code_Review [Stage 4: Review & Final Sign-Off]
+        Tests & Security & DocEval -->|All Gates Pass & Labels Cleared| Dispatcher[8. PR Review Dispatcher\nPost consolidated summary]
+        Dispatcher --> CopilotReview[GitHub Copilot Code Review\nAI semantic & architecture review\n1-click commit suggestions]
+        CopilotReview --> HumanReview[Human Peer Review & Sign-Off\nSingle review session for all changes]
     end
 
     HumanReview --> Merge([🚀 Merge into Main])

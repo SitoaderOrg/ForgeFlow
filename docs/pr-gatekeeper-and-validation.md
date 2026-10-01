@@ -8,16 +8,17 @@ This step implements a fail-fast pre-flight check combined with an autonomous AI
 
 ```mermaid
 flowchart TD
-    PR[PR Created / Synchronized] --> Gatekeeper[1. Fast Gatekeeper\n.github/workflows/pr-gatekeeper.yml]
+    PR[PR Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
+    Pipeline --> Gatekeeper[Stage 1a: Fast Gatekeeper\n.github/workflows/pr-gatekeeper.yml]
     
-    Gatekeeper -->|✅ All Checks Pass| DownstreamCI[Run Parallel CI Gates\nTests, Security, Linters]
+    Gatekeeper -->|✅ All Checks Pass| DownstreamCI[Stage 1b: Linters\nFollowed by Build, Tests, Security]
     Gatekeeper -->|❌ Incomplete Metadata| AddLabel[Apply 'needs-metadata' Label\nFail Fast / Halt Pipeline]
     
-    AddLabel --> Assistant[2. Autonomous gh-aw Workflow\n.github/workflows/pr-validation.md]
+    AddLabel --> Assistant[Autonomous gh-aw Workflow\n.github/workflows/pr-validation.md]
     Assistant --> Analyze[Inspect git diff & commit history]
     Analyze --> Generate[Draft Conventional Title &\nFill .github/pull_request_template.md]
-    Generate --> SafeOutputs[Safe Outputs Execution:\n- Update PR title & description\n- Post explanatory comment\n- Remove 'needs-metadata' label]
-    SafeOutputs --> Recheck([PR Updated & Re-evaluated])
+    Generate --> SafeOutputs[Safe Outputs Execution:\n- Update PR title & description via API\n- Post explanatory comment\n- Remove 'needs-metadata' label]
+    SafeOutputs --> Recheck([PR Updated & Pipeline Re-triggered])
 ```
 
 ---

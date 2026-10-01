@@ -8,16 +8,16 @@ This step implements a language-agnostic code quality gate combined with an auto
 
 ```mermaid
 flowchart TD
-    PR[PR Created / Synchronized] --> Linter[1. Deterministic Linter Gate\n.github/workflows/pr-lint.yml]
+    GatekeeperPass[Stage 1a Passed] --> Linter[Stage 1b: Deterministic Linter Gate\n.github/workflows/pr-lint.yml]
     
-    Linter -->|✅ All Linters Pass| NextGate[Downstream CI Gates\nTests, Security, Build]
+    Linter -->|✅ All Linters Pass| NextStage[Stage 2: Build Verification\n.github/workflows/pr-build.yml]
     Linter -->|❌ Lint / Style Failure| AddLabel[Apply 'lint-failed' Label\nFail Fast / Halt Pipeline]
     
-    AddLabel --> Fixer[2. Autonomous gh-aw Workflow\n.github/workflows/pr-lint-fixer.md]
+    AddLabel --> Fixer[Autonomous gh-aw Workflow\n.github/workflows/pr-lint-fixer.md]
     Fixer --> Inspect[Inspect PR Diff & Failed Linter Logs]
     Fixer --> Remediate[Format Code & Correct Lint Violations]
     Fixer --> SafeOutputs[Safe Outputs Execution:\n- Push fix directly to PR branch\n- Post explanatory comment\n- Remove 'lint-failed' label]
-    SafeOutputs --> Recheck([PR Updated & Re-evaluated])
+    SafeOutputs --> Recheck([PR Updated & Pipeline Re-triggered])
 ```
 
 ---
