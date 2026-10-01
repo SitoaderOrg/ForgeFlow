@@ -48,10 +48,12 @@ export class Ferret {
     return dropped;
   }
 
-  getEffectiveSpeed() {
+  getEffectiveSpeed(speedBonus = 1.0) {
     let speed = this.isDancing
       ? FERRET_CONFIG.danceSpeed
       : FERRET_CONFIG.baseSpeed;
+
+    speed *= speedBonus;
 
     if (this.carriedItem) {
       speed *= this.carriedItem.speedMultiplier || 0.9;
@@ -101,7 +103,7 @@ export class Ferret {
     return false;
   }
 
-  update(keys = {}, dt = 1) {
+  update(keys = {}, dt = 1, speedBonus = 1.0) {
     let dx = 0;
     let dy = 0;
 
@@ -135,7 +137,7 @@ export class Ferret {
       }
     }
 
-    const currentSpeed = this.getEffectiveSpeed();
+    const currentSpeed = this.getEffectiveSpeed(speedBonus);
 
     if (dx !== 0 || dy !== 0) {
       const len = Math.hypot(dx, dy);

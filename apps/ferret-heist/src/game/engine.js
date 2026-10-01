@@ -4,6 +4,7 @@ import { Human } from './human.js';
 import { Vacuum } from './vacuum.js';
 import { Stash } from './stash.js';
 import { generateLootList } from './loot.js';
+import { PowerUpManager } from './powerup.js';
 
 export class GameEngine {
   constructor(options = {}) {
@@ -13,6 +14,8 @@ export class GameEngine {
     this.vacuum = new Vacuum();
     this.lootList = generateLootList();
     this.stash = new Stash(5);
+    this.powerUpManager = new PowerUpManager();
+    this.powerUpManager.spawnPowerUp(200, 250);
     this.message = 'Sneak around, steal shiny things, and stash them under the couch!';
     this.messageTimer = 300;
     this.level = 1;
@@ -34,6 +37,8 @@ export class GameEngine {
     this.vacuum = new Vacuum();
     this.lootList = generateLootList();
     this.stash = new Stash(5);
+    this.powerUpManager = new PowerUpManager();
+    this.powerUpManager.spawnPowerUp(200, 250);
     this.state = GAME_STATES.PLAYING;
     this.caughtCount = 0;
     this.setMessage('Fresh heist started! Be stealthy!');
@@ -66,11 +71,22 @@ export class GameEngine {
     }
 
     const wasDancing = this.ferret.isDancing;
-    this.ferret.update(input, dt);
+    const speedMultiplier = this.powerUpManager ? this.powerUpManager.getSpeedMultiplier() : 1.0;
+    this.ferret.update(input, dt, speedMultiplier);
 
     if (!wasDancing && this.ferret.isDancing) {
       this.onEvent('wardance');
       this.setMessage('WEASEL WAR DANCE! CHAOS ENGAGED! 🐾🌀');
+    }
+
+    // Power-up check and update
+    if (this.powerUpManager) {
+      const buff = this.powerUpManager.collectAt(this.ferret.x, this.ferret.y, 28);
+      if (buff) {
+        this.onEvent('powerup', buff);
+        this.setMessage(`Munched ${buff.name}! ${buff.emoji} Power boost!`);
+      }
+      this.powerUpManager.update(dt, this.ferret, this.lootList);
     }
 
     // 1. Loot pickup
@@ -121,7 +137,8 @@ export class GameEngine {
     }
 
     // 4. Human alert & spotting
-    const spotted = this.human.update(this.ferret, dt);
+    const isStealthed = this.powerUpManager && this.powerUpManager.isStealthActive();
+    const spotted = !isStealthed && this.human.update(this.ferret, dt);
     if (spotted && !this.ferret.isHiding) {
       this.caughtCount++;
       const dropped = this.ferret.dropItem();

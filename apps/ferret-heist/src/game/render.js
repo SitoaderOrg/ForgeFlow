@@ -40,6 +40,11 @@ export class GameRenderer {
     // 7. Draw Loot items on floor
     this.drawLoot(ctx, engine.lootList);
 
+    // 7b. Draw Power-Up snacks
+    if (engine.powerUpManager) {
+      this.drawPowerUps(ctx, engine.powerUpManager.activePowerUps);
+    }
+
     // 8. Draw Ferret
     this.drawFerret(ctx, engine.ferret);
 
@@ -206,6 +211,26 @@ export class GameRenderer {
     } else if (human.state === HUMAN_STATES.AWAKE) {
       ctx.fillStyle = '#ef4444';
       ctx.fillText('❗👀', human.x - 18, human.y - 32);
+    }
+  }
+
+  drawPowerUps(ctx, powerUps = []) {
+    for (const p of powerUps) {
+      if (p.isCollected) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 215, 0, 0.25)';
+      ctx.fill();
+      ctx.strokeStyle = '#ffd700';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.font = '18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(p.emoji, p.x, p.y);
+      ctx.restore();
     }
   }
 
