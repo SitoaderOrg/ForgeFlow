@@ -19,13 +19,23 @@ Navigate to **Settings → Actions → General**:
 
 Navigate to **Settings → Code security and analysis**:
 
+### Dependency Management
 - **Dependency Graph**: Enabled
+- **Automatic dependency submission**: Enabled
+  > **Why**: Detects build-time and dynamic dependencies resolved during compilation, ensuring complete coverage for the Dependency Review gatekeeper.
 - **Dependabot alerts**: Enabled
-- **Dependabot security updates**: Enabled (optional but recommended)
+  > **Why**: Powers the vulnerability database checked by `pr-security.yml` (Dependency Review) during PR checks.
+- **Dependabot malware alerts**: Enabled
+  > **Why**: Flags malicious packages and software supply-chain compromises.
+- **Dependabot security updates**: Enabled (optional)
+  > **How it works alongside our flow**: Dependabot patches *existing* dependencies on `main` over time, while our `pr-dependency-fixer.md` autonomously intercepts and patches vulnerable packages *inside the active PR diff* before they reach `main`. They are fully complementary with zero conflicts.
+
+### Static Analysis & Secret Protection
 - **CodeQL analysis**: Set up (Default or Advanced setup)
+  > **Why**: Enables SAST static code scanning in `pr-security.yml` and feeds alerts to `pr-codeql-fixer.md`.
 - **Secret scanning**: Enabled
 - **Push protection**: Enabled
-  > **Why**: Enables `pr-security.yml` to run CodeQL SAST, Dependency Review, and Secret Scanning to catch vulnerabilities before merge.
+  > **Why**: Prevents secret leaks and feeds detections to `pr-secret-fixer.md`.
 
 ---
 
@@ -76,7 +86,9 @@ When developing and compiling workflows locally:
 | **Actions** | Read and write permissions | Settings → Actions → General | Auto-merging & labeling PRs |
 | **Actions** | Allow Actions to create & approve PRs | Settings → Actions → General | Stacked remediation PRs |
 | **Security** | Dependency graph & alerts | Settings → Code security | Dependency Review Gatekeeper |
-| **Security** | Secret scanning | Settings → Code security | Secret Scanning Gatekeeper |
+| **Security** | Automatic dependency submission | Settings → Code security | Build-time dependency detection |
+| **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |
+| **Security** | Secret scanning & push protection | Settings → Code security | Secret Scanning Gatekeeper |
 | **Security** | CodeQL analysis | Settings → Code security | SAST Security Gatekeeper |
 | **AI / Copilot** | Copilot license & access | Organization / User Settings | Agentic reasoning & remediation |
 | **Workflows** | `allowed-base-branches: ["*"]` | `.github/workflows/*.md` | Stacked PR target branching |
