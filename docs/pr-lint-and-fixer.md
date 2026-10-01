@@ -29,7 +29,7 @@ The linter gate uses GitHub's official **Super-Linter** to provide out-of-the-bo
 - **Universal & Polyglot**: Automatically detects languages in the repository (JavaScript, TypeScript, Python, Go, Rust, Java, C#, Shell, JSON, YAML, etc.) and executes the appropriate linters.
 - **Tuned & Noise-Free**:
   - Excludes noisy non-code linters (`VALIDATE_CHECKOV: false`, `VALIDATE_MARKDOWN: false`, `VALIDATE_NATURAL_LANGUAGE: false`, `VALIDATE_JSCPD: false`) to keep focus on code logic and formatting.
-  - Skips internal metadata paths (`.github/`, `docs/`, `mermaid/`, `*.lock.yml`, and temp logs) via `FILTER_REGEX_EXCLUDE`.
+  - Skips internal metadata paths (`.github/`, `docs/`, `*.lock.yml`, and temp logs) via `FILTER_REGEX_EXCLUDE`.
 - **Diff-Aware**: Sets `VALIDATE_ALL_CODEBASE: false` to only inspect changed files in the PR, minimizing runtime and avoiding legacy repo-wide noise.
 - **Fail-Fast & Triggering Remediation**:
   - If any linter detects errors, the workflow marks the job as failed and automatically attaches the **`lint-failed`** label to the PR.

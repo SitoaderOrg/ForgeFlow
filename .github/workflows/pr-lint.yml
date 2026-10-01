@@ -31,7 +31,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATE_ALL_CODEBASE: false
           # Ignore auto-generated lockfiles, docs, diagrams, and temp logs
-          FILTER_REGEX_EXCLUDE: '(\.lock\.yml|wf-log\.md|docs/|mermaid/|\.github/)'
+          FILTER_REGEX_EXCLUDE: '(\.lock\.yml|wf-log\.md|docs/|\.github/)'
           # Disable noisy or non-code linters to focus on source code & logic
           VALIDATE_CHECKOV: false
           VALIDATE_NATURAL_LANGUAGE: false
