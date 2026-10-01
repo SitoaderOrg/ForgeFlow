@@ -29,7 +29,7 @@ features:
 safe-outputs:
   create-pull-request:
     title-prefix: "test: "
-    labels: ["test-remediation", "human-review-needed"]
+    labels: ["test-remediation"]
     allowed-base-branches: ["*"]
   add-comment:
     max: 1

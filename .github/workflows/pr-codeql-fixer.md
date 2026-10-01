@@ -29,7 +29,7 @@ features:
 safe-outputs:
   create-pull-request:
     title-prefix: "fix(security): "
-    labels: ["security-remediation", "human-review-needed"]
+    labels: ["security-remediation"]
     allowed-base-branches: ["*"]
   add-comment:
     max: 1

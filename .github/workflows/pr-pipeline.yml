@@ -18,6 +18,11 @@ jobs:
   # Stage 1: Pre-flight & Lint (~30s, fail fast)
   gatekeeper:
     name: "Stage 1a: Metadata"
+    # Skip full pipeline execution on internal stacked remediation PRs
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'test-remediation') &&
+      !contains(github.event.pull_request.labels.*.name, 'security-remediation') &&
+      !contains(github.event.pull_request.labels.*.name, 'doc-remediation')
     uses: ./.github/workflows/pr-gatekeeper.yml
     permissions:
       contents: read

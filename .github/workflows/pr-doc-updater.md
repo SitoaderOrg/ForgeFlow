@@ -29,7 +29,7 @@ features:
 safe-outputs:
   create-pull-request:
     title-prefix: "docs: "
-    labels: ["doc-remediation", "human-review-needed"]
+    labels: ["doc-remediation"]
     allowed-base-branches: ["*"]
   add-labels:
     allowed: ["docs-required"]
