@@ -45,13 +45,9 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ### 1. Standard GitHub Actions Workflows
 
-- **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles.
-- **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter.
-- **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts.
-- **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check.
-- **Security Scanning (`pr-security.yml`)**: CodeQL, Dependency Review, and Secret Scanning.
+- **PR Quality Pipeline (`pr-quality-pipeline.yml`)**: Single consolidated DAG workflow running staged validation (Stage 1: Pre-flight & Lint -> Stage 2: Build & Compilation -> Stage 3: Tests, Security & Docs in parallel).
 - **Stacked PR Auto-Merger (`pr-stacked-merge.yml`)**: Automatically merges verified remediation PRs into the feature branch.
-- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries.
+- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Triggers only when all quality gates are green to request Copilot code review and post consolidated audit summaries.
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)
 

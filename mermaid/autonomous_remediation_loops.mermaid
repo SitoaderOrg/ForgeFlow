@@ -1,47 +1,37 @@
 flowchart TD
-    Start([PR Created / Synchronize]) --> Gate[1. PR Gatekeepers\n- Branch name check\n- PR template check]
-    
-    Gate -->|Pass| ParallelRuns{Parallel CI Execution}
-    Gate -->|Fail| BlockGate[❌ CI Halted / PR Blocked\nNo further checks run]
+    Start([PR Created / Synchronized]) --> Pipeline[PR Quality Pipeline\n.github/workflows/pr-quality-pipeline.yml]
 
-    subgraph FastValidation [Fast Feedback]
-        ParallelRuns --> Lint[2. Linters & Formatters\n- Prettier, ESLint, Style]
-        ParallelRuns --> Build[3. Build Verification\n- TypeScript, Go, Rust, .NET]
+    subgraph Stage1 [Stage 1: Pre-Flight & Syntax Validation ~30s]
+        Pipeline --> Gate[1. PR Gatekeeper\n- Branch name & template check]
+        Gate -->|Pass| Lint[2. Linters & Formatters\n- Super-Linter / ESLint / Prettier]
+        Gate -->|Fail| GateFail[Apply 'needs-metadata'\nHalt pipeline]
+        Lint -->|Fail| LintFail[Apply 'lint-failed'\nHalt pipeline]
     end
 
-    subgraph TestCoverage [Test & Coverage Gate]
-        ParallelRuns --> Test[4. Automated Tests & Coverage\n- Diff-scoped >= 80% coverage]
+    subgraph Stage2 [Stage 2: Build & Compilation ~30s]
+        Lint -->|Pass| Build[3. Build Verification\n- TypeScript, Go, Rust, .NET]
+        Build -->|Fail| BuildFail[Apply 'build-failed'\nHalt pipeline]
     end
 
-    subgraph SecurityScan [GHAS Security - Dedicated]
-        ParallelRuns --> Sec[5. Security & Quality\n- Secret Scanning\n- CodeQL SAST\n- Dependabot]
+    subgraph Stage3 [Stage 3: Deep Verification in Parallel ~1-2m]
+        Build -->|Pass| DeepChecks{Parallel Stage 3}
+        DeepChecks --> Test[4. Automated Tests & Coverage\n- Diff-scoped >= 80% coverage]
+        DeepChecks --> Sec[5. Security & Quality\n- CodeQL SAST, Dep Review, Secrets]
+        DeepChecks --> DocEval[6. PR Documentation Evaluator\n- gh-aw semantic evaluation]
     end
 
-    subgraph SemanticEvaluation [Semantic Evaluation]
-        ParallelRuns --> DocEval[6. PR Documentation Evaluator\n- Evaluates API & logic changes]
-    end
+    %% Remediation loops
+    GateFail --> AgentMeta[🤖 PR Validation Agent]
+    LintFail --> AgentLint[🤖 PR Lint Fixer]
+    Test -->|< 80% Coverage| CovFail[Apply 'test-required'] --> AgentTest[🤖 PR Test Generator\nStacked PR]
+    Sec -->|Alerts| SecFail[Apply 'codeql-alert' / 'dependency-alert'] --> AgentSec[🤖 PR Security Fixers\nStacked PR]
+    DocEval -->|Docs Missing| DocFail[Apply 'docs-required'] --> AgentDoc[🤖 PR Documentation Updater\nStacked PR]
 
-    %% Test failure loop
-    Test -->|< 80% Coverage| CovFail[Exit 1: Output uncovered lines\nApply label: 'test-required']
-    CovFail --> AgentTest[🤖 PR Test Generator\nTrigger: PR labeled 'test-required']
-    AgentTest --> RunCopilotTest[Copilot analyzes diff & test logs\nGenerates unit tests >= 80% coverage\nOpens Stacked Remediation PR]
-    RunCopilotTest --> AutoMergeTest[Auto-Merge Stacked PR into Branch\n.github/workflows/pr-stacked-merge.yml]
-    AutoMergeTest --> Start
+    AgentTest & AgentSec & AgentDoc --> AutoMerge[Auto-Merge Stacked PR into Branch\n.github/workflows/pr-stacked-merge.yml]
+    AutoMerge --> Start
 
-    %% Doc semantic evaluation loop
-    DocEval -->|Docs Missing for APIs/Schemas| AgentDoc[🤖 PR Documentation Updater\nTrigger: PR opened / sync / labeled]
-    AgentDoc --> RunCopilotDoc[Copilot analyzes diff & APIs\nDrafts Markdown guides & examples\nOpens Stacked Remediation PR]
-    RunCopilotDoc --> AutoMergeDoc[Auto-Merge Stacked PR into Branch\n.github/workflows/pr-stacked-merge.yml]
-    AutoMergeDoc --> Start
-
-    %% Success path
-    Lint -->|Pass| GateCheck{All Passed?}
-    Build -->|Pass| GateCheck
-    Sec -->|Pass| GateCheck
-    Test -->|>= 80% Coverage| GateCheck
-    DocEval -->|Docs Satisfied| GateCheck
-
-    GateCheck -->|Yes| Dispatcher[8. PR Review Dispatcher\nPost summary & assign Copilot]
+    %% Review Stage
+    Test & Sec & DocEval -->|All Green & Settled| Dispatcher[7. PR Review Dispatcher\nPost summary & assign Copilot]
     Dispatcher --> AICodeReview[GitHub Copilot Code Review\nAI architectural & diff review]
     AICodeReview --> HumanReview[Developer Final Sign-Off & Review]
     HumanReview --> Merge([🚀 Merge PR into Main])

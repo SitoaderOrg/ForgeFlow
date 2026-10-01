@@ -1,0 +1,664 @@
+name: PR Quality Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  security-events: write
+
+env:
+  COVERAGE_THRESHOLD: ${{ vars.COVERAGE_THRESHOLD || '80' }}
+
+jobs:
+  # =========================================================================
+  # STAGE 1: Fast Pre-Flight & Syntax Validation (~30s)
+  # =========================================================================
+  gatekeeper:
+    name: 1. Validate PR Metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Pre-Flight Checks
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
+            const branchName = pr.head.ref;
+            const title = pr.title.trim();
+            const body = (pr.body || '').trim();
+
+            const errors = [];
+            const results = [];
+
+            // 1. Branch Naming Check
+            const branchRegex = /^([a-zA-Z0-9_\-]+[\/\-])?(feat|fix|chore|docs|test|refactor|ci|sample)[\/\-][a-zA-Z0-9_\-\.]+$/;
+            if (branchRegex.test(branchName)) {
+              results.push({ check: 'Branch Naming', status: '✅ PASS', details: `\`${branchName}\`` });
+            } else {
+              const msg = `Branch name \`${branchName}\` does not follow convention \`category/description\` (allowed: feat/, fix/, chore/, docs/, test/, refactor/, ci/).`;
+              errors.push(msg);
+              results.push({ check: 'Branch Naming', status: '❌ FAIL', details: msg });
+            }
+
+            // 2. PR Title Check (Conventional Commits format)
+            const titleRegex = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?:\s.+$/;
+            const titlePass = titleRegex.test(title);
+            if (titlePass) {
+              results.push({ check: 'PR Title', status: '✅ PASS', details: `\`${title}\`` });
+            } else {
+              const msg = `PR title \`${title}\` does not follow Conventional Commits format (e.g. \`feat: summary\` or \`fix(core): summary\`).`;
+              errors.push(msg);
+              results.push({ check: 'PR Title', status: '❌ FAIL', details: msg });
+            }
+
+            // 3. PR Description Check
+            const descPass = body.length >= 20 && !body.toLowerCase().includes('todo') && !body.toLowerCase().includes('fill this out');
+            if (descPass) {
+              results.push({ check: 'PR Description', status: '✅ PASS', details: `${body.length} characters provided` });
+            } else {
+              const msg = 'PR description is empty, contains placeholder text, or is under 20 characters.';
+              errors.push(msg);
+              results.push({ check: 'PR Description', status: '❌ FAIL', details: msg });
+            }
+
+            // Autonomous Remediation Label Handling
+            const metadataNeedsHelp = !titlePass || !descPass;
+            const existingLabels = pr.labels ? pr.labels.map(l => l.name) : [];
+
+            if (metadataNeedsHelp) {
+              if (!existingLabels.includes('needs-metadata')) {
+                try {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: pr.number,
+                    labels: ['needs-metadata']
+                  });
+                  core.info("Applied 'needs-metadata' label to trigger pr-validation workflow.");
+                } catch (e) {
+                  core.warning(`Failed to add needs-metadata label: ${e.message}`);
+                }
+              }
+            } else if (existingLabels.includes('needs-metadata')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: 'needs-metadata'
+                });
+                core.info("Removed 'needs-metadata' label as metadata checks passed.");
+              } catch (e) {
+                core.warning(`Failed to remove needs-metadata label: ${e.message}`);
+              }
+            }
+
+            let summaryTable = '### PR Gatekeeper Results\n\n| Check | Status | Details |\n|---|---|---|\n';
+            for (const r of results) {
+              summaryTable += `| **${r.check}** | ${r.status} | ${r.details} |\n`;
+            }
+
+            if (metadataNeedsHelp) {
+              summaryTable += '\n\n> 🤖 **Autonomous Remediation**: Added `needs-metadata` label. The **PR Validation** workflow will automatically update the PR title and description based on your code diff.\n';
+            }
+
+            if (errors.length > 0) {
+              summaryTable += '\n\n---\n\n### 💡 Manual Resolution (if needed)\n\n' +
+                '- **Branch name**: Rename branch locally using `git branch -m <category>/<name>` and push with `git push -u origin <category>/<name>`.\n' +
+                '- **PR Title**: Click **Edit** next to the PR title and use Conventional Commits (e.g., `feat: ...`, `fix(api): ...`).\n' +
+                '- **PR Description**: Fill out the sections defined in `.github/pull_request_template.md` (minimum 20 characters, no placeholder text).\n';
+            }
+
+            await core.summary.addRaw(summaryTable).write();
+
+            if (errors.length > 0) {
+              core.setFailed(`PR Gatekeeper failed with ${errors.length} error(s):\n- ` + errors.join('\n- '));
+            }
+
+  lint:
+    name: 2. Lint & Format Codebase
+    runs-on: ubuntu-latest
+    needs: [gatekeeper]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Super-Linter
+        uses: super-linter/super-linter/slim@v7
+        env:
+          DEFAULT_BRANCH: main
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATE_ALL_CODEBASE: false
+          FILTER_REGEX_EXCLUDE: '(\.lock\.yml|wf-log\.md|docs/|mermaid/|\.github/)'
+          VALIDATE_CHECKOV: false
+          VALIDATE_NATURAL_LANGUAGE: false
+          VALIDATE_MARKDOWN: false
+          VALIDATE_JSCPD: false
+
+      - name: Handle Lint Failure (Trigger Autonomous Remediation)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (!existingLabels.includes('lint-failed')) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['lint-failed']
+                });
+                core.info("Applied 'lint-failed' label to trigger pr-lint-fixer workflow.");
+              } catch (e) {
+                core.warning(`Failed to add lint-failed label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ❌ Lint & Format Gatekeeper Failed\n\n' +
+              '> 🤖 **Autonomous Remediation**: Added `lint-failed` label. The **PR Lint Fixer** workflow will analyze the linter output, apply formatting/style fixes, and push the changes directly to your PR branch.\n';
+            await core.summary.addRaw(summary).write();
+
+      - name: Handle Lint Success (Clear Remediation Label)
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (existingLabels.includes('lint-failed')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'lint-failed'
+                });
+                core.info("Removed 'lint-failed' label as all linters passed.");
+              } catch (e) {
+                core.warning(`Failed to remove lint-failed label: ${e.message}`);
+              }
+            }
+
+  # =========================================================================
+  # STAGE 2: Build & Compilation (~30s)
+  # Only executes if Gatekeeper & Lint passed cleanly
+  # =========================================================================
+  build:
+    name: 3. Build & Compilation Verification
+    runs-on: ubuntu-latest
+    needs: [gatekeeper, lint]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Build & Compilation
+        id: verify-build
+        run: |
+          echo "🔨 Checking build and compilation for project manifests..."
+          BUILD_FOUND=false
+
+          # 1. Node.js / TypeScript
+          if [ -f "package.json" ]; then
+            npm ci 2>/dev/null || npm install --prefer-offline --no-audit
+            if grep -q '"build"' package.json; then
+              BUILD_FOUND=true
+              echo "📦 Building Node.js / TypeScript project..."
+              npm run build
+            elif [ -f "tsconfig.json" ]; then
+              BUILD_FOUND=true
+              echo "📦 Compiling TypeScript via tsc..."
+              npx tsc --noEmit
+            fi
+          fi
+
+          # 2. Go
+          if [ -f "go.mod" ] || ls *.go 1>/dev/null 2>&1; then
+            BUILD_FOUND=true
+            echo "🐹 Building Go project..."
+            go build -v ./...
+          fi
+
+          # 3. Rust
+          if [ -f "Cargo.toml" ]; then
+            BUILD_FOUND=true
+            echo "🦀 Checking Rust project compilation..."
+            cargo check
+          fi
+
+          # 4. Java / Kotlin (Maven / Gradle)
+          if [ -f "pom.xml" ]; then
+            BUILD_FOUND=true
+            echo "☕ Compiling Maven project..."
+            if [ -f "./mvnw" ]; then ./mvnw compile -q; else mvn compile -q; fi
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            BUILD_FOUND=true
+            echo "☕ Compiling Gradle project..."
+            if [ -f "./gradlew" ]; then ./gradlew classes -q; else gradle classes -q; fi
+          fi
+
+          # 5. C# / .NET
+          if ls *.sln 1>/dev/null 2>&1 || ls *.csproj 1>/dev/null 2>&1; then
+            BUILD_FOUND=true
+            echo "🔷 Building .NET project..."
+            dotnet build -c Release
+          fi
+
+          if [ "$BUILD_FOUND" = "false" ]; then
+            echo "ℹ️ No compilation step needed for this project. Build check passed cleanly."
+          else
+            echo "✅ Build and compilation verification passed."
+          fi
+
+      - name: Handle Build Failure (Trigger Autonomous Remediation)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (!existingLabels.includes('build-failed')) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['build-failed']
+                });
+                core.info("Applied 'build-failed' label.");
+              } catch (e) {
+                core.warning(`Failed to add build-failed label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ❌ PR Build Gatekeeper Failed\n\n' +
+              '> 🔨 **Build Failure**: Project compilation or build failed. Added `build-failed` label.\n';
+            await core.summary.addRaw(summary).write();
+            core.setFailed('Project build or compilation failed.');
+
+      - name: Handle Build Success (Clear Remediation Label)
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (existingLabels.includes('build-failed')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'build-failed'
+                });
+                core.info("Removed 'build-failed' label.");
+              } catch (e) {
+                core.warning(`Failed to remove build-failed label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ✅ PR Build Gatekeeper Passed\n\n' +
+              'Project builds and compiles successfully.\n';
+            await core.summary.addRaw(summary).write();
+
+  # =========================================================================
+  # STAGE 3: Deep Verification in Parallel (~1-2m)
+  # Only executes if Stage 2 Build succeeded
+  # =========================================================================
+  test:
+    name: 4. Automated Tests & Coverage Gatekeeper
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect & Execute Tests
+        id: run-tests
+        run: |
+          TESTS_FOUND=false
+          COVERAGE_PASSED=true
+
+          echo "🔍 Scanning repository for test suites and coverage configuration..."
+
+          # 1. Node.js / TypeScript
+          if [ -f "package.json" ]; then
+            if grep -q '"test"' package.json; then
+              TESTS_FOUND=true
+              echo "📦 Detected Node.js / TypeScript project. Running tests with coverage..."
+              npm ci 2>/dev/null || npm install --prefer-offline --no-audit
+
+              BASE_BRANCH="origin/${{ github.base_ref || 'main' }}"
+
+              if grep -q '"vitest"' package.json || [ -f "vitest.config.ts" ] || [ -f "vitest.config.js" ]; then
+                echo "⚡ Running Vitest with diff-scoped tests and ${COVERAGE_THRESHOLD}% line coverage threshold..."
+                npx vitest run --changed="$BASE_BRANCH" --coverage --coverage.thresholds.lines="$COVERAGE_THRESHOLD" || \
+                npx vitest run --coverage --coverage.thresholds.lines="$COVERAGE_THRESHOLD"
+              elif grep -q '"jest"' package.json || [ -f "jest.config.js" ] || [ -f "jest.config.ts" ]; then
+                echo "🃏 Running Jest with diff-scoped tests and ${COVERAGE_THRESHOLD}% line coverage threshold..."
+                npx jest --changedSince="$BASE_BRANCH" --coverage --coverageThreshold="{\"global\":{\"lines\":${COVERAGE_THRESHOLD}}}" || \
+                npx jest --coverage --coverageThreshold="{\"global\":{\"lines\":${COVERAGE_THRESHOLD}}}"
+              elif npm run | grep -q "test:cov"; then
+                echo "▶️ Running npm run test:cov..."
+                npm run test:cov
+              else
+                echo "▶️ Running npm test with coverage threshold..."
+                npm test -- --coverage --coverageThreshold="{\"global\":{\"lines\":${COVERAGE_THRESHOLD}}}"
+              fi
+            fi
+          fi
+
+          # 2. Python
+          if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+            if find . -maxdepth 3 -name "*test*.py" | grep -q .; then
+              TESTS_FOUND=true
+              echo "🐍 Detected Python project. Checking PR diff files..."
+              pip install pytest pytest-cov 2>/dev/null || true
+
+              CHANGED_PY_FILES=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '\.py$' | grep -vE '(test_|tests/|_test\.py)' || true)
+
+              if [ -n "$CHANGED_PY_FILES" ]; then
+                COV_MODULES=$(echo "$CHANGED_PY_FILES" | sed -E 's/\.py$//' | tr '/' '.' | paste -sd, -)
+                echo "⚡ Running pytest scoped to modified files (${COV_MODULES}) with ${COVERAGE_THRESHOLD}% threshold..."
+                pytest --cov="$COV_MODULES" --cov-fail-under="$COVERAGE_THRESHOLD"
+              else
+                echo "▶️ No modified Python source files in diff. Running full pytest suite..."
+                pytest --cov=. --cov-fail-under="$COVERAGE_THRESHOLD" || python -m unittest discover
+              fi
+            fi
+          fi
+
+          # 3. Go
+          if [ -f "go.mod" ] || ls *.go 1>/dev/null 2>&1; then
+            if find . -maxdepth 3 -name "*_test.go" | grep -q .; then
+              TESTS_FOUND=true
+              echo "🐹 Detected Go project. Running go test..."
+              CHANGED_GO_PKGS=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '\.go$' | grep -vE '_test\.go$' | xargs -n1 dirname 2>/dev/null | sort -u | sed 's|^|./|' || true)
+
+              if [ -n "$CHANGED_GO_PKGS" ]; then
+                echo "⚡ Running go test scoped to changed packages (${CHANGED_GO_PKGS}) with ${COVERAGE_THRESHOLD}% threshold..."
+                go test -v -coverprofile=coverage.out $CHANGED_GO_PKGS
+              else
+                echo "▶️ Running go test for all packages..."
+                go test -v -coverprofile=coverage.out ./...
+              fi
+
+              COVERAGE=$(go tool cover -func=coverage.out | grep "total:" | awk '{print substr($3, 1, length($3)-1)}')
+              echo "Total Go coverage: ${COVERAGE}%"
+              if (( $(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l 2>/dev/null || awk "BEGIN {print ($COVERAGE < $COVERAGE_THRESHOLD)}") )); then
+                echo "::error::Go test coverage is ${COVERAGE}%, which is below the required ${COVERAGE_THRESHOLD}% threshold."
+                exit 1
+              fi
+            fi
+          fi
+
+          # 4. Java / Kotlin (Maven / Gradle)
+          if [ -f "pom.xml" ]; then
+            TESTS_FOUND=true
+            echo "☕ Detected Maven Java/Kotlin project. Running tests with coverage verification..."
+            if [ -f "./mvnw" ]; then ./mvnw verify; else mvn verify; fi
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            TESTS_FOUND=true
+            echo "☕ Detected Gradle Java/Kotlin project. Running tests and coverage..."
+            if [ -f "./gradlew" ]; then ./gradlew test jacocoTestCoverageVerification jacocoTestReport 2>/dev/null || ./gradlew test; else gradle test jacocoTestCoverageVerification jacocoTestReport 2>/dev/null || gradle test; fi
+          fi
+
+          # 5. C# / .NET
+          if ls *.sln 1>/dev/null 2>&1 || ls *.csproj 1>/dev/null 2>&1; then
+            TESTS_FOUND=true
+            echo "🔷 Detected .NET project. Running dotnet test with coverage threshold..."
+            dotnet test --collect:"XPlat Code Coverage" -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.CoveragePercentTarget="$COVERAGE_THRESHOLD" 2>/dev/null || \
+            dotnet test --collect:"XPlat Code Coverage"
+          fi
+
+          # 6. Rust
+          if [ -f "Cargo.toml" ]; then
+            TESTS_FOUND=true
+            echo "🦀 Detected Rust project. Running cargo test..."
+            cargo test
+          fi
+
+          if [ "$TESTS_FOUND" = "false" ]; then
+            echo "ℹ️ No test suite or test manifests detected for this codebase. Skipping test gate cleanly."
+          fi
+
+      - name: Handle Test Failure (Trigger Autonomous Remediation)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (!existingLabels.includes('test-required')) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['test-required']
+                });
+                core.info("Applied 'test-required' label to trigger pr-test-generator workflow.");
+              } catch (e) {
+                core.warning(`Failed to add test-required label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ❌ PR Tests & Coverage Gatekeeper Failed\n\n' +
+              '> 🧪 **Autonomous Remediation**: Added `test-required` label. The **PR Test Generator** agentic workflow will analyze your PR diff, identify failing or missing unit tests, and open a **Stacked Pull Request** targeting your branch with comprehensive test coverage.\n';
+            await core.summary.addRaw(summary).write();
+            core.setFailed('Test suite execution failed or tests are missing.');
+
+      - name: Handle Test Success (Clear Remediation Label)
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            if (existingLabels.includes('test-required')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'test-required'
+                });
+                core.info("Removed 'test-required' label as all tests passed.");
+              } catch (e) {
+                core.warning(`Failed to remove test-required label: ${e.message}`);
+              }
+            }
+
+            let summary = '### ✅ PR Tests & Coverage Gatekeeper Passed\n\n' +
+              'All test suites executed and passed successfully.\n';
+            await core.summary.addRaw(summary).write();
+
+  detect-security-environment:
+    name: 5a. Detect Security Environment
+    runs-on: ubuntu-latest
+    needs: [build]
+    outputs:
+      has_codeql_languages: ${{ steps.check.outputs.has_codeql_languages }}
+      has_dependencies: ${{ steps.check.outputs.has_dependencies }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Check Supported Files
+        id: check
+        run: |
+          if git ls-files | grep -E '\.(js|jsx|ts|tsx|mjs|cjs|py|go|java|kt|cs|rb|c|cpp|cc|cxx|h|hpp|swift)$' > /dev/null; then
+            echo "has_codeql_languages=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_codeql_languages=false" >> $GITHUB_OUTPUT
+          fi
+
+          if git ls-files | grep -E '(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|requirements\.txt|Pipfile\.lock|poetry\.lock|go\.mod|pom\.xml|build\.gradle|Cargo\.lock|Gemfile\.lock|composer\.lock)' > /dev/null; then
+            echo "has_dependencies=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_dependencies=false" >> $GITHUB_OUTPUT
+          fi
+
+  dependency-review:
+    name: 5b. GitHub Dependency Review
+    needs: [detect-security-environment]
+    if: needs.detect-security-environment.outputs.has_dependencies == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  codeql-analysis:
+    name: 5c. GitHub CodeQL SAST
+    needs: [detect-security-environment]
+    if: needs.detect-security-environment.outputs.has_codeql_languages == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          build-mode: autobuild
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:auto"
+
+  security-gatekeeper:
+    name: 5d. Security Gatekeeper Status
+    needs: [detect-security-environment, dependency-review, codeql-analysis]
+    if: always() && needs.detect-security-environment.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate Security Results & Label PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+
+            const depReviewResult = "${{ needs.dependency-review.result }}";
+            const codeqlResult = "${{ needs.codeql-analysis.result }}";
+
+            const labelsToAdd = [];
+            const labelsToRemove = [];
+
+            if (depReviewResult === 'failure') {
+              if (!existingLabels.includes('dependency-alert')) {
+                labelsToAdd.push('dependency-alert');
+              }
+            } else if (existingLabels.includes('dependency-alert')) {
+              labelsToRemove.push('dependency-alert');
+            }
+
+            if (codeqlResult === 'failure') {
+              if (!existingLabels.includes('codeql-alert')) {
+                labelsToAdd.push('codeql-alert');
+              }
+            } else if (existingLabels.includes('codeql-alert')) {
+              labelsToRemove.push('codeql-alert');
+            }
+
+            let hasSecretAlerts = false;
+            try {
+              const { data: secretAlerts } = await github.rest.secretScanning.listAlertsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 30
+              });
+              if (secretAlerts && secretAlerts.length > 0) {
+                hasSecretAlerts = true;
+              }
+            } catch (e) {
+              core.info(`Secret scanning status check: ${e.message}`);
+            }
+
+            if (hasSecretAlerts) {
+              if (!existingLabels.includes('secret-alert')) {
+                labelsToAdd.push('secret-alert');
+              }
+            } else if (existingLabels.includes('secret-alert')) {
+              labelsToRemove.push('secret-alert');
+            }
+
+            if (existingLabels.includes('security-alert')) {
+              labelsToRemove.push('security-alert');
+            }
+
+            if (labelsToAdd.length > 0) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: labelsToAdd
+                });
+                core.info(`Applied security labels: ${labelsToAdd.join(', ')}`);
+              } catch (e) {
+                core.warning(`Failed to add labels: ${e.message}`);
+              }
+            }
+
+            for (const label of labelsToRemove) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: label
+                });
+                core.info(`Removed label: ${label}`);
+              } catch (e) {
+                core.warning(`Failed to remove label ${label}: ${e.message}`);
+              }
+            }
+
+            const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure' || hasSecretAlerts;
+
+            if (hasFailure) {
+              let summary = '### ❌ Security Gatekeeper Failed\n\n' +
+                '> 🛡️ **Autonomous Remediation**: Added ' + (labelsToAdd.length > 0 ? labelsToAdd.map(l => `\`${l}\``).join(', ') : 'security') + ' label(s). Specialized remediator workflows will analyze findings, update manifests or code, and push fixes to your branch.\n\n' +
+                `- **Dependency Review**: ${depReviewResult}\n` +
+                `- **CodeQL SAST**: ${codeqlResult}\n`;
+              await core.summary.addRaw(summary).write();
+              core.setFailed('Security vulnerabilities or insecure dependencies detected.');
+            } else {
+              let summary = '### ✅ Security Gatekeeper Passed\n\n' +
+                'All GitHub Code Security checks passed successfully.\n';
+              await core.summary.addRaw(summary).write();
+            }
