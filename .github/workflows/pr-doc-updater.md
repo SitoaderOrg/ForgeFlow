@@ -102,5 +102,5 @@ Apply safe outputs:
    - Set `body`: Provide a clear breakdown of:
      - **Updated Documents**: List of files updated or added.
      - **Summary of Documentation Added**: Overview of new APIs/features documented.
-     - **Instructions**: "Merge this stacked PR into your branch to include the documentation and satisfy the gatekeeper."
-3. Call `add-comment` on the parent PR notifying the author that a stacked PR containing the documentation updates has been created for review.
+     - **Lifecycle**: "This stacked PR was automatically opened by the **PR Documentation Updater** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
+3. Call `add-comment` on the parent PR notifying the author that a stacked PR containing the documentation updates has been created and will be automatically merged into their branch. Include the direct link to the stacked PR.

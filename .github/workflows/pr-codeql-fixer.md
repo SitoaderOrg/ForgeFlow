@@ -55,5 +55,5 @@ Automatically create a stacked remediation pull request targeting the developer'
        - **Commit Title & Summary**: A conventional commit title for each vulnerability resolved.
        - **Vulnerability Details**: Rule ID, CWE number, affected file and line number.
        - **Remediation Applied**: Explain the defensive pattern or Copilot Autofix patch.
-       - **Instructions**: "Merge this stacked PR to incorporate the security fixes into your feature branch and clear the security gate."
-   - Call `add-comment` on the parent PR to inform the developer that a stacked remediation PR has been opened with the itemized fixes for their review and approval.
+       - **Lifecycle**: "This stacked PR was automatically opened by the **PR CodeQL Fixer** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
+   - Call `add-comment` on the parent PR to inform the developer that a stacked remediation PR has been opened with the itemized fixes and will be automatically consolidated into their branch. Include the direct link to the stacked PR.

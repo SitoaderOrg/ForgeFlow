@@ -54,7 +54,7 @@ Automatically create a stacked remediation pull request targeting the developer'
      - Set `body`: Structure the PR body with an itemized breakdown of each secret scrubbed:
        - **Commit Title & Summary**: Conventional commit title for each secret replaced.
        - **File & Variable**: Affected file and new environment variable introduced.
-       - **Action Required**: "Merge this stacked PR to remove hardcoded credentials from your branch and clear the security gate."
+       - **Lifecycle**: "This stacked PR was automatically opened by the **PR Secret Fixer** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
    - Call `add-comment` on the parent PR:
-     - Inform the author that a stacked PR has been opened with the scrubbed credentials.
+     - Inform the author that a stacked PR has been opened with the scrubbed credentials and will be automatically merged into their branch. Include the direct link to the stacked PR.
      - **CRITICAL SECURITY WARNING**: Remind the author that because the secret was pushed to git history, they MUST immediately **revoke and rotate the compromised credential** with the issuing provider.

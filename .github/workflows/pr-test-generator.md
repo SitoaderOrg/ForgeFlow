@@ -103,5 +103,5 @@ Apply safe outputs:
    - Set `body`: Provide an itemized breakdown of:
      - **New Test Files & Cases**: List of test files and functions added.
      - **Uncovered Paths Addressed**: How the new tests bring coverage above 80%.
-     - **Instructions**: "Merge this stacked PR into your feature branch to include the tests and clear the test gate."
-2. Call `add-comment` on the parent PR informing the developer that a stacked PR containing the validated unit tests has been opened for their review and approval.
+     - **Lifecycle**: "This stacked PR was automatically opened by the **PR Test Generator** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
+2. Call `add-comment` on the parent PR informing the developer that a stacked PR containing the validated unit tests has been opened and will be automatically consolidated into their branch. Include the direct link to the stacked PR.

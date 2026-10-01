@@ -54,5 +54,5 @@ Automatically create a stacked remediation pull request targeting the developer'
        - **Commit Title & Package**: e.g., `fix(deps): bump lodash from 4.17.15 to 4.17.21`
        - **Security Advisory**: Advisory ID, CVE number, and severity level.
        - **Version Delta**: Previous version vs patched version.
-       - **Instructions**: "Merge this stacked PR to incorporate the security fixes into your feature branch and clear the security gate."
-   - Call `add-comment` on the parent PR to inform the developer that a stacked remediation PR has been opened with the itemized dependency updates for their review and approval.
+       - **Lifecycle**: "This stacked PR was automatically opened by the **PR Dependency Fixer** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
+   - Call `add-comment` on the parent PR to inform the developer that a stacked remediation PR has been opened with the itemized dependency updates and will be automatically consolidated into their branch. Include the direct link to the stacked PR.

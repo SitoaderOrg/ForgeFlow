@@ -67,6 +67,23 @@ jobs:
 
           echo "✅ Stacked PR #$STACKED_PR_NUM auto-merged successfully."
 
+          # Clean up corresponding remediation labels on parent PR
+          if [ -n "$PARENT_PR_NUM" ]; then
+            STACKED_LABELS=$(gh pr view "$STACKED_PR_NUM" --json labels --jq '.labels.[].name' 2>/dev/null || true)
+            
+            if echo "$STACKED_LABELS" | grep -qx "test-remediation"; then
+              gh pr edit "$PARENT_PR_NUM" --remove-label "test-required" 2>/dev/null || true
+            fi
+            if echo "$STACKED_LABELS" | grep -qx "doc-remediation"; then
+              gh pr edit "$PARENT_PR_NUM" --remove-label "docs-required" 2>/dev/null || true
+            fi
+            if echo "$STACKED_LABELS" | grep -qx "security-remediation"; then
+              gh pr edit "$PARENT_PR_NUM" --remove-label "codeql-alert" 2>/dev/null || true
+              gh pr edit "$PARENT_PR_NUM" --remove-label "dependency-alert" 2>/dev/null || true
+              gh pr edit "$PARENT_PR_NUM" --remove-label "secret-alert" 2>/dev/null || true
+            fi
+          fi
+
           # Post transparent audit trail comment on parent PR
           if [ -n "$PARENT_PR_NUM" ]; then
             COMMENT_FILE=$(mktemp)
