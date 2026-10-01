@@ -1,0 +1,126 @@
+name: PR Gatekeeper
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  gatekeeper:
+    name: Validate PR Metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run Pre-Flight Checks
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Fetch live PR data to ensure latest title and description are validated
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
+            const branchName = pr.head.ref;
+            const title = pr.title.trim();
+            const body = (pr.body || '').trim();
+
+            const errors = [];
+            const results = [];
+
+            // 1. Branch Naming Check
+            // Convention: feat/*, fix/*, chore/*, docs/*, test/*, refactor/*, ci/* (allows optional user prefix for worktree branches)
+            const branchRegex = /^([a-zA-Z0-9_\-]+[\/\-])?(feat|fix|chore|docs|test|refactor|ci|sample)[\/\-][a-zA-Z0-9_\-\.]+$/;
+            if (branchRegex.test(branchName)) {
+              results.push({ check: 'Branch Naming', status: '✅ PASS', details: `\`${branchName}\`` });
+            } else {
+              const msg = `Branch name \`${branchName}\` does not follow convention \`category/description\` (allowed: feat/, fix/, chore/, docs/, test/, refactor/, ci/).`;
+              errors.push(msg);
+              results.push({ check: 'Branch Naming', status: '❌ FAIL', details: msg });
+            }
+
+            // 2. PR Title Check (Conventional Commits format)
+            // Example: feat(api): add auth endpoint
+            const titleRegex = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?:\s.+$/;
+            const titlePass = titleRegex.test(title);
+            if (titlePass) {
+              results.push({ check: 'PR Title', status: '✅ PASS', details: `\`${title}\`` });
+            } else {
+              const msg = `PR title \`${title}\` does not follow Conventional Commits format (e.g. \`feat: summary\` or \`fix(core): summary\`).`;
+              errors.push(msg);
+              results.push({ check: 'PR Title', status: '❌ FAIL', details: msg });
+            }
+
+            // 3. PR Description Check (Non-empty & minimum length)
+            const descPass = body.length >= 20 && !body.toLowerCase().includes('todo') && !body.toLowerCase().includes('fill this out');
+            if (descPass) {
+              results.push({ check: 'PR Description', status: '✅ PASS', details: `${body.length} characters provided` });
+            } else {
+              const msg = 'PR description is empty, contains placeholder text, or is under 20 characters.';
+              errors.push(msg);
+              results.push({ check: 'PR Description', status: '❌ FAIL', details: msg });
+            }
+
+            // 4. Autonomous Remediation Label Handling
+            const metadataNeedsHelp = !titlePass || !descPass;
+            const existingLabels = pr.labels ? pr.labels.map(l => l.name) : [];
+
+            if (metadataNeedsHelp) {
+              if (!existingLabels.includes('needs-metadata')) {
+                try {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: pr.number,
+                    labels: ['needs-metadata']
+                  });
+                  core.info("Applied 'needs-metadata' label to trigger pr-validation workflow.");
+                } catch (e) {
+                  core.warning(`Failed to add needs-metadata label: ${e.message}`);
+                }
+              }
+            } else if (existingLabels.includes('needs-metadata')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: 'needs-metadata'
+                });
+                core.info("Removed 'needs-metadata' label as metadata checks passed.");
+              } catch (e) {
+                core.warning(`Failed to remove needs-metadata label: ${e.message}`);
+              }
+            }
+
+            // Write to Job Summary
+            let summaryTable = '### PR Gatekeeper Results\n\n| Check | Status | Details |\n|---|---|---|\n';
+            for (const r of results) {
+              summaryTable += `| **${r.check}** | ${r.status} | ${r.details} |\n`;
+            }
+
+            if (metadataNeedsHelp) {
+              summaryTable += '\n\n> 🤖 **Autonomous Remediation**: Added `needs-metadata` label. The **PR Validation** workflow will automatically update the PR title and description based on your code diff.\n';
+            }
+
+            if (errors.length > 0) {
+              summaryTable += '\n\n---\n\n### 💡 Manual Resolution (if needed)\n\n' +
+                '- **Branch name**: Rename branch locally using `git branch -m <category>/<name>` and push with `git push -u origin <category>/<name>`.\n' +
+                '- **PR Title**: Click **Edit** next to the PR title and use Conventional Commits (e.g., `feat: ...`, `fix(api): ...`).\n' +
+                '- **PR Description**: Fill out the sections defined in `.github/pull_request_template.md` (minimum 20 characters, no placeholder text).\n';
+            }
+
+            await core.summary.addRaw(summaryTable).write();
+
+            // Fail job if any check failed
+            if (errors.length > 0) {
+              core.setFailed(`PR Gatekeeper failed with ${errors.length} error(s):\n- ` + errors.join('\n- '));
+            }

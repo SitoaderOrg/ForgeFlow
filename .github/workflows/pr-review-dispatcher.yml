@@ -2,10 +2,7 @@ name: PR Review & Consolidation Dispatcher
 
 on:
   pull_request:
-    types: [labeled, unlabeled, ready_for_review]
-  workflow_run:
-    workflows: ["PR Quality Pipeline"]
-    types: [completed]
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -20,7 +17,7 @@ jobs:
   review-dispatcher:
     name: Evaluate Readiness & Request Copilot Review
     runs-on: ubuntu-latest
-    if: "${{ github.event_name == 'workflow_run' || !github.event.pull_request.draft }}"
+    if: "!github.event.pull_request.draft"
 
     steps:
       - name: Checkout Code
@@ -30,18 +27,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            PR_NUM="${{ github.event.workflow_run.pull_requests[0].number }}"
-            HEAD_BRANCH="${{ github.event.workflow_run.pull_requests[0].head.ref }}"
-          else
-            PR_NUM="${{ github.event.pull_request.number }}"
-            HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
-          fi
-
-          if [ -z "$PR_NUM" ] || [ "$PR_NUM" = "null" ]; then
-            echo "ℹ️ No associated pull request found for this event. Exiting cleanly."
-            exit 0
-          fi
+          PR_NUM="${{ github.event.pull_request.number }}"
+          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
 
           echo "🔍 Evaluating quality status for PR #$PR_NUM ($HEAD_BRANCH)..."
 
