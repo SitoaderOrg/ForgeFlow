@@ -2,10 +2,10 @@ name: PR Build Gatekeeper
 
 on:
   workflow_call:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+    inputs:
+      pr_number:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -84,10 +84,18 @@ jobs:
       - name: Handle Build Failure (Trigger Autonomous Remediation)
         if: failure()
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
         with:
           script: |
-            const prNumber = context.payload.pull_request.number;
-            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+            const prNumber = Number(process.env.PR_NUMBER);
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100
+            });
+            const existingLabels = currentLabels.map(l => l.name);
 
             if (!existingLabels.includes('build-failed')) {
               try {
@@ -108,13 +116,21 @@ jobs:
             await core.summary.addRaw(summary).write();
             core.setFailed('Project build or compilation failed.');
 
-      - name: Handle Build Succes (Clear Remediation Label)
+      - name: Handle Build Success (Clear Remediation Label)
         if: success()
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
         with:
           script: |
-            const prNumber = context.payload.pull_request.number;
-            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+            const prNumber = Number(process.env.PR_NUMBER);
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100
+            });
+            const existingLabels = currentLabels.map(l => l.name);
 
             if (existingLabels.includes('build-failed')) {
               try {

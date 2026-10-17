@@ -2,34 +2,43 @@ name: PR Gatekeeper
 
 on:
   workflow_call:
-  # Triggered directly on manual dispatch or labeled events
-  pull_request:
-    types: [labeled]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
 
 permissions:
   contents: read
   pull-requests: write
   issues: write
-
+  actions: write
 jobs:
   gatekeeper:
     name: Validate PR Metadata
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
       - name: Run Pre-Flight Checks
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ inputs.head_ref }}
         with:
           script: |
+            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/remediation.cjs`);
             // Fetch live PR data to ensure latest title and description are validated
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number
+              pull_number: Number(process.env.PR_NUMBER)
             });
             const branchName = pr.head.ref;
             const title = pr.title.trim();
@@ -71,38 +80,21 @@ jobs:
               results.push({ check: 'PR Description', status: '❌ FAIL', details: msg });
             }
 
-            // 4. Autonomous Remediation Label Handling
+            // 4. Autonomous Remediation (label + dispatch PR Validation agent)
             const metadataNeedsHelp = !titlePass || !descPass;
-            const existingLabels = pr.labels ? pr.labels.map(l => l.name) : [];
-
+            let remediation = 'not-needed';
             if (metadataNeedsHelp) {
-              if (!existingLabels.includes('needs-metadata')) {
-                try {
-                  await github.rest.issues.addLabels({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: pr.number,
-                    labels: ['needs-metadata']
-                  });
-                  core.info("Applied 'needs-metadata' label to trigger pr-validation workflow.");
-                } catch (e) {
-                  core.warning(`Failed to add needs-metadata label: ${e.message}`);
-                }
-              }
-            } else if (existingLabels.includes('needs-metadata')) {
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pr.number,
-                  name: 'needs-metadata'
-                });
-                core.info("Removed 'needs-metadata' label as metadata checks passed.");
-              } catch (e) {
-                core.warning(`Failed to remove needs-metadata label: ${e.message}`);
-              }
+              await helpers.addLabel({ github, context, core, prNumber: pr.number, label: 'needs-metadata' });
+              remediation = await helpers.dispatchRemediation({
+                github, context, core,
+                prNumber: pr.number,
+                headRef: process.env.HEAD_REF,
+                workflow: 'pr-validation.lock.yml',
+                findings: errors.join('\n')
+              });
+            } else {
+              await helpers.removeLabel({ github, context, core, prNumber: pr.number, label: 'needs-metadata' });
             }
-
             // Write to Job Summary
             let summaryTable = '### PR Gatekeeper Results\n\n| Check | Status | Details |\n|---|---|---|\n';
             for (const r of results) {
@@ -110,7 +102,7 @@ jobs:
             }
 
             if (metadataNeedsHelp) {
-              summaryTable += '\n\n> 🤖 **Autonomous Remediation**: Added `needs-metadata` label. The **PR Validation** workflow will automatically update the PR title and description based on your code diff.\n';
+              summaryTable += `\n\n> 🤖 **Autonomous Remediation**: Added `needs-metadata` label. PR Validation agent dispatch status: **${remediation}**. It updates the PR title and description from the code diff, then the pipeline is re-run automatically.\n`;
             }
 
             if (errors.length > 0) {

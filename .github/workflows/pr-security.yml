@@ -2,22 +2,37 @@ name: PR Security Gatekeeper
 
 on:
   workflow_call:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      base_ref:
+        required: true
+        type: string
 
 permissions:
   contents: read
   pull-requests: write
   issues: write
+  actions: write
   security-events: write
+
+env:
+  # Fail the gate on CodeQL findings at or above this CVSS security-severity (medium = 4.0)
+  CODEQL_MIN_SECURITY_SEVERITY: ${{ vars.CODEQL_MIN_SECURITY_SEVERITY || '4.0' }}
 
 jobs:
   detect-environment:
     name: Detect Languages & Manifests
     runs-on: ubuntu-latest
     outputs:
+      codeql_matrix: ${{ steps.check.outputs.codeql_matrix }}
       has_codeql_languages: ${{ steps.check.outputs.has_codeql_languages }}
       has_dependencies: ${{ steps.check.outputs.has_dependencies }}
     steps:
@@ -27,18 +42,34 @@ jobs:
       - name: Check Supported Files
         id: check
         run: |
-          # Check for CodeQL supported languages (js/ts, python, go, java, c#, ruby, c/c++, swift)
-          if git ls-files | grep -E '\.(js|jsx|ts|tsx|mjs|cjs|py|go|java|kt|cs|rb|c|cpp|cc|cxx|h|hpp|swift)$' > /dev/null; then
-            echo "has_codeql_languages=true" >> $GITHUB_OUTPUT
+          FILES=$(git ls-files | grep -vE '^(node_modules|dist|coverage)/' || true)
+          MATRIX='[]'
+          add_lang() {
+            MATRIX=$(echo "$MATRIX" | jq -c --arg l "$1" --arg m "$2" '. + [{"language": $l, "build-mode": $m}]')
+          }
+          # Interpreted languages are analysed without a build; compiled ones use autobuild.
+          echo "$FILES" | grep -qE '\.(js|jsx|ts|tsx|mjs|cjs)$' && add_lang javascript-typescript none
+          echo "$FILES" | grep -qE '\.py$' && add_lang python none
+          echo "$FILES" | grep -qE '\.rb$' && add_lang ruby none
+          echo "$FILES" | grep -qE '\.(java|kt)$' && add_lang java-kotlin none
+          echo "$FILES" | grep -qE '\.cs$' && add_lang csharp none
+          echo "$FILES" | grep -qE '\.go$' && add_lang go autobuild
+          echo "$FILES" | grep -qE '\.(c|cpp|cc|cxx|h|hpp)$' && add_lang c-cpp none
+          echo "$FILES" | grep -qE '\.swift$' && add_lang swift autobuild
+
+          echo "codeql_matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          if [ "$MATRIX" = "[]" ]; then
+            echo "has_codeql_languages=false" >> "$GITHUB_OUTPUT"
           else
-            echo "has_codeql_languages=false" >> $GITHUB_OUTPUT
+            echo "has_codeql_languages=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "CodeQL matrix: $MATRIX"
 
           # Check for dependency manifests across package ecosystems
-          if git ls-files | grep -E '(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|requirements\.txt|Pipfile\.lock|poetry\.lock|go\.mod|pom\.xml|build\.gradle|Cargo\.lock|Gemfile\.lock|composer\.lock)' > /dev/null; then
-            echo "has_dependencies=true" >> $GITHUB_OUTPUT
+          if echo "$FILES" | grep -qE '(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|requirements\.txt|Pipfile\.lock|poetry\.lock|go\.mod|pom\.xml|build\.gradle|Cargo\.lock|Gemfile\.lock|composer\.lock)'; then
+            echo "has_dependencies=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_dependencies=false" >> $GITHUB_OUTPUT
+            echo "has_dependencies=false" >> "$GITHUB_OUTPUT"
           fi
 
   dependency-review:
@@ -54,12 +85,23 @@ jobs:
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
+          # Explicit refs so the review also works for dispatched (non pull_request) runs
+          base-ref: ${{ inputs.base_ref }}
+          head-ref: ${{ inputs.head_sha }}
 
   codeql-analysis:
-    name: GitHub CodeQL SAST
+    name: GitHub CodeQL SAST (${{ matrix.language }})
     needs: detect-environment
     if: needs.detect-environment.outputs.has_codeql_languages == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect-environment.outputs.codeql_matrix) }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -69,12 +111,66 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          build-mode: autobuild
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+          config: |
+            paths-ignore:
+              - node_modules
+              - dist
+              - coverage
+
+      - name: Autobuild
+        if: matrix.build-mode == 'autobuild'
+        uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:auto"
+          category: '/language:${{ matrix.language }}'
+          output: sarif-results
+          # Results are evaluated from the SARIF below. Uploading is skipped because
+          # repositories using CodeQL "default setup" reject advanced-configuration uploads.
+          upload: never
+
+      - name: Evaluate CodeQL Findings
+        id: findings
+        run: |
+          MIN="$CODEQL_MIN_SECURITY_SEVERITY"
+          FINDINGS_FILE="codeql-findings-${{ matrix.language }}.txt"
+          : > "$FINDINGS_FILE"
+          for SARIF in sarif-results/*.sarif; do
+            jq -r --argjson min "$MIN" '
+              .runs[] as $run
+              | ([$run.tool.driver.rules[]?, $run.tool.extensions[]?.rules[]?]
+                  | map({key: .id, value: .}) | from_entries) as $rules
+              | $run.results[]?
+              | . as $r
+              | (($rules[$r.ruleId].properties["security-severity"] // "0") | tonumber) as $sev
+              | select($sev >= $min)
+              | "- [\($r.ruleId)] severity \($sev): \($r.message.text | gsub("\n"; " ")) (\($r.locations[0].physicalLocation.artifactLocation.uri):\($r.locations[0].physicalLocation.region.startLine))"
+            ' "$SARIF" >> "$FINDINGS_FILE"
+          done
+          COUNT=$(grep -c '^- ' "$FINDINGS_FILE" || true)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "### CodeQL (${{ matrix.language }}): $COUNT finding(s) with security-severity >= $MIN" >> "$GITHUB_STEP_SUMMARY"
+          cat "$FINDINGS_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-findings-${{ matrix.language }}
+          path: |
+            codeql-findings-${{ matrix.language }}.txt
+            sarif-results/*.sarif
+          if-no-files-found: ignore
+
+      - name: Fail on CodeQL Findings
+        if: steps.findings.outputs.count != '0'
+        run: |
+          echo "::error::CodeQL found ${{ steps.findings.outputs.count }} security issue(s) at or above severity $CODEQL_MIN_SECURITY_SEVERITY."
+          exit 1
 
   security-gatekeeper:
     name: Security Gatekeeper Status
@@ -82,105 +178,85 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Download CodeQL Findings
+        if: needs.codeql-analysis.result == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codeql-findings-*
+          path: codeql-findings
+          merge-multiple: true
+
       - name: Evaluate Security Results & Label PR
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          DEP_REVIEW_RESULT: ${{ needs.dependency-review.result }}
+          CODEQL_RESULT: ${{ needs.codeql-analysis.result }}
         with:
           script: |
-            const prNumber = context.payload.pull_request.number;
-            const existingLabels = (context.payload.pull_request.labels || []).map(l => l.name);
-
-            const depReviewResult = "${{ needs.dependency-review.result }}";
-            const codeqlResult = "${{ needs.codeql-analysis.result }}";
-
-            const labelsToAdd = [];
-            const labelsToRemove = [];
+            const fs = require('fs');
+            const path = require('path');
+            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/remediation.cjs`);
+            const prNumber = Number(process.env.PR_NUMBER);
+            const headRef = process.env.HEAD_REF;
+            const depReviewResult = process.env.DEP_REVIEW_RESULT;
+            const codeqlResult = process.env.CODEQL_RESULT;
+            const dispatches = [];
 
             // Evaluate Dependency Review
             if (depReviewResult === 'failure') {
-              if (!existingLabels.includes('dependency-alert')) {
-                labelsToAdd.push('dependency-alert');
-              }
-            } else if (existingLabels.includes('dependency-alert')) {
-              labelsToRemove.push('dependency-alert');
+              await helpers.addLabel({ github, context, core, prNumber, label: 'dependency-alert' });
+              const status = await helpers.dispatchRemediation({
+                github, context, core, prNumber, headRef,
+                workflow: 'pr-dependency-fixer.lock.yml',
+                stackedLabel: 'security-remediation',
+                findings: `Dependency Review failed (fail-on-severity: high) in run ${context.runId}.`
+              });
+              dispatches.push(`PR Dependency Fixer: **${status}**`);
+            } else {
+              await helpers.removeLabel({ github, context, core, prNumber, label: 'dependency-alert' });
             }
 
             // Evaluate CodeQL SAST
             if (codeqlResult === 'failure') {
-              if (!existingLabels.includes('codeql-alert')) {
-                labelsToAdd.push('codeql-alert');
+              await helpers.addLabel({ github, context, core, prNumber, label: 'codeql-alert' });
+              let findings = '';
+              const dir = path.join(process.env.GITHUB_WORKSPACE, 'codeql-findings');
+              if (fs.existsSync(dir)) {
+                for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.txt'))) {
+                  findings += fs.readFileSync(path.join(dir, f), 'utf8');
+                }
               }
-            } else if (existingLabels.includes('codeql-alert')) {
-              labelsToRemove.push('codeql-alert');
-            }
-
-            // Evaluate GitHub Secret Scanning
-            let hasSecretAlerts = false;
-            try {
-              const { data: secretAlerts } = await github.rest.secretScanning.listAlertsForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                per_page: 30
+              const status = await helpers.dispatchRemediation({
+                github, context, core, prNumber, headRef,
+                workflow: 'pr-codeql-fixer.lock.yml',
+                stackedLabel: 'security-remediation',
+                findings: `CodeQL SAST findings (run ${context.runId}):\n${findings || '(see run artifacts codeql-findings-*)'}`
               });
-              if (secretAlerts && secretAlerts.length > 0) {
-                hasSecretAlerts = true;
-              }
-            } catch (e) {
-              core.info(`Secret scanning status check: ${e.message}`);
+              dispatches.push(`PR CodeQL Fixer: **${status}**`);
+            } else {
+              await helpers.removeLabel({ github, context, core, prNumber, label: 'codeql-alert' });
             }
 
-            if (hasSecretAlerts) {
-              if (!existingLabels.includes('secret-alert')) {
-                labelsToAdd.push('secret-alert');
-              }
-            } else if (existingLabels.includes('secret-alert')) {
-              labelsToRemove.push('secret-alert');
-            }
+            // GitHub Secret Scanning alerts are repository-wide and require a token with
+            // secret-scanning read access (not available to GITHUB_TOKEN); secrets inside the
+            // PR diff are caught by the GITLEAKS linter in the lint stage.
+            await helpers.removeLabel({ github, context, core, prNumber, label: 'security-alert' });
 
-            // Remove legacy security-alert label if present
-            if (existingLabels.includes('security-alert')) {
-              labelsToRemove.push('security-alert');
-            }
-
-            if (labelsToAdd.length > 0) {
-              try {
-                await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  labels: labelsToAdd
-                });
-                core.info(`Applied security labels: ${labelsToAdd.join(', ')}`);
-              } catch (e) {
-                core.warning(`Failed to add labels: ${e.message}`);
-              }
-            }
-
-            for (const label of labelsToRemove) {
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  name: label
-                });
-                core.info(`Removed label: ${label}`);
-              } catch (e) {
-                core.warning(`Failed to remove label ${label}: ${e.message}`);
-              }
-            }
-
-            const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure' || hasSecretAlerts;
-
+            const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure';
             if (hasFailure) {
-              let summary = '### ❌ Security Gatekeeper Failed\n\n' +
-                '> 🛡️ **Autonomous Remediation**: Added ' + (labelsToAdd.length > 0 ? labelsToAdd.map(l => `\`${l}\``).join(', ') : 'security') + ' label(s). Specialized remediator workflows will analyze findings, update manifests or code, and push fixes to your branch.\n\n' +
+              const summary = '### ❌ Security Gatekeeper Failed\n\n' +
                 `- **Dependency Review**: ${depReviewResult}\n` +
-                `- **CodeQL SAST**: ${codeqlResult}\n`;
+                `- **CodeQL SAST**: ${codeqlResult}\n\n` +
+                '> 🛡️ **Autonomous Remediation**: ' + dispatches.join(', ') + '. Fixes arrive as stacked PRs that are auto-merged into your branch.\n';
               await core.summary.addRaw(summary).write();
               core.setFailed('Security vulnerabilities or insecure dependencies detected.');
             } else {
-              let summary = '### ✅ Security Gatekeeper Passed\n\n' +
-                'All GitHub Code Security checks passed successfully.\n';
-              await core.summary.addRaw(summary).write();
+              await core.summary.addRaw('### ✅ Security Gatekeeper Passed\n\nAll GitHub Code Security checks passed successfully.\n').write();
             }

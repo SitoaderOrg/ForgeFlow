@@ -4,10 +4,29 @@ description: Automatically creates a stacked remediation pull request to scrub h
 emoji: "🔑"
 
 on:
-  pull_request:
-    types: [labeled]
-  labels: ["secret-alert"]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to remediate (dispatch this workflow on the PR head branch)"
+        required: true
+        type: string
+      findings:
+        description: "Gate findings handed over by the PR Quality Pipeline"
+        required: false
+        type: string
+        default: ""
+  # Dispatched by the PR Quality Pipeline with GITHUB_TOKEN (actor github-actions[bot]);
+  # workflow_dispatch itself already requires write access to the repository.
+  roles: all
+
+concurrency:
+  group: "gh-aw-${{ github.workflow }}-${{ github.ref }}"
+  job-discriminator: ${{ github.ref }}
+
+engine:
+  id: copilot
+  # Pinned: the "auto" alias can resolve to models that reject Copilot CLI custom tools.
+  model: claude-sonnet-5.5
 
 permissions:
   contents: read
@@ -31,9 +50,22 @@ safe-outputs:
     title-prefix: "fix(security): "
     labels: ["security-remediation"]
     allowed-base-branches: ["*"]
+    draft: false
+    fallback-as-issue: false
   add-comment:
     max: 1
+    target: "*"
 ---
+
+## Pull Request Context
+- **Parent pull request**: #${{ github.event.inputs.pr_number }} — this workflow was dispatched on that PR's head branch, which is checked out in the workspace.
+- **Gate findings from the PR Quality Pipeline**:
+
+```text
+${{ github.event.inputs.findings }}
+```
+
+Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
 
 ## Objective
 Automatically create a stacked remediation pull request targeting the developer's feature branch to scrub all hardcoded credentials and secrets detected by GitHub Secret Protection / Secret Scanning, replacing them with environment variables, while notifying the author to revoke and rotate the exposed secrets.

@@ -4,10 +4,29 @@ description: Automatically refactors and resolves security vulnerabilities flagg
 emoji: "🛡️"
 
 on:
-  pull_request:
-    types: [labeled]
-  labels: ["codeql-alert"]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to remediate (dispatch this workflow on the PR head branch)"
+        required: true
+        type: string
+      findings:
+        description: "Gate findings handed over by the PR Quality Pipeline"
+        required: false
+        type: string
+        default: ""
+  # Dispatched by the PR Quality Pipeline with GITHUB_TOKEN (actor github-actions[bot]);
+  # workflow_dispatch itself already requires write access to the repository.
+  roles: all
+
+concurrency:
+  group: "gh-aw-${{ github.workflow }}-${{ github.ref }}"
+  job-discriminator: ${{ github.ref }}
+
+engine:
+  id: copilot
+  # Pinned: the "auto" alias can resolve to models that reject Copilot CLI custom tools.
+  model: claude-sonnet-5.5
 
 permissions:
   contents: read
@@ -18,8 +37,19 @@ permissions:
 
 tools:
   edit: true
+  bash: true
   github:
     mode: "gh-proxy"
+
+network:
+  allowed:
+    - defaults
+    - node
+
+steps:
+  - name: Install project dependencies
+    run: |
+      if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; fi
 
 strict: true
 
@@ -31,23 +61,36 @@ safe-outputs:
     title-prefix: "fix(security): "
     labels: ["security-remediation"]
     allowed-base-branches: ["*"]
+    draft: false
+    fallback-as-issue: false
   add-comment:
     max: 1
+    target: "*"
 ---
+
+## Pull Request Context
+- **Parent pull request**: #${{ github.event.inputs.pr_number }} — this workflow was dispatched on that PR's head branch, which is checked out in the workspace.
+- **Gate findings from the PR Quality Pipeline**:
+
+```text
+${{ github.event.inputs.findings }}
+```
+
+Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
 
 ## Objective
 Automatically create a stacked remediation pull request targeting the developer's feature branch to resolve CodeQL SAST vulnerabilities—leveraging GitHub Copilot Autofix suggestions when available or synthesizing defensive code patches—with distinct, itemized commit-style sections explaining each fix, allowing the developer to review and merge the solution.
 
 ## Instructions
 1. Inspect the pull request using `gh pr diff` and `gh pr view --json number,files,commits,headRefName`.
-2. Inspect the failed CI logs and CodeQL alerts:
-   - Query CodeQL alerts: `gh api repos/{owner}/{repo}/code-scanning/alerts?ref={head_branch}&state=open` or review run logs via `gh run list --workflow=pr-security.yml` and `gh run view <run-id> --log-failed`.
+2. Start from the **Gate findings** above: each line lists the CodeQL rule id, security severity, message and `file:line`. Optionally cross-check open alerts with `gh api "repos/${{ github.repository }}/code-scanning/alerts?ref=refs/pull/${{ github.event.inputs.pr_number }}/head&state=open"`.
 3. For each detected vulnerability:
    - Check if **GitHub Copilot Autofix** produced a suggestion: `gh api repos/{owner}/{repo}/code-scanning/alerts/<alert-number>/autofix` or inspect inline review suggestions on the PR.
    - If a valid Copilot Autofix suggestion exists, validate its safety and apply the suggested patch.
    - If Copilot Autofix is not available: analyze the CodeQL taint path, vulnerable sink, and rule ID (e.g., SQL injection, unsanitized input/XSS, path traversal, command injection), and refactor the code defensively using parameterized queries, safe path resolution, or input sanitization.
    - Maintain a list of each distinct fix with a descriptive commit title (e.g., `fix(security): sanitize input to prevent path traversal in <file>`) and explanation.
-4. Apply safe outputs:
+4. Keep behaviour intact: run `npm test` and `npm run lint` after patching and make sure both pass (format with `npx prettier --write <file>` if needed).
+5. Apply safe outputs:
    - Call `create-pull-request` to open a stacked pull request:
      - Set `base` to the parent PR branch (`headRefName`).
      - Set `title`: `fix(security): resolve CodeQL SAST vulnerabilities`

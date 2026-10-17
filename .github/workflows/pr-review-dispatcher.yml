@@ -2,13 +2,16 @@ name: PR Review & Consolidation Dispatcher
 
 on:
   workflow_call:
-  # Also evaluates on unlabeled events when a blocking remediation is merged
-  pull_request:
-    types: [unlabeled]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,7 +22,6 @@ jobs:
   review-dispatcher:
     name: Evaluate Readiness & Request Copilot Review
     runs-on: ubuntu-latest
-    if: "!github.event.pull_request.draft"
 
     steps:
       - name: Checkout Code
@@ -29,11 +31,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_NUM="${{ github.event.pull_request.number }}"
-          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
-          PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_NUM="${{ inputs.pr_number }}"
+          HEAD_BRANCH="${{ inputs.head_ref }}"
+          HEAD_SHA="${{ inputs.head_sha }}"
 
-          echo "🔍 Evaluating quality status for PR #$PR_NUM ($HEAD_BRANCH)..."
+          echo "🔍 Evaluating quality status for PR #$PR_NUM ($HEAD_BRANCH @ $HEAD_SHA)..."
+
+          if [ "$(gh pr view "$PR_NUM" --json isDraft --jq '.isDraft')" = "true" ]; then
+            echo "ℹ️ PR is a draft. Skipping review dispatch."
+            exit 0
+          fi
 
           # 1. Check current labels on the PR
           LABELS=$(gh pr view "$PR_NUM" --json labels --jq '.labels.[].name' 2>/dev/null || true)
@@ -89,14 +96,27 @@ jobs:
 
           if [ "$COPILOT_REQUESTED" = "false" ]; then
             echo "🚀 Requesting GitHub Copilot Code Review..."
-            gh pr edit "$PR_NUM" --add-reviewer "copilot" 2>/dev/null || echo "Requested reviewer copilot."
+            if gh api -X POST "repos/${{ github.repository }}/pulls/$PR_NUM/requested_reviewers" \
+                 -f 'reviewers[]=copilot-pull-request-reviewer[bot]' >/dev/null 2>&1 \
+               || gh pr edit "$PR_NUM" --add-reviewer "@copilot" >/dev/null 2>&1; then
+              echo "Requested GitHub Copilot review."
+            else
+              echo "::warning::Could not request GitHub Copilot review (Copilot code review may not be enabled for this repository)."
+            fi
           else
             echo "ℹ️ GitHub Copilot Code Review already requested."
           fi
 
-          # 5. Post consolidated summary comment on the PR
+          # 5. Post consolidated summary comment on the PR (once per head commit)
+          MARKER="<!-- pr-quality-pipeline-complete:$HEAD_SHA -->"
+          if gh api "repos/${{ github.repository }}/issues/$PR_NUM/comments" --paginate --jq '.[].body' | grep -qF "$MARKER"; then
+            echo "ℹ️ Completion summary already posted for $HEAD_SHA."
+            exit 0
+          fi
+
           COMMENT_FILE=$(mktemp)
           {
+            echo "$MARKER"
             echo "### 🎯 Automated Quality Pipeline Completed"
             echo ""
             echo "All automated gates (**Metadata, Lint, Build, Tests, Security, and Docs**) have completed successfully!"
@@ -108,7 +128,7 @@ jobs:
             echo "1. **GitHub Copilot Code Review** has been requested for deep semantic and architectural analysis."
             echo "2. Review any inline suggestions left by Copilot (you can apply suggestions directly with one-click **\"Commit suggestion\"** buttons)."
             echo "3. If remediation commits were merged, review the changes via the links above."
-            echo "4. Once you approve, this PR is ready to merge into \`main\`! 🚀"
+            echo "4. **⏳ Awaiting human review** — once a maintainer approves, this PR is ready to merge into \`main\`! 🚀"
           } > "$COMMENT_FILE"
 
           gh pr comment "$PR_NUM" --body-file "$COMMENT_FILE"

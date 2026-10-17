@@ -4,10 +4,29 @@ description: Automatically generates missing unit tests or fixes broken test ass
 emoji: "🧪"
 
 on:
-  pull_request:
-    types: [labeled]
-  labels: ["test-required"]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to remediate (dispatch this workflow on the PR head branch)"
+        required: true
+        type: string
+      findings:
+        description: "Gate findings handed over by the PR Quality Pipeline"
+        required: false
+        type: string
+        default: ""
+  # Dispatched by the PR Quality Pipeline with GITHUB_TOKEN (actor github-actions[bot]);
+  # workflow_dispatch itself already requires write access to the repository.
+  roles: all
+
+concurrency:
+  group: "gh-aw-${{ github.workflow }}-${{ github.ref }}"
+  job-discriminator: ${{ github.ref }}
+
+engine:
+  id: copilot
+  # Pinned: the "auto" alias can resolve to models that reject Copilot CLI custom tools.
+  model: claude-sonnet-5.5
 
 permissions:
   contents: read
@@ -21,6 +40,16 @@ tools:
   github:
     mode: "gh-proxy"
 
+network:
+  allowed:
+    - defaults
+    - node
+
+steps:
+  - name: Install project dependencies
+    run: |
+      if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; fi
+
 strict: true
 
 features:
@@ -31,9 +60,22 @@ safe-outputs:
     title-prefix: "test: "
     labels: ["test-remediation"]
     allowed-base-branches: ["*"]
+    draft: false
+    fallback-as-issue: false
   add-comment:
     max: 1
+    target: "*"
 ---
+
+## Pull Request Context
+- **Parent pull request**: #${{ github.event.inputs.pr_number }} — this workflow was dispatched on that PR's head branch, which is checked out in the workspace.
+- **Gate findings from the PR Quality Pipeline**:
+
+```text
+${{ github.event.inputs.findings }}
+```
+
+Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
 
 ## Objective
 Automatically generate missing unit tests or repair broken test assertions for code introduced or modified in this pull request to achieve at least 80% test coverage and unblock the PR Tests Gatekeeper. Propose all tests in a single batched stacked pull request targeting the author's feature branch.
@@ -62,8 +104,7 @@ Read the manifest or root test scripts to identify the exact coverage command us
 
 ## Step 2: Analyze Uncovered Code in PR Diff
 1. Inspect the pull request using `gh pr diff` and `gh pr view --json number,files,commits,headRefName`.
-2. Inspect the failed CI logs and coverage report for the `PR Tests & Coverage Gatekeeper` workflow:
-   - Run `gh run list --workflow=pr-test.yml` and `gh run view <run-id> --log-failed`.
+2. Start from the **Gate findings** above (failing tests and coverage table), then reproduce locally with `npx vitest run --coverage` (dependencies are pre-installed).
 3. Identify all newly added or modified source files and testable logic:
    - Functions, methods, classes, and handlers
    - Conditional branches (`if/else`, `switch/match`)
@@ -98,7 +139,7 @@ Write clean, idiomatic unit or integration tests matching the project's existing
 ## Step 5: Propose Stacked Pull Request
 Apply safe outputs:
 1. Call `create-pull-request` to open a stacked pull request:
-   - Set `base` to the parent PR branch (`headRefName`).
+   - Set `base` to the parent PR branch (`headRefName`). Create the PR from a new branch; never push to the parent branch directly.
    - Set `title`: `test: add unit test coverage for PR changes`
    - Set `body`: Provide an itemized breakdown of:
      - **New Test Files & Cases**: List of test files and functions added.

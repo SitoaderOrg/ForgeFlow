@@ -4,10 +4,29 @@ description: Automatically validates and updates PR title and description using 
 emoji: "✍️"
 
 on:
-  pull_request:
-    types: [labeled]
-  labels: ["needs-metadata"]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to remediate (dispatch this workflow on the PR head branch)"
+        required: true
+        type: string
+      findings:
+        description: "Gate findings handed over by the PR Quality Pipeline"
+        required: false
+        type: string
+        default: ""
+  # Dispatched by the PR Quality Pipeline with GITHUB_TOKEN (actor github-actions[bot]);
+  # workflow_dispatch itself already requires write access to the repository.
+  roles: all
+
+concurrency:
+  group: "gh-aw-${{ github.workflow }}-${{ github.ref }}"
+  job-discriminator: ${{ github.ref }}
+
+engine:
+  id: copilot
+  # Pinned: the "auto" alias can resolve to models that reject Copilot CLI custom tools.
+  model: claude-sonnet-5.5
 
 permissions:
   contents: read
@@ -28,18 +47,31 @@ safe-outputs:
   update-pull-request:
     title: true
     body: true
+    target: "*"
   remove-labels:
     allowed: ["needs-metadata"]
+    target: "*"
   add-comment:
     max: 1
+    target: "*"
 ---
+
+## Pull Request Context
+- **Parent pull request**: #${{ github.event.inputs.pr_number }} — this workflow was dispatched on that PR's head branch, which is checked out in the workspace.
+- **Gate findings from the PR Quality Pipeline**:
+
+```text
+${{ github.event.inputs.findings }}
+```
+
+Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
 
 ## Objective
 Analyze the changes introduced in this pull request and generate complete, accurate PR metadata (title and description) matching the repository standard defined in `.github/pull_request_template.md`.
 
 ## Context & Inputs
 - The PR was flagged with `needs-metadata` by the PR Gatekeeper because the title does not follow Conventional Commits, the description is empty, or placeholder text was left in place.
-- Use `gh pr view --json title,body,commits,files,headRefName` and `gh pr diff` to review all changes, commit messages, and the branch name.
+- Use `gh pr view ${{ github.event.inputs.pr_number }} --json title,body,commits,files,headRefName` and `gh pr diff ${{ github.event.inputs.pr_number }}` to review all changes, commit messages, and the branch name.
 - Read `.github/pull_request_template.md` to follow the exact expected section format.
 
 ## Tasks
@@ -57,6 +89,7 @@ Analyze the changes introduced in this pull request and generate complete, accur
    - **Type of Change**: Mark the appropriate checkbox (`- [x]`) based on the diff.
    - **Linked Issues**: Link any issue mentioned in commits or branch name (e.g. `Closes #123`), or leave as `None`.
    - **Verification & Testing**: Note tests that were added or modified in the diff.
+   - The description must be at least 20 characters and must not contain the words "TODO" or "fill this out" (the gatekeeper rejects them).
 
 4. **Apply Safe Outputs**:
    - `update-pull-request`: Update the PR with the new `title` and generated `body`.

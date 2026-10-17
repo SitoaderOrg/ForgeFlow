@@ -1,105 +1,171 @@
 name: PR Stacked Remediation Auto-Merger
 
+# Consolidates agent remediation work into the parent PR branch and re-runs the
+# PR Quality Pipeline.
+#
+# Agents run with the default GITHUB_TOKEN, and GitHub never starts new workflow runs
+# for PRs/pushes/labels created with that token. This workflow therefore listens for
+# remediation agent runs to *complete* (workflow_run), merges any stacked remediation
+# PRs they opened, and re-dispatches the pipeline on the parent branch.
+
 on:
+  workflow_run:
+    workflows:
+      - PR Validation
+      - PR Lint Fixer
+      - PR Test Generator
+      - PR CodeQL Fixer
+      - PR Dependency Fixer
+      - PR Secret Fixer
+      - PR Documentation Updater
+    types: [completed]
+  # Still honoured when stacked PRs are opened with a PAT (GH_AW_CI_TRIGGER_TOKEN)
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Parent PR head branch to consolidate'
+        required: true
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: pr-stacked-merge-${{ github.event.workflow_run.head_branch || github.event.pull_request.base.ref || inputs.branch }}
   cancel-in-progress: false
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 jobs:
   auto-merge-stacked:
-    name: Auto-Merge Validated Remediation PRs
+    name: Auto-Merge Remediation PRs & Re-run Pipeline
     runs-on: ubuntu-latest
-    # Only run on stacked remediation PRs created by our agents
     if: >-
+      github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'test-remediation') ||
       contains(github.event.pull_request.labels.*.name, 'security-remediation') ||
       contains(github.event.pull_request.labels.*.name, 'doc-remediation')
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Auto-Merge Stacked PR into Feature Branch
+      - name: Consolidate Stacked PRs & Re-dispatch Pipeline
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          STACKED_PR_NUM="${{ github.event.pull_request.number }}"
-          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
-          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_URL="${{ github.event.pull_request.html_url }}"
+          INPUT_BRANCH: ${{ inputs.branch }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const defaultBranch = context.payload.repository.default_branch;
+            const REMEDIATION = {
+              'test-remediation': ['test-required'],
+              'doc-remediation': ['docs-required'],
+              'security-remediation': ['codeql-alert', 'dependency-alert', 'secret-alert']
+            };
 
-          echo "🔍 Processing Stacked Remediation PR #$STACKED_PR_NUM ($PR_TITLE)"
-          echo "Targeting feature branch: $BASE_BRANCH from $HEAD_BRANCH"
+            let parentBranch;
+            if (context.eventName === 'workflow_run') {
+              const run = context.payload.workflow_run;
+              parentBranch = run.head_branch;
+              core.info(`Agent run '${run.name}' #${run.id} finished with '${run.conclusion}' on '${parentBranch}'.`);
+            } else if (context.eventName === 'pull_request') {
+              parentBranch = context.payload.pull_request.base.ref;
+            } else {
+              parentBranch = process.env.INPUT_BRANCH;
+            }
 
-          # Ensure the base branch is NOT main (it must be a feature branch)
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          if [ "$BASE_BRANCH" = "$DEFAULT_BRANCH" ]; then
-            echo "ℹ️ Stacked PR targets default branch '$DEFAULT_BRANCH'. Skipping auto-merge."
-            exit 0
-          fi
+            if (!parentBranch || parentBranch === defaultBranch) {
+              core.info(`Nothing to consolidate for branch '${parentBranch}'.`);
+              return;
+            }
 
-          # Find the parent PR (the PR where headRefName == BASE_BRANCH)
-          PARENT_PR_DATA=$(gh pr list --head "$BASE_BRANCH" --json number,url,title --limit 1)
-          PARENT_PR_NUM=$(echo "$PARENT_PR_DATA" | jq -r '.[0].number // empty')
-          PARENT_PR_URL=$(echo "$PARENT_PR_DATA" | jq -r '.[0].url // empty')
+            const [parent] = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', head: `${owner}:${parentBranch}`, per_page: 10
+            });
+            if (!parent) {
+              core.info(`No open parent PR found for branch '${parentBranch}'.`);
+              return;
+            }
+            core.info(`Parent PR: #${parent.number} (${parent.html_url})`);
 
-          echo "Found Parent PR: #$PARENT_PR_NUM ($PARENT_PR_URL)"
+            // 1. Merge every open stacked remediation PR that targets the parent branch
+            const stacked = (await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', base: parentBranch, per_page: 100
+            })).filter(p => p.labels.some(l => REMEDIATION[l.name]));
 
-          # Merge the stacked PR into the feature branch using squash merge
-          echo "🚀 Auto-merging stacked PR #$STACKED_PR_NUM into $BASE_BRANCH..."
-          gh pr merge "$STACKED_PR_NUM" --squash --delete-branch --subject "Merge stacked PR #$STACKED_PR_NUM: $PR_TITLE"
+            let merged = 0;
+            for (const pr of stacked) {
+              try {
+                if (pr.draft) {
+                  await github.graphql(
+                    'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { clientMutationId } }',
+                    { id: pr.node_id }
+                  );
+                  core.info(`Marked stacked PR #${pr.number} ready for review.`);
+                }
 
-          # Capture the latest commit SHA after merge
-          git fetch origin "$BASE_BRANCH"
-          MERGE_COMMIT_SHA=$(git rev-parse origin/"$BASE_BRANCH")
-          COMMIT_URL="https://github.com/${{ github.repository }}/commit/$MERGE_COMMIT_SHA"
+                const { data: result } = await github.rest.pulls.merge({
+                  owner, repo,
+                  pull_number: pr.number,
+                  merge_method: 'squash',
+                  commit_title: `Merge stacked PR #${pr.number}: ${pr.title}`
+                });
+                merged++;
+                core.info(`✅ Merged stacked PR #${pr.number} into '${parentBranch}' (${result.sha}).`);
 
-          echo "✅ Stacked PR #$STACKED_PR_NUM auto-merged successfully."
+                try {
+                  await github.rest.git.deleteRef({ owner, repo, ref: `heads/${pr.head.ref}` });
+                } catch (e) {
+                  core.warning(`Could not delete branch '${pr.head.ref}': ${e.message}`);
+                }
 
-          # Clean up corresponding remediation labels on parent PR
-          if [ -n "$PARENT_PR_NUM" ]; then
-            STACKED_LABELS=$(gh pr view "$STACKED_PR_NUM" --json labels --jq '.labels.[].name' 2>/dev/null || true)
-            
-            if echo "$STACKED_LABELS" | grep -qx "test-remediation"; then
-              gh pr edit "$PARENT_PR_NUM" --remove-label "test-required" 2>/dev/null || true
-            fi
-            if echo "$STACKED_LABELS" | grep -qx "doc-remediation"; then
-              gh pr edit "$PARENT_PR_NUM" --remove-label "docs-required" 2>/dev/null || true
-            fi
-            if echo "$STACKED_LABELS" | grep -qx "security-remediation"; then
-              gh pr edit "$PARENT_PR_NUM" --remove-label "codeql-alert" 2>/dev/null || true
-              gh pr edit "$PARENT_PR_NUM" --remove-label "dependency-alert" 2>/dev/null || true
-              gh pr edit "$PARENT_PR_NUM" --remove-label "secret-alert" 2>/dev/null || true
-            fi
-          fi
+                for (const label of pr.labels.flatMap(l => REMEDIATION[l.name] || [])) {
+                  try {
+                    await github.rest.issues.removeLabel({ owner, repo, issue_number: parent.number, name: label });
+                  } catch (e) {
+                    if (e.status !== 404) core.warning(`Could not remove '${label}': ${e.message}`);
+                  }
+                }
 
-          # Post transparent audit trail comment on parent PR
-          if [ -n "$PARENT_PR_NUM" ]; then
-            COMMENT_FILE=$(mktemp)
-            {
-              echo "### 🤖 Autonomous Remediation Auto-Merged"
-              echo ""
-              echo "The remediation agent has automatically incorporated verified improvements into your branch:"
-              echo ""
-              echo "- **Stacked PR**: [#${STACKED_PR_NUM} - ${PR_TITLE}](${PR_URL})"
-              echo "- **Merged Commit**: [\`${MERGE_COMMIT_SHA:0:7}\`](${COMMIT_URL})"
-              echo "- **Target Branch**: \`${BASE_BRANCH}\`"
-              echo ""
-              echo "> 💡 *All changes are squashed directly into your feature branch. You can review the diff anytime via the links above.*"
-            } > "$COMMENT_FILE"
+                const commitUrl = `${context.serverUrl}/${owner}/${repo}/commit/${result.sha}`;
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: parent.number,
+                  body: [
+                    '### 🤖 Autonomous Remediation Auto-Merged',
+                    '',
+                    'The remediation agent has automatically incorporated verified improvements into your branch:',
+                    '',
+                    `- **Stacked PR**: [#${pr.number} - ${pr.title}](${pr.html_url})`,
+                    `- **Merged Commit**: [\`${result.sha.slice(0, 7)}\`](${commitUrl})`,
+                    `- **Target Branch**: \`${parentBranch}\``,
+                    '',
+                    '> 💡 *All changes are squashed directly into your feature branch. The PR Quality Pipeline has been re-run on the updated branch.*'
+                  ].join('\n')
+                });
+              } catch (e) {
+                core.warning(`Failed to merge stacked PR #${pr.number}: ${e.message}`);
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: parent.number,
+                  body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${e.message}\n\nPlease review and merge it manually.`
+                });
+              }
+            }
 
-            gh pr comment "$PARENT_PR_NUM" --body-file "$COMMENT_FILE"
-            rm -f "$COMMENT_FILE"
-            echo "Posted audit trail comment to parent PR #$PARENT_PR_NUM."
-          fi
+            // 2. Re-run the PR Quality Pipeline on the (possibly updated) parent branch.
+            //    Agents that push directly (lint fixer) or edit metadata (validation) also
+            //    rely on this, because GITHUB_TOKEN pushes never raise `synchronize`.
+            const shouldRerun = context.eventName === 'workflow_run' || merged > 0 || context.eventName === 'workflow_dispatch';
+            if (shouldRerun) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner, repo,
+                workflow_id: 'pr-pipeline.yml',
+                ref: parentBranch,
+                inputs: { pr_number: String(parent.number) }
+              });
+              core.info(`🔁 Re-dispatched PR Quality Pipeline for PR #${parent.number} on '${parentBranch}'.`);
+            }
+
+            await core.summary.addRaw(
+              `### Stacked Remediation Consolidation\n\n- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Pipeline re-dispatched: ${shouldRerun}\n`
+            ).write();
