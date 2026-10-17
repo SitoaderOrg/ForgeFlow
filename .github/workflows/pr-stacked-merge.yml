@@ -15,6 +15,16 @@ on:
         description: 'Parent PR head branch to consolidate'
         required: true
         type: string
+      agent_result:
+        description: 'Result of the dispatching agent job (success, failure, cancelled, skipped)'
+        required: false
+        type: string
+        default: ''
+      source:
+        description: 'Workflow run that dispatched the relay'
+        required: false
+        type: string
+        default: ''
   # Still honoured when stacked PRs are opened with a PAT (GH_AW_CI_TRIGGER_TOKEN)
   pull_request:
     types: [opened, reopened, labeled]
@@ -43,6 +53,8 @@ jobs:
         uses: actions/github-script@v7
         env:
           INPUT_BRANCH: ${{ inputs.branch }}
+          AGENT_RESULT: ${{ inputs.agent_result }}
+          SOURCE: ${{ inputs.source }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -140,7 +152,24 @@ jobs:
             // 2. Re-run the PR Quality Pipeline on the (possibly updated) parent branch.
             //    Agents that push directly (lint fixer) or edit metadata (validation) also
             //    rely on this, because GITHUB_TOKEN pushes never raise `synchronize`.
-            const shouldRerun = context.eventName === 'workflow_dispatch' || merged > 0;
+            // Re-run only when there is something new to validate. If the agent itself failed
+            // (e.g. inference quota/rate limit), stop here instead of looping; a human can re-run.
+            const agentResult = process.env.AGENT_RESULT || '';
+            const agentFailed = context.eventName === 'workflow_dispatch' && ['failure', 'cancelled'].includes(agentResult);
+            const shouldRerun = merged > 0 || (context.eventName === 'workflow_dispatch' && !agentFailed);
+            if (agentFailed && merged === 0) {
+              core.warning(`${process.env.SOURCE} finished with '${agentResult}'; not re-running the pipeline.`);
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: parent.number,
+                body: [
+                  `### ⚠️ Remediation agent did not complete`,
+                  '',
+                  `\`${process.env.SOURCE}\` finished with **${agentResult}**, so the pipeline was not re-run automatically.`,
+                  '',
+                  `Re-run it once the cause is resolved: \`gh workflow run pr-pipeline.yml --ref ${parentBranch} -f pr_number=${parent.number}\``
+                ].join('\n')
+              });
+            }
             if (shouldRerun) {
               await github.rest.actions.createWorkflowDispatch({
                 owner, repo,

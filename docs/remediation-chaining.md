@@ -44,14 +44,19 @@ The build gate (Stage 2) has no agent: a broken build halts the pipeline with `b
 ## Guard rails
 
 - **Retry budget**: each agent may be dispatched at most `MAX_REMEDIATION_ATTEMPTS` times
-  (default `4`) per PR branch. After that the PR gets a single "manual intervention required" comment.
+  (repository variable, default `4`) per PR branch. After that the PR gets a single "manual intervention required" comment.
 - **Serialized agents**: all agent jobs share the `gh-aw-copilot-remediation-agents` concurrency
   group (`queue: max`) and back off on HTTP 429, because parallel agents exhaust the Copilot
   inference rate limit.
-- **Pinned model**: agents pin `engine.model` to a chat model enabled for the organization's
-  Copilot inference (`gpt-4.1`). The `auto` alias can resolve to models that reject the Copilot
-  CLI's custom tools. The list of available models is written to
-  `sandbox/firewall/logs/api-proxy-logs/models.json` in every agent run's `agent` artifact.
+- **Configurable model**: agents use `engine.model: ${{ vars.GH_AW_AGENT_MODEL || 'gpt-4.1' }}`.
+  The `auto` alias can resolve to models that reject the Copilot CLI's custom tools, and individual
+  models can hit organization rate limits (`429`). Switch models by updating the repository variable;
+  the list of available models is written to `sandbox/firewall/logs/api-proxy-logs/models.json`
+  in every agent run's `agent` artifact.
+- **Fail closed on agent errors**: the relay receives the agent job result. When an agent fails
+  and nothing was merged, the relay does not re-run the pipeline (avoiding hot loops during
+  outages); it comments on the PR with the re-run command instead. Cancelled/skipped agent runs
+  do not consume the retry budget.
 - **Concurrency**: only `pr-pipeline.yml` declares a concurrency group (`pr-pipeline-<PR>`).
   Reusable workflows must not declare workflow-level concurrency: inside a reusable workflow
   `github.workflow` resolves to the *caller's* name, which deadlocks with the caller's group.

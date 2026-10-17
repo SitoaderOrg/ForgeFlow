@@ -27,7 +27,7 @@ engine:
   id: copilot
   # Pinned: "auto" can resolve to models that reject Copilot CLI custom tools (e.g. gpt-5.6-luna-utility).
   # Must be a chat model enabled for the org's Copilot inference (see the api-proxy models.json in run artifacts).
-  model: gpt-4.1
+  model: ${{ vars.GH_AW_AGENT_MODEL || 'gpt-4.1' }}
   # Serialize agent jobs repo-wide: parallel remediation agents exhaust the Copilot
   # inference rate limit (HTTP 429).
   concurrency:
@@ -73,6 +73,8 @@ jobs:
     pre-steps:
       - name: Hand off to remediation relay
         uses: actions/github-script@v7
+        env:
+          AGENT_RESULT: ${{ needs.agent.result }}
         with:
           script: |
             await github.rest.actions.createWorkflowDispatch({
@@ -80,7 +82,11 @@ jobs:
               repo: context.repo.repo,
               workflow_id: 'pr-stacked-merge.yml',
               ref: context.payload.repository.default_branch,
-              inputs: { branch: process.env.GITHUB_REF_NAME }
+              inputs: {
+                branch: process.env.GITHUB_REF_NAME,
+                agent_result: process.env.AGENT_RESULT,
+                source: `${process.env.GITHUB_WORKFLOW} (run ${context.runId})`
+              }
             });
             core.info(`Dispatched remediation relay for '${process.env.GITHUB_REF_NAME}'.`);
 

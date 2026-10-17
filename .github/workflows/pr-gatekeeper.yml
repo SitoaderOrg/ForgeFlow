@@ -15,6 +15,9 @@ permissions:
   pull-requests: write
   issues: write
   actions: write
+env:
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
+
 jobs:
   gatekeeper:
     name: Validate PR Metadata

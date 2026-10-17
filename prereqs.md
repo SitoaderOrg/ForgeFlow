@@ -46,7 +46,7 @@ Navigate to **Settings → Code security and analysis**:
 All `gh-aw` workflows use GitHub Copilot as their default reasoning engine via GitHub Actions permissions:
 - Ensure the repository belongs to an organization or account with an active **GitHub Copilot** subscription (Copilot Business, Enterprise, or Pro).
 - Workflows declare `permissions: copilot-requests: write`, which authorizes the workflow to use Copilot inference without requiring personal API keys or third-party secrets.
-- Agents pin `engine.model` (currently `gpt-4.1`). The model must be enabled for the organization's Copilot inference; check `sandbox/firewall/logs/api-proxy-logs/models.json` in an agent run's `agent` artifact and update the `model:` in `.github/workflows/pr-*.md` (then `gh aw compile`) if your organization enables different models.
+- Agents read their model from the `GH_AW_AGENT_MODEL` repository variable (fallback `gpt-4.1`). It must be a model enabled for the organization's Copilot inference — the available list is written to `sandbox/firewall/logs/api-proxy-logs/models.json` in every agent run's `agent` artifact. Avoid `auto` (it can resolve to models that reject Copilot CLI tools). Switch models (e.g. when one hits its rate limit / `429 Too Many Requests`) by updating the variable — no recompilation needed.
 
 ---
 
@@ -57,6 +57,7 @@ Navigate to **Settings → Secrets and variables → Actions**:
 ### Variables (Repository Variables)
 - `COVERAGE_THRESHOLD`: (Default: `80`) Minimum line coverage percentage enforced by `pr-test.yml`. Can be adjusted as needed (e.g. `70` or `85`).
 - `CODEQL_MIN_SECURITY_SEVERITY`: (Default: `4.0`) Minimum CodeQL `security-severity` that fails the security gate.
+- `GH_AW_AGENT_MODEL`: (Default: `gpt-4.1`) Copilot model used by all remediation agents (e.g. `gpt-5.3-codex`, `gpt-4.1`).
 - `MAX_REMEDIATION_ATTEMPTS`: (Default: `4`) How many times a gate may dispatch the same remediation agent for one PR branch before asking for manual intervention.
 
 ### Secrets (Repository Secrets)
