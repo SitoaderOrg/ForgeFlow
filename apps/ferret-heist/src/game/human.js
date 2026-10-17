@@ -49,7 +49,10 @@ export class Human {
   }
 
   alert(level = HUMAN_STATES.SUSPICIOUS) {
-    if (this.state === HUMAN_STATES.AWAKE && level === HUMAN_STATES.SUSPICIOUS) {
+    if (
+      this.state === HUMAN_STATES.AWAKE &&
+      level === HUMAN_STATES.SUSPICIOUS
+    ) {
       return;
     }
     this.state = level;

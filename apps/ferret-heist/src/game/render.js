@@ -91,7 +91,12 @@ export class GameRenderer {
   drawCouch(ctx, stash) {
     // Under-couch stash opening (dark shadow)
     ctx.fillStyle = '#1f1610';
-    ctx.fillRect(COUCH.x - 10, COUCH.y - 10, COUCH.width + 20, COUCH.height + 20);
+    ctx.fillRect(
+      COUCH.x - 10,
+      COUCH.y - 10,
+      COUCH.width + 20,
+      COUCH.height + 20
+    );
 
     // Couch back and arms
     ctx.fillStyle = '#824936';
@@ -99,7 +104,12 @@ export class GameRenderer {
 
     // Cushions
     ctx.fillStyle = '#9e5a44';
-    ctx.fillRect(COUCH.x + 10, COUCH.y + 10, COUCH.width / 2 - 15, COUCH.height - 20);
+    ctx.fillRect(
+      COUCH.x + 10,
+      COUCH.y + 10,
+      COUCH.width / 2 - 15,
+      COUCH.height - 20
+    );
     ctx.fillRect(
       COUCH.x + COUCH.width / 2 + 5,
       COUCH.y + 10,
@@ -116,7 +126,11 @@ export class GameRenderer {
     const stashed = stash.stashedItems;
     stashed.forEach((item, idx) => {
       ctx.font = '16px sans-serif';
-      ctx.fillText(item.emoji, COUCH.x + 20 + (idx % 6) * 28, COUCH.y + 70 + Math.floor(idx / 6) * 24);
+      ctx.fillText(
+        item.emoji,
+        COUCH.x + 20 + (idx % 6) * 28,
+        COUCH.y + 70 + Math.floor(idx / 6) * 24
+      );
     });
   }
 
@@ -131,7 +145,13 @@ export class GameRenderer {
       // Tunnel flaps
       ctx.fillStyle = '#2c1e11';
       ctx.beginPath();
-      ctx.arc(box.x + box.width / 2, box.y + box.height / 2, 20, 0, Math.PI * 2);
+      ctx.arc(
+        box.x + box.width / 2,
+        box.y + box.height / 2,
+        20,
+        0,
+        Math.PI * 2
+      );
       ctx.fill();
 
       ctx.fillStyle = '#fff';
@@ -145,7 +165,12 @@ export class GameRenderer {
     ctx.fillStyle = '#3f51b5';
     ctx.fillRect(CHAIR.x, CHAIR.y, CHAIR.width, CHAIR.height);
     ctx.fillStyle = '#303f9f';
-    ctx.fillRect(CHAIR.x + 15, CHAIR.y + 15, CHAIR.width - 30, CHAIR.height - 30);
+    ctx.fillRect(
+      CHAIR.x + 15,
+      CHAIR.y + 15,
+      CHAIR.width - 30,
+      CHAIR.height - 30
+    );
 
     // Sleeping Human head
     ctx.fillStyle = '#ffcc80';
@@ -274,7 +299,10 @@ export class GameRenderer {
       const ratio = 1 - i / history.length;
       const segRadius = ferret.size * (0.6 + ratio * 0.4);
 
-      ctx.fillStyle = bodyColors[Math.min(bodyColors.length - 1, Math.floor((1 - ratio) * 4))];
+      ctx.fillStyle =
+        bodyColors[
+          Math.min(bodyColors.length - 1, Math.floor((1 - ratio) * 4))
+        ];
       ctx.beginPath();
       ctx.arc(seg.x, seg.y, segRadius, 0, Math.PI * 2);
       ctx.fill();
@@ -395,21 +423,45 @@ export class GameRenderer {
       ctx.textAlign = 'center';
       ctx.fillStyle = '#ffb74d';
       ctx.font = 'bold 36px sans-serif';
-      ctx.fillText('🐾 FERRET HEIST: STASH UNDER THE COUCH 🐾', CANVAS_WIDTH / 2, 220);
+      ctx.fillText(
+        '🐾 FERRET HEIST: STASH UNDER THE COUCH 🐾',
+        CANVAS_WIDTH / 2,
+        220
+      );
 
       ctx.fillStyle = '#ffffff';
       ctx.font = '18px sans-serif';
-      ctx.fillText('You are Bandit, a noodle of pure mischief!', CANVAS_WIDTH / 2, 270);
-      ctx.fillText('Sneak around the living room and swipe 5 shiny items.', CANVAS_WIDTH / 2, 300);
-      ctx.fillText('Drag them under the couch before the sleeping human catches you!', CANVAS_WIDTH / 2, 330);
+      ctx.fillText(
+        'You are Bandit, a noodle of pure mischief!',
+        CANVAS_WIDTH / 2,
+        270
+      );
+      ctx.fillText(
+        'Sneak around the living room and swipe 5 shiny items.',
+        CANVAS_WIDTH / 2,
+        300
+      );
+      ctx.fillText(
+        'Drag them under the couch before the sleeping human catches you!',
+        CANVAS_WIDTH / 2,
+        330
+      );
 
       ctx.fillStyle = '#81c784';
       ctx.font = '16px sans-serif';
-      ctx.fillText('🎮 Controls: Arrow Keys or WASD to move | SPACE for Weasel War Dance', CANVAS_WIDTH / 2, 380);
+      ctx.fillText(
+        '🎮 Controls: Arrow Keys or WASD to move | SPACE for Weasel War Dance',
+        CANVAS_WIDTH / 2,
+        380
+      );
 
       ctx.fillStyle = '#ffd54f';
       ctx.font = 'bold 22px sans-serif';
-      ctx.fillText('👉 CLICK OR PRESS ANY KEY TO START 👈', CANVAS_WIDTH / 2, 450);
+      ctx.fillText(
+        '👉 CLICK OR PRESS ANY KEY TO START 👈',
+        CANVAS_WIDTH / 2,
+        450
+      );
       ctx.textAlign = 'left';
     } else if (engine.state === GAME_STATES.LEVEL_CLEARED) {
       ctx.fillStyle = 'rgba(20, 50, 20, 0.85)';
@@ -422,8 +474,16 @@ export class GameRenderer {
 
       ctx.fillStyle = '#ffffff';
       ctx.font = '20px sans-serif';
-      ctx.fillText(`Final Score: ${engine.stash.totalScore} points`, CANVAS_WIDTH / 2, 280);
-      ctx.fillText('The couch stash is packed with stolen treasures!', CANVAS_WIDTH / 2, 320);
+      ctx.fillText(
+        `Final Score: ${engine.stash.totalScore} points`,
+        CANVAS_WIDTH / 2,
+        280
+      );
+      ctx.fillText(
+        'The couch stash is packed with stolen treasures!',
+        CANVAS_WIDTH / 2,
+        320
+      );
 
       ctx.fillStyle = '#ffd54f';
       ctx.font = 'bold 20px sans-serif';
@@ -440,7 +500,11 @@ export class GameRenderer {
 
       ctx.fillStyle = '#ffffff';
       ctx.font = '18px sans-serif';
-      ctx.fillText('3 strikes! All socks and shiny keys have been locked away.', CANVAS_WIDTH / 2, 280);
+      ctx.fillText(
+        '3 strikes! All socks and shiny keys have been locked away.',
+        CANVAS_WIDTH / 2,
+        280
+      );
 
       ctx.fillStyle = '#ffd54f';
       ctx.font = 'bold 20px sans-serif';

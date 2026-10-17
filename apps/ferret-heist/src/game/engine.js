@@ -13,7 +13,8 @@ export class GameEngine {
     this.vacuum = new Vacuum();
     this.lootList = generateLootList();
     this.stash = new Stash(5);
-    this.message = 'Sneak around, steal shiny things, and stash them under the couch!';
+    this.message =
+      'Sneak around, steal shiny things, and stash them under the couch!';
     this.messageTimer = 300;
     this.level = 1;
     this.caughtCount = 0;
@@ -86,7 +87,10 @@ export class GameEngine {
     }
 
     // 2. Couch Deposit
-    if (this.ferret.carriedItem && this.stash.isUnderCouch(this.ferret.x, this.ferret.y)) {
+    if (
+      this.ferret.carriedItem &&
+      this.stash.isUnderCouch(this.ferret.x, this.ferret.y)
+    ) {
       const item = this.ferret.carriedItem;
       this.ferret.dropItem();
       const points = this.stash.deposit(item);
@@ -95,7 +99,9 @@ export class GameEngine {
 
       if (this.stash.isCleared()) {
         this.state = GAME_STATES.LEVEL_CLEARED;
-        this.setMessage('HEIST COMPLETE! The hoard under the couch is glorious! 🏆');
+        this.setMessage(
+          'HEIST COMPLETE! The hoard under the couch is glorious! 🏆'
+        );
         this.onEvent('victory');
         return;
       }
@@ -134,7 +140,9 @@ export class GameEngine {
 
       if (this.caughtCount >= 3) {
         this.state = GAME_STATES.CAUGHT;
-        this.setMessage('CAUGHT 3 TIMES! The human put everything in a locked drawer! 😿');
+        this.setMessage(
+          'CAUGHT 3 TIMES! The human put everything in a locked drawer! 😿'
+        );
         this.onEvent('gameover');
       } else {
         this.setMessage(

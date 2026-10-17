@@ -4,11 +4,11 @@ import { SoundEffects } from './game/audio.js';
 import { GAME_STATES } from './game/constants.js';
 
 window.addEventListener('DOMContentLoaded', () => {
-  const canvas = document.getElementById('gameCanvas');
+  const canvas = document.getElementById('game-canvas');
   const sfx = new SoundEffects();
 
   const engine = new GameEngine({
-    onEvent: (event, payload) => {
+    onEvent: (event) => {
       switch (event) {
         case 'pickup':
           sfx.pickup();

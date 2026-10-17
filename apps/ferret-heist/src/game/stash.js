@@ -41,7 +41,7 @@ export class Stash {
       count: this.stashedItems.length,
       target: this.targetCount,
       score: this.totalScore,
-      items: this.stashedItems.map(i => ({
+      items: this.stashedItems.map((i) => ({
         name: i.name,
         emoji: i.emoji,
         points: i.points

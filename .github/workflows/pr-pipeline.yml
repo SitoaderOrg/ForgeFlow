@@ -2,10 +2,19 @@ name: PR Quality Pipeline
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Re-entry point used by the remediation relay (pr-stacked-merge.yml) after an agent
+  # pushes or auto-merges a fix. Commits made with GITHUB_TOKEN do not raise
+  # `synchronize` events, so the pipeline is re-dispatched on the PR head branch instead.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to validate (run the workflow on the PR head branch)'
+        required: true
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 permissions:
@@ -13,66 +22,162 @@ permissions:
   pull-requests: write
   issues: write
   security-events: write
+  actions: write
 
 jobs:
+  # Stage 0: Resolve PR context (works for both pull_request and workflow_dispatch)
+  context:
+    name: 'Stage 0: Resolve PR'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
+      skip: ${{ steps.pr.outputs.skip }}
+    steps:
+      - name: Resolve pull request
+        id: pr
+        uses: actions/github-script@v7
+        env:
+          PR_INPUT: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const prNumber = context.eventName === 'pull_request'
+              ? context.payload.pull_request.number
+              : Number(process.env.PR_INPUT);
+            if (!Number.isInteger(prNumber) || prNumber <= 0) {
+              core.setFailed(`Invalid pull request number: '${process.env.PR_INPUT}'`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const labels = pr.labels.map(l => l.name);
+            const remediationLabels = ['test-remediation', 'security-remediation', 'doc-remediation'];
+            let skip = false;
+            if (pr.state !== 'open') {
+              core.notice(`PR #${prNumber} is ${pr.state}; skipping pipeline.`);
+              skip = true;
+            } else if (labels.some(l => remediationLabels.includes(l))) {
+              core.notice(`PR #${prNumber} is a stacked remediation PR; it is consolidated by pr-stacked-merge.yml.`);
+              skip = true;
+            } else if (context.eventName === 'workflow_dispatch' && context.ref !== `refs/heads/${pr.head.ref}`) {
+              core.setFailed(`Dispatch ref '${context.ref}' does not match PR head branch '${pr.head.ref}'. Re-run with --ref ${pr.head.ref}.`);
+              return;
+            }
+
+            core.setOutput('pr_number', String(prNumber));
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('base_ref', pr.base.ref);
+            core.setOutput('skip', String(skip));
+            core.info(`PR #${prNumber}: ${pr.head.ref} (${pr.head.sha}) -> ${pr.base.ref}`);
+
   # Stage 1: Pre-flight & Lint (~30s, fail fast)
   gatekeeper:
-    name: "Stage 1a: Metadata"
-    # Skip full pipeline execution on internal stacked remediation PRs
-    if: >-
-      !contains(github.event.pull_request.labels.*.name, 'test-remediation') &&
-      !contains(github.event.pull_request.labels.*.name, 'security-remediation') &&
-      !contains(github.event.pull_request.labels.*.name, 'doc-remediation')
+    name: 'Stage 1a: Metadata'
+    needs: [context]
+    if: needs.context.outputs.skip != 'true'
     uses: ./.github/workflows/pr-gatekeeper.yml
+    with:
+      pr_number: ${{ needs.context.outputs.pr_number }}
+      head_ref: ${{ needs.context.outputs.head_ref }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
+      actions: write
 
   lint:
-    name: "Stage 1b: Linters"
-    needs: [gatekeeper]
+    name: 'Stage 1b: Linters'
+    needs: [context, gatekeeper]
     uses: ./.github/workflows/pr-lint.yml
+    with:
+      pr_number: ${{ needs.context.outputs.pr_number }}
+      head_ref: ${{ needs.context.outputs.head_ref }}
+      head_sha: ${{ needs.context.outputs.head_sha }}
+      base_ref: ${{ needs.context.outputs.base_ref }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
+      actions: write
 
   # Stage 2: Compilation & Build (~30s)
   build:
-    name: "Stage 2: Build"
-    needs: [lint]
+    name: 'Stage 2: Build'
+    needs: [context, lint]
     uses: ./.github/workflows/pr-build.yml
+    with:
+      pr_number: ${{ needs.context.outputs.pr_number }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
 
-  # Stage 3: Deep Verification in Parallel (~1-2m)
+  # Stage 3: Deep Verification in Parallel (~1-3m)
   test:
-    name: "Stage 3a: Tests & Coverage"
-    needs: [build]
+    name: 'Stage 3a: Tests & Coverage'
+    needs: [context, build]
     uses: ./.github/workflows/pr-test.yml
+    with:
+      pr_number: ${{ needs.context.outputs.pr_number }}
+      head_ref: ${{ needs.context.outputs.head_ref }}
+      base_ref: ${{ needs.context.outputs.base_ref }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
+      actions: write
 
   security:
-    name: "Stage 3b: Security & CodeQL"
-    needs: [build]
+    name: 'Stage 3b: Security & CodeQL'
+    needs: [context, build]
     uses: ./.github/workflows/pr-security.yml
+    with:
+      pr_number: ${{ needs.context.outputs.pr_number }}
+      head_ref: ${{ needs.context.outputs.head_ref }}
+      head_sha: ${{ needs.context.outputs.head_sha }}
+      base_ref: ${{ needs.context.outputs.base_ref }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
+      actions: write
       security-events: write
+
+  docs:
+    name: 'Stage 3c: Documentation Drift'
+    needs: [context, build]
+    uses: ./.github/workflows/pr-docs.yml
+    with:
+      pr_number: ${{ needs.context.outputs.pr_number }}
+      head_ref: ${{ needs.context.outputs.head_ref }}
+      head_sha: ${{ needs.context.outputs.head_sha }}
+      base_ref: ${{ needs.context.outputs.base_ref }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
 
   # Stage 4: Copilot Code Review Dispatcher (only when all gates pass)
   dispatcher:
-    name: "Stage 4: Review Dispatcher"
-    needs: [test, security]
+    name: 'Stage 4: Review Dispatcher'
+    needs: [context, test, security, docs]
     uses: ./.github/workflows/pr-review-dispatcher.yml
+    with:
+      pr_number: ${{ needs.context.outputs.pr_number }}
+      head_ref: ${{ needs.context.outputs.head_ref }}
+      head_sha: ${{ needs.context.outputs.head_sha }}
     permissions:
       contents: read
       pull-requests: write

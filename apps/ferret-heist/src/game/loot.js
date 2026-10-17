@@ -23,7 +23,11 @@ export class Loot {
   }
 
   isNearby(x, y, threshold = 28) {
-    return !this.isCarried && !this.isStashed && this.getDistanceTo(x, y) <= threshold;
+    return (
+      !this.isCarried &&
+      !this.isStashed &&
+      this.getDistanceTo(x, y) <= threshold
+    );
   }
 }
 

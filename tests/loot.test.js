@@ -35,7 +35,7 @@ describe('Loot System', () => {
     const list = generateLootList();
     expect(Array.isArray(list)).toBe(true);
     expect(list.length).toBeGreaterThanOrEqual(5);
-    expect(list.some(item => item.type === 'keys')).toBe(true);
-    expect(list.some(item => item.type === 'sock')).toBe(true);
+    expect(list.some((item) => item.type === 'keys')).toBe(true);
+    expect(list.some((item) => item.type === 'sock')).toBe(true);
   });
 });

@@ -62,7 +62,7 @@ export const LOOT_TYPES = {
     emoji: '👟',
     points: 25,
     weight: 0.2,
-    speedMultiplier: 0.90,
+    speedMultiplier: 0.9,
     noise: 0
   },
   remote: {
