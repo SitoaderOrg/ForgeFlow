@@ -114,8 +114,10 @@ async function dispatchRemediation({
       }
     }
 
-    if (runs.length >= max) {
-      core.warning(`${workflow} already ran ${runs.length} time(s) for '${headRef}' (max ${max}).`);
+    // Cancelled/skipped runs never reached the agent, so they do not consume the budget
+    const attempts = runs.filter((r) => !['cancelled', 'skipped'].includes(r.conclusion)).length;
+    if (attempts >= max) {
+      core.warning(`${workflow} already ran ${attempts} time(s) for '${headRef}' (max ${max}).`);
       await commentOnce({
         github,
         context,
@@ -123,7 +125,7 @@ async function dispatchRemediation({
         marker: `<!-- remediation-exhausted:${workflow} -->`,
         body:
           `### ⚠️ Autonomous remediation budget exhausted\n\n` +
-          `\`${workflow}\` has already run ${runs.length} time(s) on this branch without clearing the gate. ` +
+          `\`${workflow}\` has already run ${attempts} time(s) on this branch without clearing the gate. ` +
           `Manual intervention is required (or raise \`MAX_REMEDIATION_ATTEMPTS\`).`
       });
       return 'exhausted';

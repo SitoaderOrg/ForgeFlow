@@ -22,6 +22,9 @@ permissions:
   issues: write
   actions: write
 
+env:
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
+
 jobs:
   docs-drift:
     name: Verify Documentation Coverage

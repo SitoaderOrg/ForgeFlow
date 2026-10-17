@@ -20,6 +20,7 @@ permissions:
   actions: write
 
 env:
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
   COVERAGE_THRESHOLD: ${{ vars.COVERAGE_THRESHOLD || '80' }}
 
 jobs:
