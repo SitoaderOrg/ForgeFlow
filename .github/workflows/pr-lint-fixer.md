@@ -112,7 +112,7 @@ Automatically fix code formatting and lint issues on this pull request to help i
    - `npm run lint` — ESLint, Prettier check and HTMLHint.
    - `npm run lint:fix` — applies ESLint auto-fixes and Prettier formatting.
    - If the findings reference a run id you may also inspect `gh run view <run-id> --log-failed` (optional).
-3. Run `npm run lint:fix`, then fix any remaining ESLint errors by hand (e.g. remove unused variables/imports, prefer `const`) **without changing runtime behaviour**. Only touch files changed in this PR unless a linter explicitly requires otherwise. CSS must use modern color notation (`rgb(0 0 0 / 50%)`) and HTML ids/classes must be lowercase-dash-case.
+3. The **Gate findings** above contain the exact Super-Linter output per linter (e.g. `JAVASCRIPT_ES`, `JAVASCRIPT_PRETTIER`, `CSS` = stylelint-config-standard, `HTML` = HTMLHint). Every listed issue must be fixed — `npm run lint` does not cover stylelint, so fix CSS findings by hand. Run `npm run lint:fix`, then fix any remaining errors by hand (e.g. remove unused variables/imports, prefer `const`) **without changing runtime behaviour**. Only touch files changed in this PR unless a linter explicitly requires otherwise. CSS must use modern color notation (`rgb(0 0 0 / 50%)`) and HTML ids/classes must be lowercase-dash-case.
 4. Re-run `npm run lint` until it passes, and run `npm test` to confirm nothing broke.
 5. Apply safe outputs:
    - Call `push-to-pull-request-branch` to push the formatting/lint fix directly to the PR branch.

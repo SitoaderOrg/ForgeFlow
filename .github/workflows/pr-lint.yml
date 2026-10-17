@@ -52,6 +52,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATE_ALL_CODEBASE: false
           MULTI_STATUS: false
+          # Persist per-linter stdout/stderr so failures can be handed to the PR Lint Fixer agent
+          SAVE_SUPER_LINTER_OUTPUT: true
           # Use the repository's own lint configs (.eslintrc.json, .prettierrc, ...) so
           # contributors and the PR Lint Fixer agent can reproduce results with `npm run lint`.
           LINTER_RULES_PATH: .
@@ -89,12 +91,31 @@ jobs:
             const prNumber = Number(process.env.PR_NUMBER);
             await helpers.addLabel({ github, context, core, prNumber, label: 'lint-failed' });
 
+            const fs = require('fs');
+            const path = require('path');
+            const outDir = path.join(process.env.GITHUB_WORKSPACE, 'super-linter-output', 'super-linter');
+            let details = '';
+            try {
+              for (const name of fs.readdirSync(outDir).filter(n => n.startsWith('super-linter-parallel-std')).sort()) {
+                const text = fs.readFileSync(path.join(outDir, name), 'utf8')
+                  .replace(/\x1b\[[0-9;]*m/g, '')
+                  .replace(/\/github\/workspace\//g, '')
+                  .trim();
+                if (text && /error|✖|\[warn\]|problem/i.test(text) && !/no errors found/i.test(text)) {
+                  const linter = name.replace(/^super-linter-parallel-std(out|err)-/, '');
+                  details += `\n### ${linter}\n${text.slice(0, 1500)}\n`;
+                }
+              }
+            } catch (e) {
+              core.warning(`Could not read Super-Linter output: ${e.message}`);
+            }
+
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const status = await helpers.dispatchRemediation({
               github, context, core, prNumber,
               headRef: process.env.HEAD_REF,
               workflow: 'pr-lint-fixer.lock.yml',
-              findings: `Super-Linter failed in run ${context.runId} (${runUrl}). Reproduce locally with \`npm ci && npm run lint\`; auto-fix with \`npm run lint:fix\`.`
+              findings: `Super-Linter failed in run ${context.runId} (${runUrl}). Fix EVERY issue below.\n${details || '(no linter output captured)'}`
             });
 
             const summary = '### ❌ Lint & Format Gatekeeper Failed\n\n' +
