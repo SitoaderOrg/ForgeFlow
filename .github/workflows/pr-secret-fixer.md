@@ -28,6 +28,17 @@ engine:
   # Pinned: "auto" can resolve to models that reject Copilot CLI custom tools (e.g. gpt-5.6-luna-utility).
   # Must be a chat model enabled for the org's Copilot inference (see the api-proxy models.json in run artifacts).
   model: gpt-4.1
+  # Serialize agent jobs repo-wide: parallel remediation agents exhaust the Copilot
+  # inference rate limit (HTTP 429).
+  concurrency:
+    group: "gh-aw-copilot-remediation-agents"
+    queue: max
+  # Back off generously on 429s instead of giving up after ~35s.
+  harness:
+    max-retries: 5
+    initial-delay-ms: 30000
+    backoff-multiplier: 2
+    max-delay-ms: 180000
 
 permissions:
   contents: read
@@ -113,3 +124,7 @@ Automatically create a stacked remediation pull request targeting the developer'
    - Call `add-comment` on the parent PR:
      - Inform the author that a stacked PR has been opened with the scrubbed credentials and will be automatically merged into their branch. Include the direct link to the stacked PR.
      - **CRITICAL SECURITY WARNING**: Remind the author that because the secret was pushed to git history, they MUST immediately **revoke and rotate the compromised credential** with the issuing provider.
+
+## Safe Output Rules
+- When calling `create_pull_request`, provide `title`, `body` and (if needed) `base`/`branch` only — do **not** pass a `temporary_id`.
+- Do not invent or guess URLs for the stacked pull request in comments. Refer to it as "the stacked remediation PR"; the remediation relay posts the exact link once it is merged.

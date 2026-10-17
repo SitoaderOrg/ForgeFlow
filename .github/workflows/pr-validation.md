@@ -28,6 +28,17 @@ engine:
   # Pinned: "auto" can resolve to models that reject Copilot CLI custom tools (e.g. gpt-5.6-luna-utility).
   # Must be a chat model enabled for the org's Copilot inference (see the api-proxy models.json in run artifacts).
   model: gpt-4.1
+  # Serialize agent jobs repo-wide: parallel remediation agents exhaust the Copilot
+  # inference rate limit (HTTP 429).
+  concurrency:
+    group: "gh-aw-copilot-remediation-agents"
+    queue: max
+  # Back off generously on 429s instead of giving up after ~35s.
+  harness:
+    max-retries: 5
+    initial-delay-ms: 30000
+    backoff-multiplier: 2
+    max-delay-ms: 180000
 
 permissions:
   contents: read

@@ -28,6 +28,17 @@ engine:
   # Pinned: "auto" can resolve to models that reject Copilot CLI custom tools (e.g. gpt-5.6-luna-utility).
   # Must be a chat model enabled for the org's Copilot inference (see the api-proxy models.json in run artifacts).
   model: gpt-4.1
+  # Serialize agent jobs repo-wide: parallel remediation agents exhaust the Copilot
+  # inference rate limit (HTTP 429).
+  concurrency:
+    group: "gh-aw-copilot-remediation-agents"
+    queue: max
+  # Back off generously on 429s instead of giving up after ~35s.
+  harness:
+    max-retries: 5
+    initial-delay-ms: 30000
+    backoff-multiplier: 2
+    max-delay-ms: 180000
 
 permissions:
   contents: read
@@ -169,3 +180,7 @@ Apply safe outputs:
      - **Uncovered Paths Addressed**: How the new tests bring coverage above 80%.
      - **Lifecycle**: "This stacked PR was automatically opened by the **PR Test Generator** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
 2. Call `add-comment` on the parent PR informing the developer that a stacked PR containing the validated unit tests has been opened and will be automatically consolidated into their branch. Include the direct link to the stacked PR.
+
+## Safe Output Rules
+- When calling `create_pull_request`, provide `title`, `body` and (if needed) `base`/`branch` only — do **not** pass a `temporary_id`.
+- Do not invent or guess URLs for the stacked pull request in comments. Refer to it as "the stacked remediation PR"; the remediation relay posts the exact link once it is merged.
