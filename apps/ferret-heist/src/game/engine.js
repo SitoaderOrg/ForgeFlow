@@ -97,10 +97,17 @@ export class GameEngine {
       const item = this.ferret.carriedItem;
       this.ferret.dropItem();
       const basePoints = this.stash.deposit(item);
-      const bonus = this.streak.registerDeposit(basePoints, { spotted: this.human.state === HUMAN_STATES.AWAKE })
-      this.stash.totalScore += bonus
+      const bonus = this.streak.registerDeposit(basePoints, {
+        spotted: this.human.state === HUMAN_STATES.AWAKE
+      });
+      this.stash.totalScore += bonus;
       const points = basePoints + bonus;
-      this.onEvent('deposit', { item, points, bonus, streak: this.streak.streak });
+      this.onEvent('deposit', {
+        item,
+        points,
+        bonus,
+        streak: this.streak.streak
+      });
       this.setMessage(`Stashed ${item.name}! +${points} pts! 🧦✨`);
 
       if (this.stash.isCleared()) {
