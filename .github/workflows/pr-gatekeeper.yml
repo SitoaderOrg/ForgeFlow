@@ -102,7 +102,7 @@ jobs:
             }
 
             if (metadataNeedsHelp) {
-              summaryTable += `\n\n> 🤖 **Autonomous Remediation**: Added `needs-metadata` label. PR Validation agent dispatch status: **${remediation}**. It updates the PR title and description from the code diff, then the pipeline is re-run automatically.\n`;
+              summaryTable += `\n\n> 🤖 **Autonomous Remediation**: Added \`needs-metadata\` label. PR Validation agent dispatch status: **${remediation}**. It updates the PR title and description from the code diff, then the pipeline is re-run automatically.\n`;
             }
 
             if (errors.length > 0) {
