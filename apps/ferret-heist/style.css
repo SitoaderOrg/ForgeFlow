@@ -162,3 +162,9 @@ canvas {
 .btn-secondary:active {
   background: #4f4568;
 }
+
+.player-banner {
+  margin-top: 6px;
+  font-size: 13px;
+  color: rgba(255, 183, 77, 0.9);
+}

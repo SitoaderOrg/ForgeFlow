@@ -1,9 +1,10 @@
-import { GAME_STATES } from './constants.js';
+import { GAME_STATES, HUMAN_STATES } from './constants.js';
 import { Ferret } from './ferret.js';
 import { Human } from './human.js';
 import { Vacuum } from './vacuum.js';
 import { Stash } from './stash.js';
 import { generateLootList } from './loot.js';
+import { StreakTracker } from './streak.js';
 
 export class GameEngine {
   constructor(options = {}) {
@@ -18,6 +19,7 @@ export class GameEngine {
     this.messageTimer = 300;
     this.level = 1;
     this.caughtCount = 0;
+    this.streak = new StreakTracker();
 
     // Event callbacks for audio/visual juice
     this.onEvent = options.onEvent || (() => {});
@@ -37,6 +39,7 @@ export class GameEngine {
     this.stash = new Stash(5);
     this.state = GAME_STATES.PLAYING;
     this.caughtCount = 0;
+    this.streak = new StreakTracker();
     this.setMessage('Fresh heist started! Be stealthy!');
     this.onEvent('restart');
   }
@@ -93,8 +96,11 @@ export class GameEngine {
     ) {
       const item = this.ferret.carriedItem;
       this.ferret.dropItem();
-      const points = this.stash.deposit(item);
-      this.onEvent('deposit', { item, points });
+      const basePoints = this.stash.deposit(item);
+      const bonus = this.streak.registerDeposit(basePoints, { spotted: this.human.state === HUMAN_STATES.AWAKE })
+      this.stash.totalScore += bonus
+      const points = basePoints + bonus;
+      this.onEvent('deposit', { item, points, bonus, streak: this.streak.streak });
       this.setMessage(`Stashed ${item.name}! +${points} pts! 🧦✨`);
 
       if (this.stash.isCleared()) {
@@ -108,6 +114,7 @@ export class GameEngine {
     }
 
     // 3. Vacuum interaction
+    this.streak.update(dt);
     this.vacuum.update(dt);
     if (!this.vacuum.isStunned && this.vacuum.collidesWith(this.ferret, 18)) {
       if (this.ferret.isDancing) {
@@ -130,6 +137,7 @@ export class GameEngine {
     const spotted = this.human.update(this.ferret, dt);
     if (spotted && !this.ferret.isHiding) {
       this.caughtCount++;
+      this.streak.breakStreak();
       const dropped = this.ferret.dropItem();
       this.onEvent('caught');
 

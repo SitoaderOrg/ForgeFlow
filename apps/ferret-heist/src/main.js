@@ -7,7 +7,18 @@ window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('game-canvas');
   const sfx = new SoundEffects();
 
-  const engine = new GameEngine({
+  // Personalised heist banner, e.g. index.html?player=Bandit
+  const params = new URLSearchParams(window.location.search);
+  const playerName = params.get('player') || 'Sneaky Ferret';
+  const banner = document.getElementById('player-banner');
+  let engine;
+  const updateBanner = () => {
+    if (!banner || !engine) return;
+    const s = engine.streak.getSummary();
+    banner.innerHTML = `🐾 <strong>${playerName}</strong> — ${s.rank} · streak x${s.streak} (best ${s.bestStreak}) · +${s.bonusPoints} bonus pts`;
+  };
+
+  engine = new GameEngine({
     onEvent: (event) => {
       switch (event) {
         case 'pickup':
@@ -15,6 +26,7 @@ window.addEventListener('DOMContentLoaded', () => {
           break;
         case 'deposit':
           sfx.deposit();
+          updateBanner();
           break;
         case 'wardance':
           sfx.wardance();
@@ -27,6 +39,11 @@ window.addEventListener('DOMContentLoaded', () => {
           break;
         case 'caught':
           sfx.caught();
+          updateBanner();
+          break;
+        case 'start':
+        case 'restart':
+          updateBanner();
           break;
         case 'victory':
           sfx.victory();
