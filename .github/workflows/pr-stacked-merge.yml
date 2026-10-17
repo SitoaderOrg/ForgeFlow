@@ -1,36 +1,25 @@
 name: PR Stacked Remediation Auto-Merger
 
-# Consolidates agent remediation work into the parent PR branch and re-runs the
+# Remediation relay: consolidates agent work into the parent PR branch and re-runs the
 # PR Quality Pipeline.
 #
-# Agents run with the default GITHUB_TOKEN, and GitHub never starts new workflow runs
-# for PRs/pushes/labels created with that token. This workflow therefore listens for
-# remediation agent runs to *complete* (workflow_run), merges any stacked remediation
-# PRs they opened, and re-dispatches the pipeline on the parent branch.
+# Agents run with the default GITHUB_TOKEN, and GitHub never starts workflow runs for
+# PRs/pushes/labels created with that token (nor `workflow_run` events for runs that
+# were themselves dispatched with it). Every gh-aw agent therefore dispatches this
+# workflow from its `conclusion` job once its safe outputs are applied.
 
 on:
-  workflow_run:
-    workflows:
-      - PR Validation
-      - PR Lint Fixer
-      - PR Test Generator
-      - PR CodeQL Fixer
-      - PR Dependency Fixer
-      - PR Secret Fixer
-      - PR Documentation Updater
-    types: [completed]
-  # Still honoured when stacked PRs are opened with a PAT (GH_AW_CI_TRIGGER_TOKEN)
-  pull_request:
-    types: [opened, reopened, labeled]
   workflow_dispatch:
     inputs:
       branch:
         description: 'Parent PR head branch to consolidate'
         required: true
         type: string
-
+  # Still honoured when stacked PRs are opened with a PAT (GH_AW_CI_TRIGGER_TOKEN)
+  pull_request:
+    types: [opened, reopened, labeled]
 concurrency:
-  group: pr-stacked-merge-${{ github.event.workflow_run.head_branch || github.event.pull_request.base.ref || inputs.branch }}
+  group: pr-stacked-merge-${{ inputs.branch || github.event.pull_request.base.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -65,11 +54,7 @@ jobs:
             };
 
             let parentBranch;
-            if (context.eventName === 'workflow_run') {
-              const run = context.payload.workflow_run;
-              parentBranch = run.head_branch;
-              core.info(`Agent run '${run.name}' #${run.id} finished with '${run.conclusion}' on '${parentBranch}'.`);
-            } else if (context.eventName === 'pull_request') {
+            if (context.eventName === 'pull_request') {
               parentBranch = context.payload.pull_request.base.ref;
             } else {
               parentBranch = process.env.INPUT_BRANCH;
@@ -155,7 +140,7 @@ jobs:
             // 2. Re-run the PR Quality Pipeline on the (possibly updated) parent branch.
             //    Agents that push directly (lint fixer) or edit metadata (validation) also
             //    rely on this, because GITHUB_TOKEN pushes never raise `synchronize`.
-            const shouldRerun = context.eventName === 'workflow_run' || merged > 0 || context.eventName === 'workflow_dispatch';
+            const shouldRerun = context.eventName === 'workflow_dispatch' || merged > 0;
             if (shouldRerun) {
               await github.rest.actions.createWorkflowDispatch({
                 owner, repo,

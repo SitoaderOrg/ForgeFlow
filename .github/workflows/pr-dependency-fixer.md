@@ -25,8 +25,9 @@ concurrency:
 
 engine:
   id: copilot
-  # Pinned: the "auto" alias can resolve to models that reject Copilot CLI custom tools.
-  model: claude-sonnet-5.5
+  # Pinned: "auto" can resolve to models that reject Copilot CLI custom tools (e.g. gpt-5.6-luna-utility).
+  # Must be a chat model enabled for the org's Copilot inference (see the api-proxy models.json in run artifacts).
+  model: gpt-4.1
 
 permissions:
   contents: read
@@ -49,6 +50,28 @@ strict: true
 
 features:
   copilot-requests: true
+
+jobs:
+  # Runs after safe outputs are applied. GITHUB_TOKEN-created PRs/pushes/labels never
+  # trigger workflows (and neither does workflow_run for GITHUB_TOKEN-dispatched runs),
+  # so hand off explicitly to the remediation relay (pr-stacked-merge.yml), which
+  # auto-merges stacked PRs and re-runs the PR Quality Pipeline.
+  conclusion:
+    permissions:
+      actions: write
+    pre-steps:
+      - name: Hand off to remediation relay
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'pr-stacked-merge.yml',
+              ref: context.payload.repository.default_branch,
+              inputs: { branch: process.env.GITHUB_REF_NAME }
+            });
+            core.info(`Dispatched remediation relay for '${process.env.GITHUB_REF_NAME}'.`);
 
 safe-outputs:
   create-pull-request:
