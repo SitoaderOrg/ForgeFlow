@@ -46,6 +46,7 @@ Navigate to **Settings → Code security and analysis**:
 All `gh-aw` workflows use GitHub Copilot as their default reasoning engine via GitHub Actions permissions:
 - Ensure the repository belongs to an organization or account with an active **GitHub Copilot** subscription (Copilot Business, Enterprise, or Pro).
 - Workflows declare `permissions: copilot-requests: write`, which authorizes the workflow to use Copilot inference without requiring personal API keys or third-party secrets.
+- Agents pin `engine.model` (currently `gpt-4.1`). The model must be enabled for the organization's Copilot inference; check `sandbox/firewall/logs/api-proxy-logs/models.json` in an agent run's `agent` artifact and update the `model:` in `.github/workflows/pr-*.md` (then `gh aw compile`) if your organization enables different models.
 
 ---
 
@@ -55,9 +56,11 @@ Navigate to **Settings → Secrets and variables → Actions**:
 
 ### Variables (Repository Variables)
 - `COVERAGE_THRESHOLD`: (Default: `80`) Minimum line coverage percentage enforced by `pr-test.yml`. Can be adjusted as needed (e.g. `70` or `85`).
+- `CODEQL_MIN_SECURITY_SEVERITY`: (Default: `4.0`) Minimum CodeQL `security-severity` that fails the security gate.
+- `MAX_REMEDIATION_ATTEMPTS`: (Default: `4`) How many times a gate may dispatch the same remediation agent for one PR branch before asking for manual intervention.
 
 ### Secrets (Repository Secrets)
-- `GH_AW_CI_TRIGGER_TOKEN`: *(Optional)* A Personal Access Token (PAT) with `repo` and `workflow` scope if you want pull requests created by GitHub Actions to trigger downstream CI workflows (by default, GitHub prevents actions-created PRs from triggering workflows to avoid recursive loops).
+- `GH_AW_CI_TRIGGER_TOKEN`: *(Optional)* Not required. GitHub does not start workflows for events created with `GITHUB_TOKEN`, so the framework chains every gate → agent → relay → pipeline hop with `workflow_dispatch` (see [Remediation Chaining](docs/remediation-chaining.md)). A PAT only makes agent-created PRs also trigger `pull_request` workflows natively.
 
 ---
 

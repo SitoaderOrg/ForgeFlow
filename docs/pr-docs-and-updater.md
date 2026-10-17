@@ -52,9 +52,13 @@ The agent evaluates every PR diff using strict semantic rules:
 
 ## 2. Autonomous Documentation Updater (`.github/workflows/pr-doc-updater.md`)
 
+- **Documentation Drift Gate (`.github/workflows/pr-docs.yml`, Stage 3c)**:
+  - Cheap deterministic pre-check inside the pipeline: passes when no application source changed or when Markdown documentation changed alongside the code.
+  - Otherwise fails with `docs-required` and dispatches the documentation agent with the list of undocumented source files.
+  - Passes when the agent recorded the semantic decision `docs-not-required`.
 - **Autonomous Execution**:
-  - Triggers directly on `pull_request: [opened, synchronize, reopened, labeled]`.
-  - Comprehends whether docs are required.
+  - Dispatched by the drift gate (`workflow_dispatch` with `pr_number`/`findings`).
+  - Comprehends whether docs are required; if not, applies `docs-not-required` so the gate passes on the next run.
   - If required, attaches `docs-required`, writes documentation matching project conventions (`README.md`, `docs/`), and proposes changes in a stacked PR.
   - If not required or already addressed, removes `docs-required` cleanly.
 - **🔒 Strict Guardrail: Documentation Files Only**:

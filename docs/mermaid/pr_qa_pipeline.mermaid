@@ -16,7 +16,7 @@ flowchart TD
     subgraph Stage3 [Stage 3: Deep Verification in Parallel ~1-2m]
         Build -->|Pass| Tests[4. Tests & Coverage Gate\nDiff-scoped >= 80%]
         Build -->|Pass| Security[5. Code Quality & Security\nCodeQL SAST, Dep Review, Secrets]
-        Build -->|Pass| DocEval[6. Semantic Doc Evaluation\ngh-aw agentic evaluator]
+        Build -->|Pass| DocEval[6. Documentation Drift Gate\npr-docs.yml + gh-aw semantic evaluator]
     end
 
     subgraph Auto_Consolidation [Autonomous Remediation & Auto-Merge]

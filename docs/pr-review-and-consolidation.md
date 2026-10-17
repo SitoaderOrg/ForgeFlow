@@ -55,9 +55,10 @@ flowchart TD
 
 ## 1. Stacked PR Auto-Merger (`.github/workflows/pr-stacked-merge.yml`)
 
-Instead of pinging the developer to manually review and merge 3–4 separate stacked PRs:
+Instead of pinging the developer to manually review and merge 3–4 separate stacked PRs (the relay is dispatched by each agent's `conclusion` job, because PRs created with `GITHUB_TOKEN` never raise `pull_request` events — see [Remediation Chaining](remediation-chaining.md)):
 - **Automatic Ingestion**: Automatically merges valid remediation PRs with labels (`test-remediation`, `security-remediation`, `doc-remediation`) targeting the feature branch.
-- **Squash & Delete**: Squashes the remediation commit into the developer's feature branch and deletes the temporary agent branch.
+- **Ready & Squash & Delete**: Marks draft stacked PRs ready, squashes the remediation commit into the developer's feature branch and deletes the temporary agent branch.
+- **Re-run**: Re-dispatches `pr-pipeline.yml` on the feature branch so every gate is re-evaluated on the consolidated code.
 - **Transparent Audit Trail**: Posts a comment directly to the parent PR:
   > **🤖 Autonomous Remediation Auto-Merged**:
   > - **Stacked PR**: [#12 - test: add unit test coverage for PR changes](url)

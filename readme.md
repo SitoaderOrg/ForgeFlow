@@ -4,10 +4,10 @@
 2. **Linters & Static Formatters**: Prettier, ESLint, Stylelint, `gofmt` (runs standard linters; fail-fast).
 3. **Polyglot Build Verification**: Verifies compilation and build artifacts across ecosystems (TypeScript, Go, Rust, Java, .NET).
 4. **Automated Testing & Coverage**: Executes test runner with diff-scoped coverage (configurable threshold, defaulting to 80%).
-5. **GitHub Security & Quality**: Native CodeQL static analysis, Secret Scanning, and Dependabot dependency reviews.
-6. **Documentation Drift Verification**: Detects when significant code logic is introduced without documentation.
-7. **Autonomous `gh-aw` Remediation Loops**: Proposes fixes as stacked PRs when gates fail.
-8. **Automated Consolidation & Auto-Merge**: Automatically squashes validated remediation PRs into the feature branch with full audit trails.
+5. **GitHub Security & Quality**: Native CodeQL static analysis (SARIF findings gated by security severity), Dependency Review, and secret detection (GITLEAKS in the lint stage).
+6. **Documentation Drift Verification**: Detects when application code changes without documentation and hands the semantic decision to the documentation agent.
+7. **Autonomous `gh-aw` Remediation Loops**: Failing gates dispatch the matching agent with the concrete findings; agents push fixes or propose stacked PRs (see [Remediation Chaining](docs/remediation-chaining.md)).
+8. **Automated Consolidation & Auto-Merge**: The remediation relay squashes stacked PRs into the feature branch with full audit trails and re-runs the pipeline.
 9. **Semantic Review & Merge**: GitHub Copilot performs review before human approval and final merge.
 
 ### 💡 Why This Framework is Relevant: Solving Review Fatigue
@@ -29,7 +29,8 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 - **Regular GitHub Actions:** Deterministic, binary (pass/fail), fast, reproducible tasks (compiling, running test runners, linting, scanning). -> (fast, zero token cost, reproducible).
 - **`gh-aw` (English Agentic Workflows):** Tasks requiring **reasoning, semantic understanding, synthesis, or code generation**. -> (using English in Markdown).
-- **Auto-Cancellation & Concurrency Control:** All PR gatekeepers use `concurrency` with `cancel-in-progress: true`. Whenever an author or automated agent pushes a new commit or fix to a PR, any active workflows running on the obsolete commit are immediately cancelled to save CI minutes and avoid race conditions.
+- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group with `cancel-in-progress: true`, so a newer push or remediation re-run cancels the obsolete pipeline. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
+- **No PAT required:** Events created with `GITHUB_TOKEN` never trigger workflows, so every hop is chained with `workflow_dispatch` — see [Remediation Chaining Without PATs](docs/remediation-chaining.md).
 
 ### Documentation & Implemented Modules
 
@@ -41,24 +42,27 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 - [Polyglot Automated Testing & PR Test Generator](docs/pr-test-and-generator.md)
 - [GitHub Code Security & PR Security Fixers](docs/pr-security-and-fixer.md)
 - [Documentation Drift & Autonomous Documentation Updater](docs/pr-docs-and-updater.md)
+- [Remediation Chaining Without PATs (dispatch, relay & guard rails)](docs/remediation-chaining.md)
 - [Automated Consolidation, Copilot Review & Developer Sign-Off](docs/pr-review-and-consolidation.md)
 
 ### 1. Standard GitHub Actions Workflows
 
-- **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows in a clean staged DAG.
+- **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows in a clean staged DAG. Runs on `pull_request` and on `workflow_dispatch(pr_number)` re-runs from the remediation relay.
 - **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable).
 - **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter (reusable).
 - **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts (reusable).
 - **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check (reusable).
-- **Security Scanning (`pr-security.yml`)**: CodeQL, Dependency Review, and Secret Scanning (reusable).
+- **Security Scanning (`pr-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable).
+- **Documentation Drift Gate (`pr-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable).
 - **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable).
-- **Stacked PR Auto-Merger (`pr-stacked-merge.yml`)**: Automatically merges verified remediation PRs into the feature branch.
+- **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs the pipeline.
+- **Shared gate helper (`.github/scripts/remediation.cjs`)**: Label management and deduplicated, budgeted agent dispatch.
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)
 
-- **PR Validation (`pr-validation.md`)**: Triggered on `needs-metadata` label. Summarizes broad diffs into clean, template-compliant PR descriptions and Conventional Commit titles when missing.
-- **PR Lint Fixer (`pr-lint-fixer.md`)**: Triggered on `lint-failed`. Automatically formats and resolves linter errors on the PR branch.
-- **PR Test Generator (`pr-test-generator.md`)**: Triggered on `test-required`. Drafts missing unit tests and boundary cases in a stacked PR.
+- **PR Validation (`pr-validation.md`)**: Dispatched by the Pre-Flight Gatekeeper (`needs-metadata`). Summarizes broad diffs into clean, template-compliant PR descriptions and Conventional Commit titles when missing.
+- **PR Lint Fixer (`pr-lint-fixer.md`)**: Dispatched by the lint gate (`lint-failed`) with the per-linter Super-Linter output. Automatically formats and resolves linter errors on the PR branch.
+- **PR Test Generator (`pr-test-generator.md`)**: Dispatched by the test gate (`test-required`) with failing tests and coverage. Drafts missing unit tests and boundary cases in a stacked PR.
 - [Security Fixers (`pr-codeql-fixer.md`, `pr-dependency-fixer.md`, `pr-secret-fixer.md`)](.github/workflows/pr-codeql-fixer.md): Remediates vulnerabilities and alerts via stacked PRs.
 - [Documentation Evaluator & Updater (`pr-doc-updater.md`)](.github/workflows/pr-doc-updater.md): Semantically evaluates PR diffs against documentation criteria (public APIs, schemas, architecture) and authors missing guides via stacked PRs.
 
@@ -69,6 +73,7 @@ A standalone, zero-deployment 2D stealth action browser game built for testing t
 - **Run Directly**: Open `dist/index.html` or `apps/ferret-heist/index.html` in any browser, or run `npm run dev` / `npm run preview`.
 - **Verify Build**: `npm run build` (builds bundled assets into `dist/`).
 - **Execute Tests & Coverage**: `npm test` or `npm run test:cov` (runs Vitest with diff-scoped coverage verification >= 80%).
+- **Lint**: `npm run lint` (ESLint, Prettier, HTMLHint — the same configs Super-Linter uses in CI); `npm run lint:fix` to auto-fix.
 - **Chaos Testing**:
   - Break a test in `tests/ferret.test.js` to trigger the **PR Test Generator** loop.
   - Introduce lint formatting issues in `apps/ferret-heist/` to trigger the **PR Lint Fixer** loop.

@@ -52,16 +52,17 @@ The deterministic security gate leverages native GitHub Code Security features:
   - Blocks high- and critical-severity CVEs from entering the codebase.
   - Applies the **`dependency-alert`** label on failure.
 - **GitHub CodeQL SAST (`github/codeql-action`)**:
-  - Automatically runs CodeQL with `autobuild` across detected languages.
-  - Identifies security vulnerabilities like injection attacks, path traversal, and insecure cryptographic usage.
-  - Applies the **`codeql-alert`** label on failure.
+  - Runs a per-language matrix with a supported build mode (`none` for interpreted languages, `autobuild` for Go/Swift) and the `security-extended` query suite.
+  - CodeQL's analyze step succeeds even when it finds vulnerabilities, so the gate evaluates the SARIF output itself and fails on any result whose `security-severity` is at or above `CODEQL_MIN_SECURITY_SEVERITY` (repository variable, default `4.0` = medium).
+  - Results are not uploaded (`upload: never`) because repositories using CodeQL *default setup* reject advanced-configuration uploads; default setup still publishes alerts for the PR.
+  - Applies the **`codeql-alert`** label on failure and dispatches the CodeQL fixer with the rule id, severity, message and `file:line` of each finding.
 - **GitHub Secret Protection & Scanning**:
   - Repositories configure native GitHub Push Protection to reject hardcoded secrets server-side at `git push`.
-  - The security gatekeeper inspects open secret alerts via GitHub's Secret Scanning API for web edits or bypassed secrets.
-  - Applies the **`secret-alert`** label on failure.
+  - Secrets introduced by the PR diff are caught by Super-Linter's **GITLEAKS** linter in the lint stage.
+  - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. The **`secret-alert`** label and `pr-secret-fixer.md` remain available for manual dispatch.
 - **Autonomous Label Management**:
   - Each label is independent: if only one check fails, only its specific alert label is attached.
-  - When the developer merges the stacked PR, the security gate re-runs on their feature branch and automatically clears the labels.
+  - The remediation relay auto-merges the stacked PR, clears the labels and re-runs the pipeline on the feature branch.
 
 ---
 
