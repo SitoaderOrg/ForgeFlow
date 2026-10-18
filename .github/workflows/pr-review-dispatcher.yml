@@ -1,4 +1,4 @@
-name: PR Review & Consolidation Dispatcher
+name: PR Human Review Handoff
 
 on:
   workflow_call:
@@ -12,125 +12,111 @@ on:
       head_sha:
         required: true
         type: string
+      base_ref:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+      metadata_hash:
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
-  issues: write
 
 jobs:
-  review-dispatcher:
-    name: Evaluate Readiness & Request Copilot Review
+  review:
+    name: Request human review and optionally enable native auto-merge
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Evaluate Quality Gates & Request Review
+      - name: Hand off the validated revision
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_NUM="${{ inputs.pr_number }}"
-          HEAD_BRANCH="${{ inputs.head_ref }}"
-          HEAD_SHA="${{ inputs.head_sha }}"
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          METADATA_HASH: ${{ inputs.metadata_hash }}
+          REVIEWERS: ${{ vars.PR_REVIEWERS }}
+          ENABLE_AUTO_MERGE: ${{ vars.PR_ENABLE_AUTO_MERGE || 'false' }}
+        with:
+          script: |
+            const { createHash } = require('node:crypto');
+            const metadataHash = pr => createHash('sha256').update(JSON.stringify([pr.title, pr.body || ''])).digest('hex');
+            const number = Number(process.env.PR_NUMBER);
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: number
+            });
+            if (pr.state !== 'open' || pr.head.ref !== process.env.HEAD_REF ||
+                pr.head.repo?.full_name !== context.payload.repository.full_name ||
+                pr.head.sha !== process.env.HEAD_SHA || pr.base.ref !== process.env.BASE_REF ||
+                pr.base.sha !== process.env.BASE_SHA || metadataHash(pr) !== process.env.METADATA_HASH) {
+              throw new Error('PR changed after validation; no review or merge handoff was performed.');
+            }
+            if (pr.draft) {
+              core.notice('Quality checks passed; the draft remains a draft. No auto-merge was enabled.');
+              return;
+            }
+            const reviewers = [...new Set((process.env.REVIEWERS || '').split(',').map(s => s.trim()).filter(Boolean))];
+            if (reviewers.includes(pr.user.login)) {
+              throw new Error('PR_REVIEWERS includes the PR author, who cannot approve their own PR.');
+            }
+            const requested = new Set(pr.requested_reviewers.map(user => user.login));
+            const missing = reviewers.filter(login => !requested.has(login));
+            if (missing.length) {
+              await github.rest.pulls.requestReviewers({
+                ...context.repo, pull_number: number, reviewers: missing
+              });
+            }
 
-          echo "🔍 Evaluating quality status for PR #$PR_NUM ($HEAD_BRANCH @ $HEAD_SHA)..."
-
-          if [ "$(gh pr view "$PR_NUM" --json isDraft --jq '.isDraft')" = "true" ]; then
-            echo "ℹ️ PR is a draft. Skipping review dispatch."
-            exit 0
-          fi
-
-          # 1. Check current labels on the PR
-          LABELS=$(gh pr view "$PR_NUM" --json labels --jq '.labels.[].name' 2>/dev/null || true)
-          echo "Active labels:"
-          echo "$LABELS"
-
-          BLOCKING_LABELS=("needs-metadata" "lint-failed" "build-failed" "test-required" "docs-required" "codeql-alert" "dependency-alert" "secret-alert")
-          IS_BLOCKED=false
-
-          for b_label in "${BLOCKING_LABELS[@]}"; do
-            if echo "$LABELS" | grep -qx "$b_label"; then
-              echo "⚠️ PR has active blocking label: $b_label. Halting review dispatch until resolved."
-              IS_BLOCKED=true
-            fi
-          done
-
-          if [ "$IS_BLOCKED" = "true" ]; then
-            echo "Quality gates not cleared yet. Waiting for remediation to complete."
-            exit 0
-          fi
-
-          # 2. Check if there are still any open stacked remediation PRs targeting this branch
-          OPEN_STACKED=$(gh pr list --base "$HEAD_BRANCH" --state open --json number,title,url)
-          STACKED_COUNT=$(echo "$OPEN_STACKED" | jq '. | length')
-
-          if [ "$STACKED_COUNT" -gt 0 ]; then
-            echo "ℹ️ There are $STACKED_COUNT open stacked PR(s) currently being processed/merged. Deferring review."
-            exit 0
-          fi
-
-          echo "✅ All automated quality gates passed and all stacked PRs are settled!"
-
-          # 3. Discover all previously merged stacked remediation PRs targeting this branch
-          MERGED_STACKED=$(gh pr list --base "$HEAD_BRANCH" --state merged --json number,title,url,mergedAt --limit 10)
-          MERGED_COUNT=$(echo "$MERGED_STACKED" | jq '. | length')
-
-          STACKED_SUMMARY=""
-          if [ "$MERGED_COUNT" -gt 0 ]; then
-            STACKED_SUMMARY="#### 📦 Auto-Merged Remediation PRs & Commits\n\nThe following agentic fixes were automatically validated and merged into this branch:\n\n"
-            STACKED_SUMMARY+=$(echo "$MERGED_STACKED" | jq -r '.[] | "- [#" + (.number|tostring) + " - " + .title + "](" + .url + ")"')
-            STACKED_SUMMARY+="\n\n"
-          else
-            STACKED_SUMMARY="*No automated remediations were required; clean pass on first run!*\n\n"
-          fi
-
-          # 4. Check if Copilot review has already been requested
-          REQUESTED_REVIEWERS=$(gh pr view "$PR_NUM" --json requestedReviewers --jq '.requestedReviewers.[].login' 2>/dev/null || true)
-
-          COPILOT_REQUESTED=false
-          if echo "$REQUESTED_REVIEWERS" | grep -qi "copilot"; then
-            COPILOT_REQUESTED=true
-          fi
-
-          if [ "$COPILOT_REQUESTED" = "false" ]; then
-            echo "🚀 Requesting GitHub Copilot Code Review..."
-            if gh api -X POST "repos/${{ github.repository }}/pulls/$PR_NUM/requested_reviewers" \
-                 -f 'reviewers[]=copilot-pull-request-reviewer[bot]' >/dev/null 2>&1 \
-               || gh pr edit "$PR_NUM" --add-reviewer "@copilot" >/dev/null 2>&1; then
-              echo "Requested GitHub Copilot review."
-            else
-              echo "::warning::Could not request GitHub Copilot review (Copilot code review may not be enabled for this repository)."
-            fi
-          else
-            echo "ℹ️ GitHub Copilot Code Review already requested."
-          fi
-
-          # 5. Post consolidated summary comment on the PR (once per head commit)
-          MARKER="<!-- pr-quality-pipeline-complete:$HEAD_SHA -->"
-          if gh api "repos/${{ github.repository }}/issues/$PR_NUM/comments" --paginate --jq '.[].body' | grep -qF "$MARKER"; then
-            echo "ℹ️ Completion summary already posted for $HEAD_SHA."
-            exit 0
-          fi
-
-          COMMENT_FILE=$(mktemp)
-          {
-            echo "$MARKER"
-            echo "### 🎯 Automated Quality Pipeline Completed"
-            echo ""
-            echo "All automated gates (**Metadata, Lint, Build, Tests, Security, and Docs**) have completed successfully!"
-            echo ""
-            echo -e "$STACKED_SUMMARY"
-            echo "---"
-            echo ""
-            echo "### 🔍 Next Steps for Contributor:"
-            echo "1. **GitHub Copilot Code Review** has been requested for deep semantic and architectural analysis."
-            echo "2. Review any inline suggestions left by Copilot (you can apply suggestions directly with one-click **\"Commit suggestion\"** buttons)."
-            echo "3. If remediation commits were merged, review the changes via the links above."
-            echo "4. **⏳ Awaiting human review** — once a maintainer approves, this PR is ready to merge into \`main\`! 🚀"
-          } > "$COMMENT_FILE"
-
-          gh pr comment "$PR_NUM" --body-file "$COMMENT_FILE"
-          rm -f "$COMMENT_FILE"
-          echo "Posted completion summary and review dispatch comment."
+            let mergeStatus = 'Auto-merge is disabled; a human must approve and merge.';
+            if (process.env.ENABLE_AUTO_MERGE === 'true') {
+              const { data: repository } = await github.rest.repos.get(context.repo);
+              if (!repository.allow_auto_merge) {
+                throw new Error('Enable repository auto-merge before setting PR_ENABLE_AUTO_MERGE=true.');
+              }
+              const rules = await github.paginate('GET /repos/{owner}/{repo}/rules/branches/{branch}', {
+                ...context.repo, branch: pr.base.ref, per_page: 100
+              });
+              const approval = rules.find(rule => rule.type === 'pull_request' &&
+                rule.parameters?.required_approving_review_count >= 1 &&
+                rule.parameters.dismiss_stale_reviews_on_push &&
+                rule.parameters.require_last_push_approval);
+              const checks = rules.find(rule => rule.type === 'required_status_checks' &&
+                rule.parameters?.strict_required_status_checks_policy &&
+                rule.parameters.required_status_checks.some(check => check.context === 'PR Quality / Ready for review'));
+              if (!approval || !checks) {
+                throw new Error('Auto-merge requires active branch rules for fresh human approval and the current PR Quality / Ready for review check. See prereqs.md.');
+              }
+              for (const id of new Set([approval.ruleset_id, checks.ruleset_id])) {
+                const { data: ruleset } = await github.request('GET /repos/{owner}/{repo}/rulesets/{ruleset_id}', {
+                  ...context.repo, ruleset_id: id
+                });
+                if (ruleset.enforcement !== 'active' || !Array.isArray(ruleset.bypass_actors) || ruleset.bypass_actors.length) {
+                  throw new Error('Required review/check rules must be active with no bypass actors.');
+                }
+              }
+              const { data: latest } = await github.rest.pulls.get({
+                ...context.repo, pull_number: number
+              });
+              if (latest.head.sha !== process.env.HEAD_SHA || latest.head.ref !== pr.head.ref ||
+                  latest.base.sha !== pr.base.sha || latest.base.ref !== pr.base.ref ||
+                  latest.state !== 'open' || latest.draft || metadataHash(latest) !== process.env.METADATA_HASH) {
+                throw new Error('PR changed while checking merge policy; auto-merge was not enabled.');
+              }
+              if (!latest.auto_merge) {
+                await github.graphql(
+                  'mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH}) { pullRequest { number } } }',
+                  { id: latest.node_id }
+                );
+              }
+              mergeStatus = 'Native auto-merge is enabled. GitHub will wait for required checks and human approval.';
+            }
+            await core.summary.addRaw(
+              `Validated revision: ${pr.head.sha}\n\n` +
+              (reviewers.length ? `Human reviewers: ${reviewers.join(', ')}.\n\n` : 'No explicit reviewers configured; use CODEOWNERS or request a human reviewer.\n\n') +
+              mergeStatus
+            ).write();

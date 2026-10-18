@@ -15,102 +15,85 @@ on:
       base_ref:
         required: true
         type: string
+      base_sha:
+        required: true
+        type: string
+      comparison_base_sha:
+        description: Optional original feature base when assessing a repair PR
+        type: string
+        default: ''
+    outputs:
+      findings:
+        value: ${{ jobs.verdict.outputs.findings }}
+      repair_kind:
+        value: docs
 
 permissions:
+  actions: read
   contents: read
-  pull-requests: write
-  issues: write
-  actions: write
-
-env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
+  pull-requests: read
+  copilot-requests: write
 
 jobs:
-  docs-drift:
-    name: Verify Documentation Coverage
+  assess:
+    name: Decide documentation need and sufficiency
+    uses: ./.github/workflows/pr-doc-review.lock.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      head_ref: ${{ inputs.head_ref }}
+      head_sha: ${{ inputs.head_sha }}
+      base_ref: ${{ inputs.base_ref }}
+      base_sha: ${{ inputs.base_sha }}
+      comparison_base_sha: ${{ inputs.comparison_base_sha }}
+
+  verdict:
+    name: Enforce the agent's revision-bound decision
+    needs: assess
+    if: ${{ always() }}
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+    outputs:
+      findings: ${{ steps.verdict.outputs.findings }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Download this run's assessment
+        id: assessment
+        if: needs.assess.result == 'success'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          fetch-depth: 0
-
-      - name: Detect Documentation Drift
-        id: drift
-        env:
-          BASE_REF: ${{ inputs.base_ref }}
-          HEAD_SHA: ${{ inputs.head_sha }}
-        run: |
-          git fetch --no-tags origin "$HEAD_SHA" 2>/dev/null || true
-          CHANGED=$(git diff --name-only --diff-filter=d "origin/$BASE_REF...$HEAD_SHA")
-          echo "Changed files:"; echo "$CHANGED"
-
-          # Source = application code (tests, CI config, lockfiles and docs excluded)
-          SOURCE=$(echo "$CHANGED" \
-            | grep -E '\.(js|jsx|ts|tsx|mjs|cjs|py|go|java|kt|cs|rb|rs|php|swift|c|cpp|h|hpp)$' \
-            | grep -vE '(^|/)(tests?|spec|__tests__)/|\.(test|spec)\.[a-z]+$|_test\.go$|^\.github/|(^|/)[^/]*\.config\.[a-z]+$' || true)
-          DOCS=$(echo "$CHANGED" | grep -E '\.md$' | grep -vE '^\.github/' || true)
-
-          {
-            echo "source<<EOF"; echo "$SOURCE"; echo "EOF"
-            echo "docs<<EOF"; echo "$DOCS"; echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-          if [ -z "$SOURCE" ]; then
-            echo "result=no-source-changes" >> "$GITHUB_OUTPUT"
-          elif [ -n "$DOCS" ]; then
-            echo "result=docs-present" >> "$GITHUB_OUTPUT"
-          else
-            echo "result=docs-missing" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout shared scripts
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-          path: .gate-scripts
-
-      - name: Evaluate Gate & Trigger Documentation Agent
+          name: pr-doc-assessment-${{ inputs.head_sha }}-${{ inputs.base_sha }}
+          path: ${{ runner.temp }}/doc-assessment
+      - name: Validate and enforce the decision
+        id: verdict
         uses: actions/github-script@v7
         env:
+          ASSESS_RESULT: ${{ needs.assess.result }}
+          DOWNLOAD_RESULT: ${{ steps.assessment.outcome }}
+          ASSESSMENT_PATH: ${{ runner.temp }}/doc-assessment/assessment.json
           PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_REF: ${{ inputs.head_ref }}
-          RESULT: ${{ steps.drift.outputs.result }}
-          SOURCE_FILES: ${{ steps.drift.outputs.source }}
-          DOC_FILES: ${{ steps.drift.outputs.docs }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          COMPARISON_BASE_SHA: ${{ inputs.comparison_base_sha || inputs.base_sha }}
         with:
           script: |
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/remediation.cjs`);
-            const prNumber = Number(process.env.PR_NUMBER);
-            const result = process.env.RESULT;
-            const labels = await helpers.getLabels({ github, context, prNumber });
-
-            // The PR Documentation Updater records a semantic "no docs needed" decision
-            // with the docs-not-required label so the gate does not loop.
-            if (result === 'docs-missing' && !labels.includes('docs-not-required')) {
-              await helpers.addLabel({ github, context, core, prNumber, label: 'docs-required' });
-              const status = await helpers.dispatchRemediation({
-                github, context, core, prNumber,
-                headRef: process.env.HEAD_REF,
-                workflow: 'pr-doc-updater.lock.yml',
-                stackedLabel: 'doc-remediation',
-                findings: `Source files changed without any Markdown documentation updates:\n${process.env.SOURCE_FILES}`
-              });
-              await core.summary.addRaw(
-                '### ❌ Documentation Drift Detected\n\n' +
-                'Application code changed without documentation:\n\n```\n' + process.env.SOURCE_FILES + '\n```\n\n' +
-                `> 📚 **Autonomous Remediation**: Added \`docs-required\`. PR Documentation Updater dispatch status: **${status}**. ` +
-                'The agent semantically evaluates the diff and either opens a stacked docs PR or marks the PR `docs-not-required`.\n'
-              ).write();
-              core.setFailed('Documentation drift: source code changed without documentation updates.');
-              return;
+            core.setOutput('findings', 'Documentation assessment did not complete. Missing evidence is not a pass.');
+            if (process.env.ASSESS_RESULT !== 'success' || process.env.DOWNLOAD_RESULT !== 'success') {
+              throw new Error('A successful agent run and its assessment artifact are required.');
             }
-
-            await helpers.removeLabel({ github, context, core, prNumber, label: 'docs-required' });
-            const reason = {
-              'no-source-changes': 'No application source changes detected.',
-              'docs-present': `Documentation updated alongside code:\n\n\`\`\`\n${process.env.DOC_FILES}\n\`\`\``,
-              'docs-missing': 'PR Documentation Updater determined no documentation is required (`docs-not-required`).'
-            }[result] || result;
-            await core.summary.addRaw(`### ✅ Documentation Drift Gatekeeper Passed\n\n${reason}\n`).write();
+            const { readFileSync } = require('node:fs');
+            const assessment = JSON.parse(readFileSync(process.env.ASSESSMENT_PATH, 'utf8'));
+            if (!assessment || assessment.version !== 2 ||
+                assessment.pr_number !== process.env.PR_NUMBER ||
+                assessment.head_sha !== process.env.HEAD_SHA || assessment.base_sha !== process.env.BASE_SHA ||
+                assessment.comparison_base_sha !== process.env.COMPARISON_BASE_SHA ||
+                !['not_needed', 'sufficient', 'missing', 'uncertain'].includes(assessment.decision) ||
+                typeof assessment.findings !== 'string' || !assessment.findings.trim() ||
+                assessment.findings.length > 6000) {
+              throw new Error('Invalid or stale documentation assessment.');
+            }
+            core.setOutput('findings', assessment.findings);
+            if (['missing', 'uncertain'].includes(assessment.decision)) {
+              throw new Error(assessment.findings);
+            }
+            await core.summary.addRaw(`Documentation: ${assessment.decision} for ${assessment.head_sha}.\n\n${assessment.findings}`).write();

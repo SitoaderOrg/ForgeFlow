@@ -1,0 +1,70 @@
+name: Start PR Quality Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited, closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: write
+
+jobs:
+  start:
+    name: Queue validation on the PR head SHA
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch immutable-head validation
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const event = context.payload.pull_request;
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: event.number
+            });
+            if (pr.user.login === 'github-actions[bot]' && pr.head.repo?.full_name === context.payload.repository.full_name) {
+              let parent = pr;
+              const seen = new Set([pr.number]);
+              for (let depth = 0; depth < 7; depth++) {
+                const target = parent.stack?.base?.ref || parent.base.ref;
+                const parents = await github.paginate(github.rest.pulls.list, {
+                  ...context.repo, state: 'open', head: `${context.repo.owner}:${target}`, per_page: 100
+                });
+                const next = parents.find(item => item.head.ref === target &&
+                  item.head.repo?.full_name === context.payload.repository.full_name);
+                if (!next) break;
+                if (seen.has(next.number)) throw new Error('Cyclic repair ancestry; refusing recursive dispatch.');
+                seen.add(next.number);
+                parent = next;
+                if (parent.user.login !== 'github-actions[bot]') break;
+                if (depth === 6) throw new Error('Repair ancestry exceeds the bounded chain.');
+              }
+              if (parent.number !== pr.number) {
+                if (pr.state === 'closed') {
+                  await github.rest.actions.createWorkflowDispatch({
+                    ...context.repo, workflow_id: 'pr-pipeline.yml', ref: parent.head.ref,
+                    inputs: { pr_number: String(parent.number), expected_head_sha: parent.head.sha, repair_round: '0' }
+                  });
+                } else {
+                  core.notice('This dependent bot repair is validated by its parent workflow, not a recursive repair cycle.');
+                }
+                return;
+              }
+            }
+            if (pr.state !== 'open' || pr.head.sha !== event.head.sha) {
+              core.notice('Ignoring a closed PR or superseded event.');
+              return;
+            }
+            if (pr.head.repo?.full_name !== context.payload.repository.full_name) {
+              throw new Error('Fork PR automation is not enabled. A maintainer must use a trusted same-repository branch.');
+            }
+            if (pr.head.ref === context.payload.repository.default_branch) {
+              throw new Error('The default branch cannot be an automatic repair target.');
+            }
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo, workflow_id: 'pr-pipeline.yml', ref: pr.head.ref,
+              inputs: {
+                pr_number: String(pr.number), expected_head_sha: pr.head.sha, repair_round: '0'
+              }
+            });

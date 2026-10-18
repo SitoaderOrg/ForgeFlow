@@ -1,233 +1,49 @@
-name: PR Tests & Coverage Gatekeeper
+name: PR Test & Coverage Gatekeeper
 
 on:
   workflow_call:
     inputs:
-      pr_number:
+      head_sha:
         required: true
         type: string
-      head_ref:
-        required: true
-        type: string
-      base_ref:
-        required: true
-        type: string
+    outputs:
+      findings:
+        value: ${{ jobs.test.outputs.findings }}
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
-  actions: write
-
-env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
-  COVERAGE_THRESHOLD: ${{ vars.COVERAGE_THRESHOLD || '80' }}
 
 jobs:
   test:
-    name: Run Test Suite & Coverage
+    name: npm run test:ci
     runs-on: ubuntu-latest
-
+    outputs:
+      findings: ${{ steps.findings.outputs.findings }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Detect & Execute Tests
-        id: run-tests
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install and run tests with coverage
+        id: check
+        shell: bash
         run: |
-          # Keep a copy of the output so failures can be handed to the PR Test Generator agent
-          exec > >(tee -a "$RUNNER_TEMP/test-output.log") 2>&1
-          TESTS_FOUND=false
-          COVERAGE_PASSED=true
-
-          echo "🔍 Scanning repository for test suites and coverage configuration..."
-
-          # 1. Node.js / TypeScript (npm / yarn / pnpm)
-          if [ -f "package.json" ]; then
-            if grep -q '"test"' package.json; then
-              TESTS_FOUND=true
-              echo "📦 Detected Node.js / TypeScript project. Running tests with coverage..."
-              npm ci 2>/dev/null || npm install --prefer-offline --no-audit
-
-              BASE_BRANCH="origin/${{ inputs.base_ref }}"
-
-              # Check runner type: Vitest, Jest, or standard npm test
-              if grep -q '"vitest"' package.json || [ -f "vitest.config.ts" ] || [ -f "vitest.config.js" ]; then
-                echo "⚡ Running Vitest with diff-scoped tests and ${COVERAGE_THRESHOLD}% line coverage threshold..."
-                npx vitest run --changed="$BASE_BRANCH" --coverage --coverage.thresholds.lines="$COVERAGE_THRESHOLD" || \
-                npx vitest run --coverage --coverage.thresholds.lines="$COVERAGE_THRESHOLD"
-              elif grep -q '"jest"' package.json || [ -f "jest.config.js" ] || [ -f "jest.config.ts" ]; then
-                echo "🃏 Running Jest with diff-scoped tests and ${COVERAGE_THRESHOLD}% line coverage threshold..."
-                npx jest --changedSince="$BASE_BRANCH" --coverage --coverageThreshold="{\"global\":{\"lines\":${COVERAGE_THRESHOLD}}}" || \
-                npx jest --coverage --coverageThreshold="{\"global\":{\"lines\":${COVERAGE_THRESHOLD}}}"
-              elif npm run | grep -q "test:cov"; then
-                echo "▶️ Running npm run test:cov..."
-                npm run test:cov
-              else
-                echo "▶️ Running npm test with coverage threshold..."
-                npm test -- --coverage --coverageThreshold="{\"global\":{\"lines\":${COVERAGE_THRESHOLD}}}"
-              fi
-            fi
-          fi
-
-          # 2. Python (pytest with diff-scoped coverage)
-          if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
-            if find . -maxdepth 3 -name "*test*.py" | grep -q .; then
-              TESTS_FOUND=true
-              echo "🐍 Detected Python project. Checking PR diff files..."
-              pip install pytest pytest-cov 2>/dev/null || true
-
-              # Identify modified Python source files in PR diff
-              CHANGED_PY_FILES=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '\.py$' | grep -vE '(test_|tests/|_test\.py)' || true)
-
-              if [ -n "$CHANGED_PY_FILES" ]; then
-                COV_MODULES=$(echo "$CHANGED_PY_FILES" | sed -E 's/\.py$//' | tr '/' '.' | paste -sd, -)
-                echo "⚡ Running pytest scoped to modified files (${COV_MODULES}) with ${COVERAGE_THRESHOLD}% threshold..."
-                pytest --cov="$COV_MODULES" --cov-fail-under="$COVERAGE_THRESHOLD"
-              else
-                echo "▶️ No modified Python source files in diff. Running full pytest suite..."
-                pytest --cov=. --cov-fail-under="$COVERAGE_THRESHOLD" || python -m unittest discover
-              fi
-            fi
-          fi
-
-          # 3. Go (go test with diff-scoped coverage threshold)
-          if [ -f "go.mod" ] || ls *.go 1>/dev/null 2>&1; then
-            if find . -maxdepth 3 -name "*_test.go" | grep -q .; then
-              TESTS_FOUND=true
-              echo "🐹 Detected Go project. Running go test..."
-              CHANGED_GO_PKGS=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '\.go$' | grep -vE '_test\.go$' | xargs -n1 dirname 2>/dev/null | sort -u | sed 's|^|./|' || true)
-
-              if [ -n "$CHANGED_GO_PKGS" ]; then
-                echo "⚡ Running go test scoped to changed packages (${CHANGED_GO_PKGS}) with ${COVERAGE_THRESHOLD}% threshold..."
-                go test -v -coverprofile=coverage.out $CHANGED_GO_PKGS
-              else
-                echo "▶️ Running go test for all packages..."
-                go test -v -coverprofile=coverage.out ./...
-              fi
-
-              COVERAGE=$(go tool cover -func=coverage.out | grep "total:" | awk '{print substr($3, 1, length($3)-1)}')
-              echo "Total Go coverage: ${COVERAGE}%"
-              if (( $(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l 2>/dev/null || awk "BEGIN {print ($COVERAGE < $COVERAGE_THRESHOLD)}") )); then
-                echo "::error::Go test coverage is ${COVERAGE}%, which is below the required ${COVERAGE_THRESHOLD}% threshold."
-                exit 1
-              fi
-            fi
-          fi
-
-          # 4. Java / Kotlin (Maven / Gradle)
-          if [ -f "pom.xml" ]; then
-            TESTS_FOUND=true
-            echo "☕ Detected Maven Java/Kotlin project. Running tests with coverage verification..."
-            if [ -f "./mvnw" ]; then ./mvnw verify; else mvn verify; fi
-          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            TESTS_FOUND=true
-            echo "☕ Detected Gradle Java/Kotlin project. Running tests and coverage..."
-            if [ -f "./gradlew" ]; then ./gradlew test jacocoTestCoverageVerification jacocoTestReport 2>/dev/null || ./gradlew test; else gradle test jacocoTestCoverageVerification jacocoTestReport 2>/dev/null || gradle test; fi
-          fi
-
-          # 5. C# / .NET (dotnet test)
-          if ls *.sln 1>/dev/null 2>&1 || ls *.csproj 1>/dev/null 2>&1; then
-            TESTS_FOUND=true
-            echo "🔷 Detected .NET project. Running dotnet test with coverage threshold..."
-            dotnet test --collect:"XPlat Code Coverage" -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.CoveragePercentTarget="$COVERAGE_THRESHOLD" 2>/dev/null || \
-            dotnet test --collect:"XPlat Code Coverage"
-          fi
-
-          # 6. Rust (cargo test)
-          if [ -f "Cargo.toml" ]; then
-            TESTS_FOUND=true
-            echo "🦀 Detected Rust project. Running cargo test..."
-            cargo test
-          fi
-
-          # 7. Ruby (RSpec / Minitest)
-          if [ -f "Gemfile" ]; then
-            if [ -d "spec" ] || [ -d "test" ]; then
-              TESTS_FOUND=true
-              echo "💎 Detected Ruby project. Running tests..."
-              bundle install 2>/dev/null || true
-              COVERAGE_MIN="$COVERAGE_THRESHOLD" bundle exec rspec 2>/dev/null || rake test
-            fi
-          fi
-
-          # 8. PHP (PHPUnit / Pest)
-          if [ -f "composer.json" ]; then
-            if [ -d "tests" ] || [ -f "phpunit.xml" ]; then
-              TESTS_FOUND=true
-              echo "🐘 Detected PHP project. Running tests..."
-              composer install --prefer-dist --no-progress 2>/dev/null || true
-              CHANGED_PHP_FILES=$(git diff --name-only "$BASE_BRANCH...HEAD" 2>/dev/null | grep -E '\.php$' | grep -vE 'Test\.php$' || true)
-              if [ -n "$CHANGED_PHP_FILES" ]; then
-                echo "⚡ Running phpunit with coverage threshold..."
-                vendor/bin/phpunit --min-covered-elements="$COVERAGE_THRESHOLD" 2>/dev/null || vendor/bin/phpunit --coverage-text 2>/dev/null || phpunit
-              else
-                vendor/bin/phpunit --coverage-text 2>/dev/null || phpunit
-              fi
-            fi
-          fi
-
-          if [ "$TESTS_FOUND" = "false" ]; then
-            echo "ℹ️ No test suite or test manifests detected for this codebase. Skipping test gate cleanly."
-          fi
-
-      - name: Checkout shared scripts
+          set -euo pipefail
+          exec > >(tee test.log) 2>&1
+          npm ci
+          npm run test:ci
+      - name: Provide diagnostics to the repair agent
+        id: findings
         if: always()
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-          path: .gate-scripts
-
-      - name: Handle Test Failure (Trigger Autonomous Remediation)
-        if: failure() && steps.run-tests.outcome == 'failure'
         uses: actions/github-script@v7
         env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_REF: ${{ inputs.head_ref }}
+          RESULT: ${{ steps.check.outcome }}
         with:
           script: |
-            const fs = require('fs');
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/remediation.cjs`);
-            const prNumber = Number(process.env.PR_NUMBER);
-            await helpers.addLabel({ github, context, core, prNumber, label: 'test-required' });
-
-            let output = '';
-            try {
-              output = fs.readFileSync(`${process.env.RUNNER_TEMP}/test-output.log`, 'utf8')
-                .replace(/\x1b\[[0-9;]*m/g, '')
-                .split('\n')
-                .filter(l => /FAIL|✗|×|AssertionError|Expected|Received|ERROR|Coverage|threshold|% Lines|Uncovered|\|/.test(l))
-                .slice(-80)
-                .join('\n');
-            } catch (e) {
-              core.warning(`Could not read test output: ${e.message}`);
-            }
-
-            const status = await helpers.dispatchRemediation({
-              github, context, core, prNumber,
-              headRef: process.env.HEAD_REF,
-              workflow: 'pr-test-generator.lock.yml',
-              stackedLabel: 'test-remediation',
-              findings: `Tests & Coverage gate failed in run ${context.runId}.\n${output}`
-            });
-
-            const summary = '### ❌ PR Tests & Coverage Gatekeeper Failed\n\n' +
-              `> 🧪 **Autonomous Remediation**: Added \`test-required\` label. PR Test Generator dispatch status: **${status}**. ` +
-              'The agent opens a **Stacked Pull Request** with fixed/missing tests, which is auto-merged into your branch.\n';
-            await core.summary.addRaw(summary).write();
-
-      - name: Handle Test Success (Clear Remediation Label)
-        if: success()
-        uses: actions/github-script@v7
-        env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-        with:
-          script: |
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/remediation.cjs`);
-            await helpers.removeLabel({ github, context, core, prNumber: Number(process.env.PR_NUMBER), label: 'test-required' });
-
-            let summary = '### ✅ PR Tests & Coverage Gatekeeper Passed\n\n' +
-              'All test suites executed and passed successfully.\n';
-            await core.summary.addRaw(summary).write();
+            const fs = require('node:fs');
+            const detail = fs.existsSync('test.log') ? fs.readFileSync('test.log', 'utf8').slice(-5500) : 'Checkout or Node setup failed; see the job log.';
+            core.setOutput('findings', `npm run test:ci: ${process.env.RESULT}\n${detail}`);

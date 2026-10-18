@@ -1,35 +1,47 @@
 name: PR Quality Pipeline
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  # Re-entry point used by the remediation relay (pr-stacked-merge.yml) after an agent
-  # pushes or auto-merges a fix. Commits made with GITHUB_TOKEN do not raise
-  # `synchronize` events, so the pipeline is re-dispatched on the PR head branch instead.
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'Pull request number to validate (run the workflow on the PR head branch)'
+        description: Pull request to validate; dispatch on its head branch
         required: true
         type: string
+      expected_head_sha:
+        description: Expected revision; leave empty for a manual validation
+        type: string
+        default: ''
+      repair_round:
+        description: Internal round, bound to the continuation artifact
+        type: string
+        default: '0'
+      state_run_id:
+        description: Internal prior pipeline run containing verified continuation state
+        type: string
+        default: ''
+      state_run_attempt:
+        description: Internal prior attempt containing verified continuation state
+        type: string
+        default: ''
+      state_artifact_id:
+        description: Internal immutable artifact ID returned by the trusted controller upload
+        type: string
+        default: ''
 
 concurrency:
-  group: pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
+  group: pr-quality-${{ inputs.pr_number }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
-  security-events: write
-  actions: write
 
 jobs:
-  # Stage 0: Resolve PR context (works for both pull_request and workflow_dispatch)
   context:
-    name: 'Stage 0: Resolve PR'
+    name: Resolve immutable PR revision
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
@@ -37,148 +49,669 @@ jobs:
       head_ref: ${{ steps.pr.outputs.head_ref }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       base_ref: ${{ steps.pr.outputs.base_ref }}
-      skip: ${{ steps.pr.outputs.skip }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
+      metadata_hash: ${{ steps.pr.outputs.metadata_hash }}
+      repair_round: ${{ steps.pr.outputs.repair_round }}
+      pending_repairs: ${{ steps.pr.outputs.pending_repairs }}
+      has_repairs: ${{ steps.pr.outputs.has_repairs }}
+      state: ${{ steps.pr.outputs.state }}
+      candidate_pr_number: ${{ steps.pr.outputs.candidate_pr_number }}
+      candidate_head_ref: ${{ steps.pr.outputs.candidate_head_ref }}
+      candidate_head_sha: ${{ steps.pr.outputs.candidate_head_sha }}
+      candidate_base_ref: ${{ steps.pr.outputs.candidate_base_ref }}
+      candidate_base_sha: ${{ steps.pr.outputs.candidate_base_sha }}
     steps:
-      - name: Resolve pull request
+      - name: Download the prior controller attempt state
+        if: inputs.state_run_id != '' && inputs.state_run_attempt != '' && inputs.state_artifact_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.state_artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/repair-state
+          run-id: ${{ inputs.state_run_id }}
+          github-token: ${{ github.token }}
+      - name: Resolve and validate revision
         id: pr
         uses: actions/github-script@v7
         env:
-          PR_INPUT: ${{ inputs.pr_number }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+          STATE_RUN_ID: ${{ inputs.state_run_id }}
+          STATE_RUN_ATTEMPT: ${{ inputs.state_run_attempt }}
+          STATE_ARTIFACT_ID: ${{ inputs.state_artifact_id }}
+          STATE_PATH: ${{ runner.temp }}/repair-state/state.json
         with:
           script: |
-            const prNumber = context.eventName === 'pull_request'
-              ? context.payload.pull_request.number
-              : Number(process.env.PR_INPUT);
-            if (!Number.isInteger(prNumber) || prNumber <= 0) {
-              core.setFailed(`Invalid pull request number: '${process.env.PR_INPUT}'`);
-              return;
+            const { createHash } = require('node:crypto');
+            const { readFileSync, statSync } = require('node:fs');
+            const number = Number(process.env.PR_NUMBER);
+            const round = Number(process.env.REPAIR_ROUND);
+            const positive = value => Number.isSafeInteger(value) && value > 0;
+            const sha = value => typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+            const sourceRun = process.env.STATE_RUN_ID || '';
+            const sourceAttempt = process.env.STATE_RUN_ATTEMPT || '';
+            const artifactId = process.env.STATE_ARTIFACT_ID || '';
+            if (!positive(number) ||
+                !/^[0-6]$/.test(process.env.REPAIR_ROUND)) {
+              throw new Error('A positive PR number and repair_round between 0 and 6 are required.');
             }
-
+            if (Boolean(sourceRun) !== Boolean(sourceAttempt) || Boolean(sourceRun) !== Boolean(artifactId) ||
+                (sourceRun && [sourceRun, sourceAttempt, artifactId].some(value =>
+                  !/^[1-9][0-9]*$/.test(value) || !positive(Number(value))))) {
+              throw new Error('Continuation run, attempt, and immutable artifact ID must be positive integers.');
+            }
             const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
+              ...context.repo, pull_number: number
             });
-
-            const labels = pr.labels.map(l => l.name);
-            const remediationLabels = ['test-remediation', 'security-remediation', 'doc-remediation'];
-            let skip = false;
-            if (pr.state !== 'open') {
-              core.notice(`PR #${prNumber} is ${pr.state}; skipping pipeline.`);
-              skip = true;
-            } else if (labels.some(l => remediationLabels.includes(l))) {
-              core.notice(`PR #${prNumber} is a stacked remediation PR; it is consolidated by pr-stacked-merge.yml.`);
-              skip = true;
-            } else if (context.eventName === 'workflow_dispatch' && context.ref !== `refs/heads/${pr.head.ref}`) {
-              core.setFailed(`Dispatch ref '${context.ref}' does not match PR head branch '${pr.head.ref}'. Re-run with --ref ${pr.head.ref}.`);
-              return;
+            if (pr.state !== 'open' || pr.head.repo?.full_name !== context.payload.repository.full_name ||
+                pr.base.repo?.full_name !== context.payload.repository.full_name ||
+                pr.head.ref === context.payload.repository.default_branch || !sha(pr.head.sha) || !sha(pr.base.sha)) {
+              throw new Error('Automatic validation requires an open same-repository feature PR.');
             }
+            if (context.ref !== `refs/heads/${pr.head.ref}` || context.sha !== pr.head.sha ||
+                (process.env.EXPECTED_HEAD_SHA && process.env.EXPECTED_HEAD_SHA !== pr.head.sha)) {
+              throw new Error('Stale validation: dispatch on the current PR head branch and revision.');
+            }
+            const metadata = createHash('sha256').update(JSON.stringify([pr.title, pr.body || ''])).digest('hex');
+            const feature = { number, head_ref: pr.head.ref, head_sha: pr.head.sha,
+              base_ref: pr.base.ref, base_sha: pr.base.sha, metadata_hash: metadata };
+            let state = { version: 1, repository: context.payload.repository.full_name,
+              feature, initial_head_sha: pr.head.sha, round: 0, stack_number: null, repairs: [] };
+            if (sourceRun) {
+              if (statSync(process.env.STATE_PATH).size > 32768) throw new Error('Oversized continuation state.');
+              state = JSON.parse(readFileSync(process.env.STATE_PATH, 'utf8'));
+              const { data: workflow } = await github.rest.actions.getWorkflow({
+                ...context.repo, workflow_id: 'pr-pipeline.yml'
+              });
+              const { data: source } = await github.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}', {
+                ...context.repo, run_id: Number(sourceRun), attempt_number: Number(sourceAttempt)
+              });
+              if (source.workflow_id !== workflow.id || source.event !== 'workflow_dispatch' ||
+                  source.head_branch !== pr.head.ref || source.status !== 'completed' ||
+                  !['success', 'failure'].includes(source.conclusion) ||
+                  source.run_attempt !== Number(sourceAttempt) || source.id !== Number(sourceRun) ||
+                  state.source_run_id !== source.id || state.source_run_attempt !== source.run_attempt ||
+                  state.source_head_sha !== source.head_sha ||
+                  !['repair', 'metadata', 'landed'].includes(state.transition)) {
+                throw new Error('Continuation artifact is not from the expected completed controller attempt.');
+              }
+              const jobs = await github.paginate('GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs', {
+                ...context.repo, run_id: source.id, attempt_number: source.run_attempt, per_page: 100
+              });
+              const producer = jobs.filter(job => job.name === 'Persist verified continuation and queue the next revision');
+              const { data: artifact } = await github.rest.actions.getArtifact({
+                ...context.repo, artifact_id: Number(artifactId)
+              });
+              if (producer.length !== 1 || producer[0].status !== 'completed' || producer[0].conclusion !== 'success' ||
+                  producer[0].run_id !== source.id || producer[0].run_attempt !== source.run_attempt ||
+                  artifact.id !== Number(artifactId) || artifact.name !== `repair-state-${source.run_attempt}` ||
+                  artifact.expired !== false || artifact.workflow_run?.id !== source.id ||
+                  artifact.workflow_run?.head_sha !== source.head_sha) {
+                throw new Error('State must come from the successful trusted controller job and its immutable artifact, not a code-check upload.');
+              }
+              if (state.version !== 1 || state.repository !== context.payload.repository.full_name ||
+                  !state.feature || Object.entries(feature).some(([key, value]) => state.feature[key] !== value) ||
+                  !sha(state.initial_head_sha) || state.round !== round ||
+                  !Array.isArray(state.repairs) || state.repairs.length > round ||
+                  (state.stack_number !== null && !positive(state.stack_number)) ||
+                  (state.transition !== 'landed' && source.head_sha !== feature.head_sha) ||
+                  (state.transition === 'landed' && (state.repairs.length || state.last_merge_sha !== feature.head_sha))) {
+                throw new Error('Stale or invalid feature snapshot, budget, or repair-chain state.');
+              }
+            } else if (round !== 0) {
+              throw new Error('A nonzero repair round requires verified continuation state.');
+            }
+            const membership = async pullNumber => {
+              const { data } = await github.request('GET /repos/{owner}/{repo}/stacks', {
+                ...context.repo, pull_request: pullNumber, headers: { 'X-GitHub-Api-Version': '2026-03-10' }
+              });
+              if (!Array.isArray(data) || data.length > 1 || data.some(stack => !positive(stack.number))) {
+                throw new Error('Unknown native stack membership.');
+              }
+              return data[0]?.number ?? null;
+            };
+            if (await membership(number) !== null) {
+              throw new Error('The feature PR must remain outside the native repair stack.');
+            }
+            const known = new Set([number]);
+            const refs = new Set([feature.head_ref]);
+            let candidate = feature;
+            for (const entry of state.repairs) {
+              if (!positive(entry.number) || known.has(entry.number) || !sha(entry.head_sha) ||
+                  typeof entry.head_ref !== 'string' || refs.has(entry.head_ref) ||
+                  entry.head_ref === context.payload.repository.default_branch ||
+                  entry.base_ref !== candidate.head_ref || entry.base_sha !== candidate.head_sha ||
+                  !positive(entry.check_id) || !positive(entry.validation_run_id) ||
+                  !['lint', 'build', 'test', 'security', 'docs'].includes(entry.kind)) {
+                throw new Error('Invalid ordered repair-chain entry.');
+              }
+              const { data: repair } = await github.rest.pulls.get({ ...context.repo, pull_number: entry.number });
+              if (repair.state !== 'open' || repair.merged || repair.draft || repair.auto_merge ||
+                  repair.user?.login !== 'github-actions[bot]' || repair.user?.type !== 'Bot' ||
+                  repair.head.repo?.full_name !== state.repository || repair.base.repo?.full_name !== state.repository ||
+                  repair.head.ref !== entry.head_ref || repair.head.sha !== entry.head_sha ||
+                  repair.base.ref !== entry.base_ref || repair.base.sha !== entry.base_sha ||
+                  await membership(entry.number) !== state.stack_number) {
+                throw new Error('Repair chain changed after validation; preserve it for manual handling.');
+              }
+              known.add(entry.number);
+              refs.add(entry.head_ref);
+              candidate = entry;
+            }
+            if ((state.repairs.length < 2 && state.stack_number !== null) ||
+                (state.repairs.length >= 2 && state.stack_number === null)) {
+              throw new Error('Native stack registration does not match the repair-chain length.');
+            }
+            if (state.stack_number !== null) {
+              const { data: stack } = await github.request('GET /repos/{owner}/{repo}/stacks/{stack_number}', {
+                ...context.repo, stack_number: state.stack_number, headers: { 'X-GitHub-Api-Version': '2026-03-10' }
+              });
+              if (stack.number !== state.stack_number || stack.base?.ref !== feature.head_ref || stack.open !== true ||
+                  !Array.isArray(stack.pull_requests) || stack.pull_requests.length !== state.repairs.length ||
+                  stack.pull_requests.some((entry, index) => entry.number !== state.repairs[index].number ||
+                    entry.head?.sha !== state.repairs[index].head_sha || entry.head?.ref !== state.repairs[index].head_ref ||
+                    entry.state !== 'open' || entry.draft || entry.merged_at)) {
+                throw new Error('Native stack differs from the recorded repair-only chain.');
+              }
+            }
+            const pending = [];
+            const stacks = await github.paginate('GET /repos/{owner}/{repo}/stacks', {
+              ...context.repo, per_page: 100, headers: { 'X-GitHub-Api-Version': '2026-03-10' }
+            });
+            if (!Array.isArray(stacks) || stacks.some(stack => !positive(stack.number) ||
+                typeof stack.base?.ref !== 'string' || typeof stack.open !== 'boolean')) {
+              throw new Error('Unknown native stack listing; cannot establish a safe repair boundary.');
+            }
+            const competingStacks = stacks.filter(stack => stack.open &&
+              stack.base.ref === feature.head_ref && stack.number !== state.stack_number);
+            for (const branch of refs) {
+              const open = await github.paginate(github.rest.pulls.list, {
+                ...context.repo, state: 'open', base: branch, per_page: 100
+              });
+              pending.push(...open.filter(repair => !known.has(repair.number) &&
+                repair.user.login === 'github-actions[bot]' && repair.head.repo?.full_name === state.repository));
+            }
+            for (const [key, value] of Object.entries({
+              pr_number: String(number), head_ref: pr.head.ref, head_sha: pr.head.sha,
+              base_ref: pr.base.ref, base_sha: pr.base.sha,
+              metadata_hash: metadata, repair_round: String(round),
+              pending_repairs: String(pending.length > 0 || competingStacks.length > 0), state: JSON.stringify(state),
+              has_repairs: String(state.repairs.length > 0),
+              candidate_pr_number: String(candidate.number), candidate_head_ref: candidate.head_ref,
+              candidate_head_sha: candidate.head_sha, candidate_base_ref: candidate.base_ref,
+              candidate_base_sha: candidate.base_sha
+            })) core.setOutput(key, value);
+            if (pending.length) core.notice(`Open repairs require attention before another automatic repair: ${pending.map(pr => `#${pr.number}`).join(', ')}.`);
+            if (competingStacks.length) core.notice('An existing native repair stack needs attention; it will not be replaced or adopted by a fresh cycle.');
+            core.info(`Validating candidate #${candidate.number} at ${candidate.head_sha} for feature #${number}; round ${round}/6.`);
 
-            core.setOutput('pr_number', String(prNumber));
-            core.setOutput('head_ref', pr.head.ref);
-            core.setOutput('head_sha', pr.head.sha);
-            core.setOutput('base_ref', pr.base.ref);
-            core.setOutput('skip', String(skip));
-            core.info(`PR #${prNumber}: ${pr.head.ref} (${pr.head.sha}) -> ${pr.base.ref}`);
+  compile:
+    name: Workflow compilation
+    needs: context
+    uses: ./.github/workflows/agentic-workflows-compilation.yml
+    with:
+      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
+      base_sha: ${{ needs.context.outputs.base_sha }}
 
-  # Stage 1: Pre-flight & Lint (~30s, fail fast)
-  gatekeeper:
-    name: 'Stage 1a: Metadata'
-    needs: [context]
-    if: needs.context.outputs.skip != 'true'
+  metadata:
+    name: Pre-Flight Gatekeeper
+    needs: [context, compile]
     uses: ./.github/workflows/pr-gatekeeper.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
       head_ref: ${{ needs.context.outputs.head_ref }}
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      actions: write
-
-  lint:
-    name: 'Stage 1b: Linters'
-    needs: [context, gatekeeper]
-    uses: ./.github/workflows/pr-lint.yml
-    with:
-      pr_number: ${{ needs.context.outputs.pr_number }}
-      head_ref: ${{ needs.context.outputs.head_ref }}
       head_sha: ${{ needs.context.outputs.head_sha }}
       base_ref: ${{ needs.context.outputs.base_ref }}
+      base_sha: ${{ needs.context.outputs.base_sha }}
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
-      actions: write
+      pull-requests: read
 
-  # Stage 2: Compilation & Build (~30s)
+  lint:
+    name: Linters & Static Formatters
+    needs: [context, metadata]
+    uses: ./.github/workflows/pr-lint.yml
+    with:
+      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
+
   build:
-    name: 'Stage 2: Build'
+    name: Build
     needs: [context, lint]
     uses: ./.github/workflows/pr-build.yml
     with:
-      pr_number: ${{ needs.context.outputs.pr_number }}
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
+      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
 
-  # Stage 3: Deep Verification in Parallel (~1-3m)
   test:
-    name: 'Stage 3a: Tests & Coverage'
+    name: Automated Testing & Coverage
     needs: [context, build]
     uses: ./.github/workflows/pr-test.yml
     with:
-      pr_number: ${{ needs.context.outputs.pr_number }}
-      head_ref: ${{ needs.context.outputs.head_ref }}
-      base_ref: ${{ needs.context.outputs.base_ref }}
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      actions: write
+      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
 
   security:
-    name: 'Stage 3b: Security & CodeQL'
+    name: GitHub Security & Quality
     needs: [context, build]
     uses: ./.github/workflows/pr-security.yml
     with:
-      pr_number: ${{ needs.context.outputs.pr_number }}
-      head_ref: ${{ needs.context.outputs.head_ref }}
-      head_sha: ${{ needs.context.outputs.head_sha }}
-      base_ref: ${{ needs.context.outputs.base_ref }}
+      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
+      base_sha: ${{ needs.context.outputs.base_sha }}
     permissions:
+      actions: read
       contents: read
-      pull-requests: write
-      issues: write
-      actions: write
-      security-events: write
+      pull-requests: read
+      security-events: read
 
   docs:
-    name: 'Stage 3c: Documentation Drift'
+    name: Documentation Drift Verification
     needs: [context, build]
     uses: ./.github/workflows/pr-docs.yml
     with:
+      pr_number: ${{ needs.context.outputs.candidate_pr_number }}
+      head_ref: ${{ needs.context.outputs.candidate_head_ref }}
+      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
+      base_ref: ${{ needs.context.outputs.candidate_base_ref }}
+      base_sha: ${{ needs.context.outputs.candidate_base_sha }}
+      comparison_base_sha: ${{ needs.context.outputs.base_sha }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      copilot-requests: write
+
+  status:
+    name: Update visible PR status
+    needs: [context, compile, metadata, lint, build, test, security, docs]
+    if: ${{ always() && needs.context.result == 'success' }}
+    uses: ./.github/workflows/pr-status.yml
+    with:
       pr_number: ${{ needs.context.outputs.pr_number }}
-      head_ref: ${{ needs.context.outputs.head_ref }}
       head_sha: ${{ needs.context.outputs.head_sha }}
-      base_ref: ${{ needs.context.outputs.base_ref }}
+      gates: ${{ toJSON(needs) }}
+      allow_clear: ${{ needs.context.outputs.has_repairs == 'false' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+
+  repair-plan:
+    name: Collect failed gate findings
+    needs: [context, compile, metadata, lint, build, test, security, docs]
+    if: ${{ always() && !cancelled() && needs.context.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      needed: ${{ steps.plan.outputs.needed }}
+      kind: ${{ steps.plan.outputs.kind }}
+      baseline: ${{ steps.plan.outputs.baseline }}
+      findings: ${{ steps.plan.outputs.findings }}
+    steps:
+      - name: Plan one bounded repair
+        id: plan
+        uses: actions/github-script@v7
+        env:
+          GATES: ${{ toJSON(needs) }}
+          REPAIR_ROUND: ${{ needs.context.outputs.repair_round }}
+        with:
+          script: |
+            const gates = JSON.parse(process.env.GATES);
+            const failures = ['metadata', 'lint', 'build', 'test', 'security', 'docs']
+              .filter(name => gates[name].result === 'failure');
+            const cancelled = Object.values(gates).some(gate => gate.result === 'cancelled');
+            const needed = failures.length > 0 && !cancelled &&
+              gates.compile.result === 'success' && gates.context.outputs.pending_repairs !== 'true' &&
+              !(failures[0] === 'metadata' && gates.context.outputs.has_repairs === 'true') &&
+              Number(process.env.REPAIR_ROUND) < 6;
+            core.setOutput('needed', String(needed));
+            const kind = failures[0] || '';
+            core.setOutput('kind', kind);
+            core.setOutput('baseline', JSON.stringify(Object.fromEntries(
+              ['lint', 'build', 'test', 'security', 'docs'].map(name => [name, gates[name].result])
+            )));
+            core.setOutput('findings', kind
+              ? `Repair only the ${kind} gate.\n${(gates[kind].outputs.findings || 'Inspect the failed gate log; no diagnostics were published.').slice(0, 6000)}\nOther unresolved gates, not part of this repair: ${failures.slice(1).join(', ') || 'none'}.`
+              : '');
+            if (failures.length && !needed) {
+              core.error('Automatic repairs stopped: pending repair, cancelled gate, compilation failure, or six-round budget exhausted.');
+            }
+
+  repair:
+    name: Repair failed gates
+    needs: [context, repair-plan]
+    if: ${{ !cancelled() && needs.repair-plan.outputs.needed == 'true' }}
+    uses: ./.github/workflows/pr-repair.lock.yml
+    with:
+      pr_number: ${{ needs.context.outputs.candidate_pr_number }}
+      head_ref: ${{ needs.context.outputs.candidate_head_ref }}
+      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
+      base_ref: ${{ needs.context.outputs.candidate_base_ref }}
+      base_sha: ${{ needs.context.outputs.candidate_base_sha }}
+      feature_pr_number: ${{ needs.context.outputs.pr_number }}
+      feature_head_ref: ${{ needs.context.outputs.head_ref }}
+      feature_head_sha: ${{ needs.context.outputs.head_sha }}
+      feature_base_ref: ${{ needs.context.outputs.base_ref }}
+      feature_base_sha: ${{ needs.context.outputs.base_sha }}
+      feature_metadata_hash: ${{ needs.context.outputs.metadata_hash }}
+      comparison_base_sha: ${{ needs.context.outputs.base_sha }}
+      findings: ${{ needs.repair-plan.outputs.findings }}
+      repair_kind: ${{ needs.repair-plan.outputs.kind }}
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      issues: write
+      copilot-requests: write
+
+  validate-repair:
+    name: Validate the new scoped repair layer
+    needs: [context, repair-plan, repair]
+    if: ${{ !cancelled() && needs.repair.result == 'success' && needs.repair-plan.outputs.kind != 'metadata' }}
+    uses: ./.github/workflows/pr-validate-repair.yml
+    with:
+      parent_pr_number: ${{ needs.context.outputs.candidate_pr_number }}
+      parent_head_ref: ${{ needs.context.outputs.candidate_head_ref }}
+      parent_head_sha: ${{ needs.context.outputs.candidate_head_sha }}
+      parent_base_ref: ${{ needs.context.outputs.candidate_base_ref }}
+      parent_base_sha: ${{ needs.context.outputs.candidate_base_sha }}
+      repair_pr_number: ${{ needs.repair.outputs.created_pr_number }}
+      repair_kind: ${{ needs.repair-plan.outputs.kind }}
+      baseline: ${{ needs.repair-plan.outputs.baseline }}
+      state: ${{ needs.context.outputs.state }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      checks: write
+      security-events: read
+      copilot-requests: write
+
+  stage-repair:
+    name: Record a verified layer without merging it
+    needs: [context, repair-plan, repair, validate-repair]
+    if: ${{ !cancelled() && needs.validate-repair.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      state: ${{ steps.stage.outputs.state }}
+    steps:
+      - name: Append the native-created and scoped-validated PR
+        id: stage
+        uses: actions/github-script@v7
+        env:
+          STATE: ${{ needs.context.outputs.state }}
+          REPAIR_PR: ${{ needs.repair.outputs.created_pr_number }}
+          REPAIR_SHA: ${{ needs.validate-repair.outputs.head_sha }}
+          REPAIR_REF: ${{ needs.validate-repair.outputs.head_ref }}
+          CHECK_ID: ${{ needs.validate-repair.outputs.check_id }}
+          KIND: ${{ needs.repair-plan.outputs.kind }}
+        with:
+          script: |
+            const state = JSON.parse(process.env.STATE);
+            const candidate = state.repairs.at(-1) || state.feature;
+            const number = Number(process.env.REPAIR_PR);
+            const check = Number(process.env.CHECK_ID);
+            if (!Number.isInteger(state.round) || state.round < 0 || state.round >= 6 ||
+                !Number.isSafeInteger(number) || number <= 0 || number === state.feature.number ||
+                state.repairs.some(entry => entry.number === number) ||
+                !Number.isSafeInteger(check) || check <= 0 ||
+                !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(process.env.REPAIR_SHA) ||
+                !process.env.REPAIR_REF || process.env.REPAIR_REF === candidate.head_ref ||
+                !['lint', 'build', 'test', 'security', 'docs'].includes(process.env.KIND)) {
+              throw new Error('Missing native repair evidence or exhausted repair budget.');
+            }
+            state.repairs.push({
+              number, head_ref: process.env.REPAIR_REF, head_sha: process.env.REPAIR_SHA,
+              base_ref: candidate.head_ref, base_sha: candidate.head_sha, kind: process.env.KIND,
+              check_id: check, validation_run_id: context.runId
+            });
+            state.round++;
+            core.setOutput('state', JSON.stringify(state));
+
+  register-stack:
+    name: Register or extend the native repair-only stack
+    needs: stage-repair
+    uses: ./.github/workflows/pr-register-repair-stack.yml
+    with:
+      state: ${{ needs.stage-repair.outputs.state }}
     permissions:
       contents: read
       pull-requests: write
-      issues: write
-      actions: write
+      checks: read
 
-  # Stage 4: Copilot Code Review Dispatcher (only when all gates pass)
-  dispatcher:
-    name: 'Stage 4: Review Dispatcher'
-    needs: [context, test, security, docs]
+  candidate-check:
+    name: Publish complete candidate quality
+    needs: [context, compile, metadata, lint, build, test, security, docs]
+    if: ${{ always() && needs.context.result == 'success' && needs.context.outputs.has_repairs == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      checks: write
+    steps:
+      - name: Report all native gate results on the candidate SHA
+        uses: actions/github-script@v7
+        env:
+          GATES: ${{ toJSON(needs) }}
+          HEAD_SHA: ${{ needs.context.outputs.candidate_head_sha }}
+        with:
+          script: |
+            const gates = JSON.parse(process.env.GATES);
+            const names = ['compile', 'metadata', 'lint', 'build', 'test', 'security', 'docs'];
+            const failed = names.filter(name => gates[name]?.result !== 'success');
+            await github.rest.checks.create({
+              ...context.repo, name: 'Repair candidate quality', head_sha: process.env.HEAD_SHA,
+              status: 'completed', conclusion: failed.length ? 'failure' : 'success',
+              details_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              output: {
+                title: failed.length ? 'Candidate has unresolved gates' : 'Complete candidate passed',
+                summary: names.map(name => `- ${name}: ${gates[name]?.result || 'missing'}`).join('\n') +
+                  '\n\nThis certifies only the candidate. The feature branch must be validated again after native stack landing.'
+              }
+            });
+            if (failed.length) throw new Error(`Candidate not complete: ${failed.join(', ')}.`);
+
+  land:
+    name: Land the fully validated native repair stack
+    needs: [context, candidate-check]
+    if: >-
+      ${{ !cancelled() && needs.candidate-check.result == 'success' &&
+          needs.context.outputs.has_repairs == 'true' && needs.context.outputs.pending_repairs == 'false' }}
+    uses: ./.github/workflows/pr-land-repair-stack.yml
+    with:
+      state: ${{ needs.context.outputs.state }}
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+
+  advance:
+    name: Persist verified continuation and queue the next revision
+    needs: [context, repair-plan, repair, register-stack, land]
+    if: >-
+      ${{ always() && !cancelled() && needs.context.result == 'success' &&
+          ((needs.repair.result == 'success' && needs.repair-plan.outputs.kind == 'metadata') ||
+          needs.register-stack.result == 'success' || needs.land.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Bind the next state to actual progress
+        id: progress
+        uses: actions/github-script@v7
+        env:
+          STATE: ${{ needs.context.outputs.state }}
+          REGISTERED_STATE: ${{ needs.register-stack.outputs.state }}
+          MERGED_SHA: ${{ needs.land.outputs.merge_sha }}
+          REPAIR_KIND: ${{ needs.repair-plan.outputs.kind }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          STATE_DIRECTORY: ${{ runner.temp }}/next-repair-state
+        with:
+          script: |
+            const { createHash } = require('node:crypto');
+            const { mkdirSync, writeFileSync } = require('node:fs');
+            const { join } = require('node:path');
+            const before = JSON.parse(process.env.STATE);
+            let state = before;
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: before.feature.number
+            });
+            if (pr.state !== 'open' || pr.head.ref !== before.feature.head_ref ||
+                pr.head.repo?.full_name !== context.payload.repository.full_name ||
+                pr.base.ref !== before.feature.base_ref || pr.base.sha !== before.feature.base_sha) {
+              throw new Error('PR identity or base changed during repair; start a fresh validation.');
+            }
+            const metadata = createHash('sha256').update(JSON.stringify([pr.title, pr.body || ''])).digest('hex');
+            if (process.env.MERGED_SHA) {
+              if (process.env.REGISTERED_STATE || !before.repairs.length ||
+                  pr.head.sha !== process.env.MERGED_SHA || pr.head.sha === before.feature.head_sha ||
+                  metadata !== before.feature.metadata_hash) {
+                throw new Error('Feature head does not match the confirmed stack landing.');
+              }
+              state = { ...before, feature: { ...before.feature, head_sha: pr.head.sha },
+                repairs: [], stack_number: null, transition: 'landed', last_merge_sha: pr.head.sha };
+            } else if (process.env.REGISTERED_STATE) {
+              state = JSON.parse(process.env.REGISTERED_STATE);
+              if (pr.head.sha !== before.feature.head_sha || metadata !== before.feature.metadata_hash ||
+                  state.round !== before.round + 1 || state.round > 6 ||
+                  state.initial_head_sha !== before.initial_head_sha ||
+                  JSON.stringify(state.feature) !== JSON.stringify(before.feature) ||
+                  state.repairs.length !== before.repairs.length + 1 ||
+                  JSON.stringify(state.repairs.slice(0, -1)) !== JSON.stringify(before.repairs)) {
+                throw new Error('Registered layer does not extend the verified feature/candidate snapshot.');
+              }
+              state.transition = 'repair';
+            } else if (process.env.REPAIR_KIND === 'metadata') {
+              if (before.repairs.length || before.round >= 6 || pr.head.sha !== before.feature.head_sha) {
+                throw new Error('Metadata repair must not change code or edit an in-progress repair chain.');
+              }
+              if (metadata === before.feature.metadata_hash) throw new Error('Repair made no code or metadata progress.');
+              state = { ...before, round: before.round + 1, transition: 'metadata',
+                feature: { ...before.feature, metadata_hash: metadata } };
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: pr.number,
+                body: `### Metadata-only repair applied\n\nPR title/body updated; no files or commits changed and no repair PR was created.\n\n` +
+                  `Feature snapshot: [\`${before.initial_head_sha.slice(0, 7)}\`](${context.serverUrl}/${state.repository}/commit/${before.initial_head_sha}).\n\n` +
+                  `[Repair run](${context.serverUrl}/${state.repository}/actions/runs/${context.runId}). All checks will run again; human approval is still required.`
+              });
+            } else {
+              throw new Error('No verified repair, metadata change, or native landing permits continuation.');
+            }
+            state.source_run_id = context.runId;
+            state.source_run_attempt = Number(process.env.RUN_ATTEMPT);
+            state.source_head_sha = context.sha;
+            if (!Number.isInteger(state.source_run_attempt) || state.source_run_attempt < 1) throw new Error('Invalid run attempt.');
+            mkdirSync(process.env.STATE_DIRECTORY, { recursive: true });
+            writeFileSync(join(process.env.STATE_DIRECTORY, 'state.json'), JSON.stringify(state));
+            core.setOutput('head_sha', state.feature.head_sha);
+            core.setOutput('round', String(state.round));
+      - name: Preserve controller state, not execution logs
+        id: state-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-state-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/next-repair-state/state.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Dispatch after state publication and a final freshness check
+        id: dispatch
+        uses: actions/github-script@v7
+        env:
+          STATE_PATH: ${{ runner.temp }}/next-repair-state/state.json
+          STATE_ARTIFACT_ID: ${{ steps.state-artifact.outputs.artifact-id }}
+        with:
+          script: |
+            const { readFileSync } = require('node:fs');
+            const { createHash } = require('node:crypto');
+            const state = JSON.parse(readFileSync(process.env.STATE_PATH, 'utf8'));
+            const artifact = Number(process.env.STATE_ARTIFACT_ID);
+            if (!Number.isSafeInteger(artifact) || artifact <= 0) throw new Error('Immutable controller artifact ID is missing.');
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: state.feature.number
+            });
+            const metadata = createHash('sha256').update(JSON.stringify([pr.title, pr.body || ''])).digest('hex');
+            if (pr.state !== 'open' || pr.head.ref !== state.feature.head_ref ||
+                pr.head.sha !== state.feature.head_sha || pr.base.ref !== state.feature.base_ref ||
+                pr.base.sha !== state.feature.base_sha || metadata !== state.feature.metadata_hash) {
+              throw new Error('Feature changed after state publication; no stale continuation was dispatched.');
+            }
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo, workflow_id: 'pr-pipeline.yml', ref: pr.head.ref,
+              inputs: {
+                pr_number: String(pr.number), expected_head_sha: pr.head.sha,
+                repair_round: String(state.round), state_run_id: String(context.runId),
+                state_run_attempt: String(state.source_run_attempt), state_artifact_id: String(artifact)
+              }
+            });
+            core.notice(`Queued bounded continuation at round ${state.round}/6; candidate checks cannot certify unmerged feature code.`);
+
+  ready:
+    name: PR Quality / Ready for review
+    needs: [context, compile, metadata, lint, build, test, security, docs]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Require every gate on the current revision
+        uses: actions/github-script@v7
+        env:
+          GATES: ${{ toJSON(needs) }}
+          PR_NUMBER: ${{ needs.context.outputs.pr_number }}
+          HEAD_REF: ${{ needs.context.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          BASE_REF: ${{ needs.context.outputs.base_ref }}
+          BASE_SHA: ${{ needs.context.outputs.base_sha }}
+          METADATA_HASH: ${{ needs.context.outputs.metadata_hash }}
+          HAS_REPAIRS: ${{ needs.context.outputs.has_repairs }}
+        with:
+          script: |
+            const { createHash } = require('node:crypto');
+            const gates = JSON.parse(process.env.GATES);
+            const blocked = ['context', 'compile', 'metadata', 'lint', 'build', 'test', 'security', 'docs']
+              .filter(name => gates[name]?.result !== 'success');
+            if (blocked.length) {
+              throw new Error(`Not ready: ${blocked.map(name => `${name}=${gates[name]?.result || 'missing'}`).join(', ')}.`);
+            }
+            if (process.env.HAS_REPAIRS === 'true') {
+              throw new Error('These results describe an unmerged repair candidate, not the feature branch.');
+            }
+            if (gates.context.outputs.pending_repairs === 'true') {
+              throw new Error('Unrecognized automated repairs or native stacks still need attention.');
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.PR_NUMBER)
+            });
+            const metadata = createHash('sha256').update(JSON.stringify([pr.title, pr.body || ''])).digest('hex');
+            if (pr.state !== 'open' || pr.head.ref !== process.env.HEAD_REF ||
+                pr.head.repo?.full_name !== context.payload.repository.full_name ||
+                pr.head.sha !== process.env.HEAD_SHA || pr.base.ref !== process.env.BASE_REF ||
+                pr.base.sha !== process.env.BASE_SHA || metadata !== process.env.METADATA_HASH) {
+              throw new Error('PR changed during validation. These results cannot certify the current revision.');
+            }
+            const repairs = await github.paginate(github.rest.pulls.list, {
+              ...context.repo, state: 'open', base: pr.head.ref, per_page: 100
+            });
+            if (repairs.some(repair => repair.user.login === 'github-actions[bot]' &&
+                repair.head.repo?.full_name === context.payload.repository.full_name)) {
+              throw new Error('An open automated repair PR still needs to be merged or closed.');
+            }
+            await core.summary.addRaw(`Compilation and all six quality gates passed for ${pr.head.sha}. Human approval is still required; this job does not merge or approve the PR.`).write();
+
+  review:
+    name: Human review handoff
+    needs: [context, ready]
     uses: ./.github/workflows/pr-review-dispatcher.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
       head_ref: ${{ needs.context.outputs.head_ref }}
       head_sha: ${{ needs.context.outputs.head_sha }}
+      base_ref: ${{ needs.context.outputs.base_ref }}
+      base_sha: ${{ needs.context.outputs.base_sha }}
+      metadata_hash: ${{ needs.context.outputs.metadata_hash }}
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
-      issues: write
