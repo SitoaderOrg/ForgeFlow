@@ -15,7 +15,14 @@ window.addEventListener('DOMContentLoaded', () => {
   const updateBanner = () => {
     if (!banner || !engine) return;
     const s = engine.streak.getSummary();
-    banner.innerHTML = `🐾 <strong>${playerName}</strong> — ${s.rank} · streak x${s.streak} (best ${s.bestStreak}) · +${s.bonusPoints} bonus pts`;
+    // Prevent XSS by using textContent and createElement instead of innerHTML
+    while (banner.firstChild) banner.removeChild(banner.firstChild);
+    const paw = document.createTextNode('🐾 ');
+    const strong = document.createElement('strong');
+    strong.textContent = playerName;
+    banner.appendChild(paw);
+    banner.appendChild(strong);
+    banner.appendChild(document.createTextNode(` — ${s.rank} · streak x${s.streak} (best ${s.bestStreak}) · +${s.bonusPoints} bonus pts`));
   };
 
   engine = new GameEngine({
