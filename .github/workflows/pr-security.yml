@@ -15,6 +15,11 @@ on:
       base_ref:
         required: true
         type: string
+      from_pipeline:
+        description: 'Called by the PR Quality Pipeline, which publishes the verdict itself'
+        required: false
+        type: boolean
+        default: true
   # Re-run this gate alone; head/base refs are resolved from the PR.
   workflow_dispatch:
     inputs:
@@ -29,9 +34,10 @@ permissions:
   issues: write
   actions: write
   security-events: write
+  statuses: write
 
 env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '2' }}
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '1' }}
   # Fail the gate on CodeQL findings at or above this CVSS security-severity (medium = 4.0)
   CODEQL_MIN_SECURITY_SEVERITY: ${{ vars.CODEQL_MIN_SECURITY_SEVERITY || '4.0' }}
 
@@ -296,3 +302,38 @@ jobs:
             } else {
               await core.summary.addRaw('### ✅ Security Gatekeeper Passed\n\nAll GitHub Code Security checks passed successfully.\n').write();
             }
+
+      - name: Record gate result
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha || github.sha }}
+          GATE_RESULT: ${{ job.status }}
+        with:
+          script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
+            await quality.recordGate({
+              github, context, core, gate: 'security',
+              prNumber: Number(process.env.PR_NUMBER),
+              sha: process.env.HEAD_SHA,
+              result: process.env.GATE_RESULT
+            });
+
+  # Re-checked alone after a repair: update the pr-quality verdict.
+  verdict:
+    name: Update pr-quality verdict
+    needs: [security-gatekeeper]
+    if: ${{ always() && !inputs.from_pipeline }}
+    uses: ./.github/workflows/pr-quality-verdict.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      gate: security
+      gate_result: ${{ needs.security-gatekeeper.result }}
+      sha: ${{ github.sha }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
+      statuses: write

@@ -7,9 +7,12 @@ name: PR Stacked Remediation Auto-Merger
 # were themselves dispatched with it). Every gh-aw agent therefore dispatches this
 # workflow through its `dispatch-workflow` safe output, after its other safe outputs. The relay:
 #   1. squash-merges open stacked remediation PRs into the parent branch;
-#   2. waits until the repair round is over (no agent still working, no pipeline running);
-#   3. re-dispatches the PR Quality Pipeline once, and only if the PR revision changed.
+#   2. re-checks only the gate(s) the agent repaired on the new commit, carrying the other
+#      gate results over, so agents working in parallel never wait for each other;
+#   3. updates the `pr-quality` verdict (one final full check runs once every gate passed).
 # It never clears gate labels or marks anything as fixed: only the gates do that.
+
+run-name: Remediation relay for ${{ inputs.branch || github.event.pull_request.base.ref }}
 
 on:
   workflow_dispatch:
@@ -40,7 +43,7 @@ permissions:
   pull-requests: write
   issues: write
   actions: write
-  statuses: read
+  statuses: write
 
 jobs:
   auto-merge-stacked:
@@ -72,7 +75,6 @@ jobs:
             const { owner, repo } = context.repo;
             const defaultBranch = context.payload.repository.default_branch;
             const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/remediation.cjs`);
             const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
             const ACTIVE = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -95,6 +97,12 @@ jobs:
               return;
             }
             core.info(`Parent PR: #${parent.number} (${parent.html_url})`);
+            const headBefore = parent.head.sha;
+
+            // Gates to re-check: the one the dispatching agent repairs, plus one per merged stacked PR.
+            const repaired = new Set();
+            const sourceGate = quality.repairedGate(process.env.SOURCE);
+            if (sourceGate) repaired.add(sourceGate);
 
             // 1. Merge every open stacked remediation PR that targets the parent branch.
             //    Gate labels stay on the parent PR: only a passing gate removes them.
@@ -120,6 +128,9 @@ jobs:
                   commit_title: `Merge stacked PR #${pr.number}: ${pr.title}`
                 });
                 merged++;
+                const gates = pr.labels.map(l => quality.repairedGate(l.name)).filter(Boolean);
+                gates.forEach(g => repaired.add(g));
+                const gateNames = gates.map(g => quality.GATES.find(x => x.id === g).name).join(', ') || 'affected';
                 core.info(`✅ Merged stacked PR #${pr.number} into '${parentBranch}' (${result.sha}).`);
 
                 try {
@@ -140,11 +151,15 @@ jobs:
                     `- **Merged Commit**: [\`${result.sha.slice(0, 7)}\`](${commitUrl})`,
                     `- **Target Branch**: \`${parentBranch}\``,
                     '',
-                    '> 💡 *The fix is not trusted until the gates pass: the PR Quality Pipeline re-checks this commit once the current repair round is over.*'
+                    `> 💡 *The fix is not trusted until the gates pass: the **${gateNames}** gate re-checks this commit now, and every gate runs once more together before human review.*`
                   ].join('\n')
                 });
               } catch (e) {
                 core.warning(`Failed to merge stacked PR #${pr.number}: ${e.message}`);
+                // A human has to resolve it: stop counting it as repair in progress.
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: pr.number, labels: [quality.BLOCKED_LABEL]
+                }).catch(err => core.warning(`Could not label stacked PR #${pr.number}: ${err.message}`));
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: parent.number,
                   body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${e.message}\n\nPlease review and merge it manually.`
@@ -152,18 +167,7 @@ jobs:
               }
             }
 
-            // 2. Wait for the repair round to end. The last agent to finish triggers the recheck.
-            const sourceRunId = Number((/run (\d+)/.exec(process.env.SOURCE || '') || [])[1]) || undefined;
-            const deferIfAgentsPending = async () => {
-              const pending = await quality.pendingRemediationRuns({ github, context, branch: parentBranch, excludeRunId: sourceRunId });
-              if (!pending.length) return false;
-              core.info(`Repair round still in progress (${pending.map(p => `${p.workflow} #${p.id}`).join(', ')}); deferring the recheck to the last agent.`);
-              await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: deferred, agents still working: ${pending.map(p => `[${p.workflow}](${p.url})`).join(', ')}`);
-              return true;
-            };
-            if (await deferIfAgentsPending()) return;
-
-            // A pipeline still running on this branch may dispatch more agents for this round.
+            // 2. A pipeline still running on this branch is about to record fresh gate results.
             const deadline = Date.now() + Number(process.env.PIPELINE_WAIT_MINUTES) * 60000;
             for (;;) {
               const { data } = await github.rest.actions.listWorkflowRuns({
@@ -178,48 +182,30 @@ jobs:
               core.info(`Waiting for PR Quality Pipeline run(s) ${running.map(r => r.id).join(', ')} to finish...`);
               await sleep(30000);
             }
-            if (await deferIfAgentsPending()) return;
 
-            // 3. Recheck only a revision that has no verdict yet (new commit, metadata or decision label).
+            // 3. Re-check only the repaired gates on the new head commit; every other gate keeps
+            //    its result from the commit before the repair (marked as carried over).
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: parent.number });
-            const rev = quality.revision(pr);
-            const status = await quality.getQualityStatus({ github, context, sha: pr.head.sha });
-            const alreadyChecked = status && status.final && status.revision === rev;
-
-            if (!alreadyChecked) {
-              await github.rest.actions.createWorkflowDispatch({
-                owner, repo,
-                workflow_id: 'pr-pipeline.yml',
-                ref: parentBranch,
-                inputs: { pr_number: String(parent.number) }
-              });
-              core.info(`🔁 Re-dispatched PR Quality Pipeline for PR #${parent.number} (revision ${rev}).`);
-              await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: dispatched for revision \`${rev}\``);
-              return;
-            }
-
-            if (status.state === 'success') {
-              core.info(`Revision ${rev} already passed; nothing to re-check.`);
-              await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: not needed, revision \`${rev}\` already passed`);
-              return;
-            }
-
-            // The repair round did not change anything the gates evaluate: stop instead of looping.
-            const agentResult = process.env.AGENT_RESULT || '';
-            const agentFailed = ['failure', 'cancelled'].includes(agentResult);
-            const rerun = `gh workflow run pr-pipeline.yml --ref ${parentBranch} -f pr_number=${parent.number} -f force=true`;
-            core.warning(`Revision ${rev} still fails (${status.description}) and the repair round produced no new revision.`);
-            await helpers.commentOnce({
-              github, context,
+            const reason = process.env.SOURCE || (merged ? `stacked PR merge` : 'remediation');
+            const plan = await quality.recheckGates({
+              github, context, core,
               prNumber: parent.number,
-              marker: `<!-- remediation-stalled:${rev} -->`,
-              body: [
-                '### ⚠️ Remediation round finished without a new revision',
-                '',
-                `The \`pr-quality\` check still reports: **${status.description}** ([run](${status.targetUrl})).`,
-                agentFailed ? `\`${process.env.SOURCE}\` finished with **${agentResult}**.` : 'The remediation agents did not change the code, PR metadata or gate decisions.',
-                '',
-                `Please fix the remaining issues manually (pushing a commit re-runs the checks), or re-check this revision with \`${rerun}\`.`
-              ].join('\n')
+              branch: parentBranch,
+              before: headBefore,
+              sha: pr.head.sha,
+              repaired: [...repaired],
+              reason
             });
-            await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: stopped, revision \`${rev}\` unchanged and failing`);
+
+            // 4. Publish the verdict. It stays pending while gates re-check or agents still repair,
+            //    and asks for one final full check once every gate passed.
+            const verdict = await quality.evaluateVerdict({ github, context, core, prNumber: parent.number });
+            const gateNames = (ids) => ids.map(id => quality.GATES.find(g => g.id === id).name).join(', ') || 'none';
+            await summary([
+              `- Parent PR: #${parent.number}`,
+              `- Stacked PRs merged: ${merged}`,
+              `- Repaired by: ${process.env.SOURCE || 'stacked PR'}${process.env.AGENT_RESULT ? ` (${process.env.AGENT_RESULT})` : ''}`,
+              `- Re-checking: ${gateNames(plan.recheck)}`,
+              `- Carried over: ${gateNames(plan.carried)}`,
+              `- pr-quality: **${verdict.state}** — ${verdict.summary}`
+            ].join('\n'));

@@ -1,13 +1,13 @@
 ### End-to-End PR Quality Flow
 
-1. **Pre-Flight Gatekeeper (Fail-Fast)**: Validates PR metadata, templates, and branch rules before triggering CI runs.
-2. **Linters & Static Formatters**: Prettier, ESLint, Stylelint, `gofmt` (runs standard linters; fail-fast).
+1. **Pre-Flight Gatekeeper**: Validates PR metadata, templates, and branch rules. All six gates (1–6) run in parallel after a deterministic `eslint --fix`/`prettier --write` autofix, so every failure is found in the first run.
+2. **Linters & Static Formatters**: Prettier, ESLint, Stylelint, `gofmt` (runs standard linters).
 3. **Polyglot Build Verification**: Verifies compilation and build artifacts across ecosystems (TypeScript, Go, Rust, Java, .NET).
 4. **Automated Testing & Coverage**: Executes test runner with diff-scoped coverage (configurable threshold, defaulting to 80%).
 5. **GitHub Security & Quality**: Native CodeQL static analysis (SARIF findings gated by security severity), Dependency Review, and secret detection (GITLEAKS in the lint stage).
 6. **Documentation Drift Verification**: Detects when application code changes without documentation and hands the semantic decision to the documentation agent.
 7. **Autonomous `gh-aw` Remediation Loops**: Failing gates dispatch the matching agent with the concrete findings (bounded attempts); agents propose stacked PRs or metadata fixes but never mark a gate as passed (see [Remediation Chaining](docs/remediation-chaining.md)).
-8. **Automated Consolidation & Recheck**: The remediation relay squashes stacked PRs into the feature branch with full audit trails and re-checks the PR once per repair round, only when the revision changed.
+8. **Automated Consolidation & Per-Gate Recheck**: The remediation relay squashes each stacked PR into the feature branch with a full audit trail and re-checks only the gate that was repaired, carrying the other gates' `gate/<id>` results over. A gate still failing after its repair fails `pr-quality`; once all gates are green, one final full run confirms the combined fixes.
 9. **Semantic Review & Human Merge**: Once the `pr-quality` status is green, GitHub Copilot reviews the PR and a human gives the final approval and merges it. Only stacked remediation PRs are merged automatically (into the feature branch).
 
 ### 💡 Why This Framework is Relevant: Solving Review Fatigue
@@ -29,7 +29,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 - **Regular GitHub Actions:** Deterministic, binary (pass/fail), fast, reproducible tasks (compiling, running test runners, linting, scanning). -> (fast, zero token cost, reproducible).
 - **`gh-aw` (English Agentic Workflows):** Tasks requiring **reasoning, semantic understanding, synthesis, or code generation**. -> (using English in Markdown).
-- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group: a newer push cancels the obsolete check, while relay re-dispatches queue behind it and are de-duplicated per revision via the `pr-quality` status. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
+- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group: a newer push cancels the obsolete check, while dispatched runs queue behind it and are de-duplicated per revision via the `pr-quality` status; verdicts are serialized per PR. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
 - **No PAT required:** Events created with `GITHUB_TOKEN` never trigger workflows, so every hop is chained with `workflow_dispatch` — see [Remediation Chaining Without PATs](docs/remediation-chaining.md).
 
 ### Documentation & Implemented Modules
@@ -47,7 +47,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ### 1. Standard GitHub Actions Workflows
 
-- **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows in a clean staged DAG. Runs on `pull_request` and on `workflow_dispatch(pr_number)` re-runs from the remediation relay.
+- **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` and on `workflow_dispatch(pr_number, force)` (autofix pushes and the final check after repairs).
 - **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable; also `workflow_dispatch`).
 - **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter (reusable; also `workflow_dispatch`).
 - **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts (reusable; also `workflow_dispatch`).
@@ -55,7 +55,8 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 - **Security Scanning (`pr-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable; also `workflow_dispatch`).
 - **Documentation Drift Gate (`pr-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
 - **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
-- **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and, once the repair round is over, re-runs the pipeline if the PR revision changed.
+- **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs only the repaired gate on the new commit.
+- **PR Quality Verdict (`pr-quality-verdict.yml`)**: Derives the `pr-quality` status from the `gate/<id>` statuses after a gate is re-checked alone (reusable; also `workflow_dispatch`).
 - **Shared gate helper (`.github/scripts/remediation.cjs`)**: Label management and deduplicated, budgeted agent dispatch.
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)

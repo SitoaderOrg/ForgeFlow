@@ -1,38 +1,37 @@
 flowchart TD
     PR[Pull Request Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
+    Pipeline --> Autofix[0. Autofix\neslint --fix + prettier --write\non changed files]
+    Autofix -->|fixes pushed| Pipeline
 
-    subgraph Stage1 [Stage 1: Pre-Flight & Syntax Gate ~30s]
-        Pipeline --> Gate[1. PR Gatekeeper\nMetadata & branch convention]
-        Gate -->|Pass| Lint[2. Linters & Formatters\nSuper-Linter / ESLint / Prettier]
-        Gate -->|Fail: needs-metadata| FixMeta[🤖 PR Validation Agent\nDirect API Update]
-        Lint -->|Fail: lint-failed| FixLint[🤖 PR Lint Fixer\nOpens Stacked PR]
+    subgraph Gates ["All Gates in Parallel ~1-2m (each records a gate status + passed label)"]
+        Autofix -->|nothing to fix| Gate[1. Metadata\nPR Gatekeeper]
+        Autofix --> Lint[2. Lint\nESLint / Prettier / Super-Linter]
+        Autofix --> Build[3. Build\nNode/TS, Go, Rust, Java, .NET]
+        Autofix --> Tests[4. Tests & Coverage\nDiff-scoped >= 80%]
+        Autofix --> Security[5. Security\nCodeQL SAST, Dep Review, Secrets]
+        Autofix --> DocEval[6. Docs Drift\npr-docs.yml + gh-aw evaluator]
     end
 
-    subgraph Stage2 [Stage 2: Build Verification ~30s]
-        Lint -->|Pass| Build[3. Build & Compilation Gate\nNode/TS, Go, Rust, Java, .NET]
-        Build -->|Fail: build-failed| BlockBuild[❌ Pipeline Halted]
-    end
-
-    subgraph Stage3 [Stage 3: Deep Verification in Parallel ~1-2m]
-        Build -->|Pass| Tests[4. Tests & Coverage Gate\nDiff-scoped >= 80%]
-        Build -->|Pass| Security[5. Code Quality & Security\nCodeQL SAST, Dep Review, Secrets]
-        Build -->|Pass| DocEval[6. Documentation Drift Gate\npr-docs.yml + gh-aw semantic evaluator]
-    end
-
-    subgraph Auto_Consolidation [Autonomous Remediation & Auto-Merge]
+    subgraph Remediation ["Parallel Remediation: one agent per failed gate"]
+        Gate -->|needs-metadata| FixMeta[🤖 PR Validation Agent\nDirect API Update]
+        Lint -->|lint-failed| FixLint[🤖 PR Lint Fixer]
         Tests -->|test-required| AgentTest[🤖 PR Test Generator]
         Security -->|alerts| AgentSec[🤖 PR Security Fixers]
         DocEval -->|docs-required| AgentDoc[🤖 PR Doc Updater]
+        Build -->|build-failed| BlockBuild[❌ No agent: manual fix]
         FixLint & AgentTest & AgentSec & AgentDoc --> StackedPRs[Stacked PRs targeting feature branch]
-        StackedPRs --> AutoConsolidate[7. Auto-Merge Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash into feature branch & post audit links,\nrecheck once per repair round]
+        StackedPRs & FixMeta --> Relay[7. Remediation Relay\npr-stacked-merge.yml\nSquash-merge & audit comment]
+        Relay -->|re-check only the repaired gate,\ncarry the other results over| Recheck[Standalone gate run\ne.g. pr-lint.yml]
     end
 
-    AutoConsolidate --> Pipeline
-    FixMeta --> Pipeline
+    Gates --> Verdict{pr-quality verdict}
+    Recheck --> Verdict
+    Verdict -->|gate still failing,\nnothing repairing| Fail([❌ pr-quality failure\nhuman takes over])
+    Verdict -->|all green, some carried over| Pipeline
+    Verdict -->|all green on this commit| Dispatcher
 
-    subgraph Code_Review [Stage 4: Review & Final Sign-Off]
-        Tests & Security & DocEval -->|All Gates Pass & Labels Cleared| Dispatcher[8. PR Review Dispatcher\nPost consolidated summary]
-        Dispatcher --> CopilotReview[GitHub Copilot Code Review\nAI semantic & architecture review\n1-click commit suggestions]
+    subgraph Code_Review [Review & Final Sign-Off]
+        Dispatcher[8. PR Review Dispatcher\nPost consolidated summary] --> CopilotReview[GitHub Copilot Code Review\nAI semantic & architecture review\n1-click commit suggestions]
         CopilotReview --> HumanReview[Human Peer Review & Sign-Off\nSingle review session for all changes]
     end
 

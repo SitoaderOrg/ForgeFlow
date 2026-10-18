@@ -58,7 +58,9 @@ Navigate to **Settings → Secrets and variables → Actions**:
 - `COVERAGE_THRESHOLD`: (Default: `80`) Minimum line coverage percentage enforced by `pr-test.yml`. Can be adjusted as needed (e.g. `70` or `85`).
 - `CODEQL_MIN_SECURITY_SEVERITY`: (Default: `4.0`) Minimum CodeQL `security-severity` that fails the security gate.
 - `GH_AW_AGENT_MODEL`: (Default: `gpt-4.1`) Copilot model used by all remediation agents (e.g. `gpt-5.3-codex`, `gpt-4.1`).
-- `MAX_REMEDIATION_ATTEMPTS`: (Default: `4`) How many times a gate may dispatch the same remediation agent for one PR branch before asking for manual intervention.
+- `MAX_REMEDIATION_ATTEMPTS`: (Default: `1`) How many times a gate may dispatch the same remediation agent for one PR branch. With `1`, a gate that still fails after its repair fails `pr-quality` and asks for manual intervention.
+- `PIPELINE_WAIT_MINUTES`: (Default: `30`) How long the remediation relay waits for a running pipeline before re-checking gates.
+- `STALE_VERDICT_MINUTES`: (Default: `30`) How long `pr-quality` may stay pending (with no pipeline or relay running) before the watchdog re-evaluates it.
 
 ### Secrets (Repository Secrets)
 - `GH_AW_CI_TRIGGER_TOKEN`: *(Optional)* Not required. GitHub does not start workflows for events created with `GITHUB_TOKEN`, so the framework chains every gate → agent → relay → pipeline hop with `workflow_dispatch` (see [Remediation Chaining](docs/remediation-chaining.md)). A PAT only makes agent-created PRs also trigger `pull_request` workflows natively.

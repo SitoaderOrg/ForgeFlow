@@ -11,14 +11,14 @@ flowchart TD
     PR[PR Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
     Pipeline --> Gatekeeper[Stage 1a: Fast Gatekeeper\n.github/workflows/pr-gatekeeper.yml]
     
-    Gatekeeper -->|✅ All Checks Pass| DownstreamCI[Stage 1b: Linters\nFollowed by Build, Tests, Security]
-    Gatekeeper -->|❌ Incomplete Metadata| AddLabel[Apply 'needs-metadata' Label\nFail Fast / Halt Pipeline]
+    Gatekeeper -->|✅ All Checks Pass| DownstreamCI[gate/metadata: success\nOther gates run in parallel]
+    Gatekeeper -->|❌ Incomplete Metadata| AddLabel[Apply 'needs-metadata' Label\ngate/metadata: failure]
     
     AddLabel --> Assistant[Autonomous gh-aw Workflow\n.github/workflows/pr-validation.md]
     Assistant --> Analyze[Inspect git diff & commit history]
     Analyze --> Generate[Draft Conventional Title &\nFill .github/pull_request_template.md]
     Generate --> SafeOutputs[Safe Outputs Execution:\n- Update PR title & description via API\n- Post explanatory comment\n- Remove 'needs-metadata' label]
-    SafeOutputs --> Recheck([PR Updated & Pipeline Re-triggered])
+    SafeOutputs --> Recheck([PR Updated & Metadata gate re-checked alone])
 ```
 
 ---
@@ -35,7 +35,7 @@ The gatekeeper acts as the deterministic first line of defense before any expens
 - **Fail-Fast & Triggering Remediation**:
   - If title or description checks fail, it automatically applies the **`needs-metadata`** label to the PR.
   - Generates an actionable markdown summary table in the Actions Job Summary with instructions for the author.
-  - Fails the job immediately to halt downstream workflows until metadata is resolved.
+  - Fails the job and records `gate/metadata: failure`; the other gates still run in parallel, so their findings are reported in the same run.
 
 ---
 

@@ -211,11 +211,14 @@ describe('agent / gate wiring', () => {
     'pr-test.yml',
     'pr-docs.yml',
     'pr-security.yml'
-  ])('%s defaults to a remediation budget of 2', (gate) => {
-    expect(loadWorkflow(gate).env.MAX_REMEDIATION_ATTEMPTS).toBe(
-      "${{ vars.MAX_REMEDIATION_ATTEMPTS || '2' }}"
-    );
-  });
+  ])(
+    '%s defaults to a remediation budget of 1 (fail after one repair)',
+    (gate) => {
+      expect(loadWorkflow(gate).env.MAX_REMEDIATION_ATTEMPTS).toBe(
+        "${{ vars.MAX_REMEDIATION_ATTEMPTS || '1' }}"
+      );
+    }
+  );
 
   it('only the relay merges pull requests, and only stacked ones', () => {
     const mergers = listWorkflowFiles(

@@ -1,15 +1,55 @@
 // Shared helpers for the Check -> Repair -> Recheck loop (used via actions/github-script).
 //
-// The `pr-quality` commit status on the PR head commit is the single source of truth:
-// - pr-pipeline.yml sets it to `pending` when it starts and to `success`/`failure` when
-//   every gate has reported. Reviewers rely on it before giving the final human approval.
-// - The status description carries a revision fingerprint (head SHA + PR metadata +
-//   gate decision labels). A revision that already has a status is never re-checked,
-//   so agents only cause a recheck when they actually changed something.
+// Every gate records its own result as a `gate/<id>` commit status on the commit it checked,
+// mirrored by a `<id>-passed` label on the PR. The `pr-quality` commit status is derived from
+// the gate statuses of the PR head commit by `evaluateVerdict`:
+// - pending while a gate is still checking or a remediation agent is still repairing;
+// - failure once a gate failed and nothing is repairing it any more;
+// - success only when every gate passed on that exact commit. Results carried over from an
+//   earlier commit (when a stacked fix for another gate landed) trigger one final re-check of
+//   all gates together before the PR is handed to human review.
+// The `pr-quality` description carries a revision fingerprint (head SHA + PR metadata +
+// gate decision labels) so the pipeline never re-checks a revision that already has a verdict.
 
 const crypto = require('crypto');
+const path = require('path');
 
 const STATUS_CONTEXT = 'pr-quality';
+
+/** Quality gates in pipeline order. `workflow` re-runs one gate alone on the PR branch. */
+const GATES = [
+  { id: 'metadata', name: 'Metadata', workflow: 'pr-gatekeeper.yml' },
+  { id: 'lint', name: 'Lint', workflow: 'pr-lint.yml' },
+  { id: 'build', name: 'Build', workflow: 'pr-build.yml' },
+  { id: 'tests', name: 'Tests', workflow: 'pr-test.yml' },
+  { id: 'security', name: 'Security', workflow: 'pr-security.yml' },
+  { id: 'docs', name: 'Docs', workflow: 'pr-docs.yml' }
+];
+
+// Gate repaired by a stacked remediation PR (label) or by a remediation agent (workflow name).
+const REPAIRED_GATE = {
+  'lint-remediation': 'lint',
+  'test-remediation': 'tests',
+  'security-remediation': 'security',
+  'doc-remediation': 'docs',
+  'PR Validation': 'metadata',
+  'PR Lint Fixer': 'lint',
+  'PR Test Generator': 'tests',
+  'PR CodeQL Fixer': 'security',
+  'PR Dependency Fixer': 'security',
+  'PR Secret Fixer': 'security',
+  'PR Documentation Updater': 'docs'
+};
+
+const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
+// Set by the relay on a stacked PR it could not merge: a human has to resolve it.
+const BLOCKED_LABEL = 'remediation-blocked';
+// Gates whose result depends on PR metadata / decision labels, not only on the commit.
+const METADATA_GATES = ['metadata', 'docs'];
+const RELAY_WORKFLOW = 'pr-stacked-merge.yml';
+const PIPELINE_WORKFLOW = 'pr-pipeline.yml';
+const REVIEW_WORKFLOW = 'pr-review-dispatcher.yml';
+const CARRIED = /^carried from ([0-9a-f]{7}): /;
 
 // Labels written by agents that record a gate decision (and therefore change the outcome).
 const DECISION_LABELS = ['docs-not-required'];
@@ -56,6 +96,7 @@ async function getQualityStatus({ github, context, sha }) {
     state: status.state,
     description: status.description,
     targetUrl: status.target_url,
+    updatedAt: status.updated_at,
     revision: parseRevision(status.description),
     final: FINAL_STATES.has(status.state)
   };
@@ -114,13 +155,370 @@ async function pendingRemediationRuns({ github, context, branch, excludeRunId })
   return pending;
 }
 
+// ---------------------------------------------------------------------------
+// Per-gate results
+// ---------------------------------------------------------------------------
+
+const helpers = () => require(path.join(__dirname, 'remediation.cjs'));
+const gateById = (id) => GATES.find((g) => g.id === id);
+const gateContext = (id) => `gate/${id}`;
+const passedLabel = (id) => `${id}-passed`;
+const truncate = (text, max = 140) => (text.length > max ? `${text.slice(0, max - 3)}...` : text);
+const runUrl = (context) =>
+  `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+/** Gate repaired by a remediation label or agent source (`<workflow name> (run <id>)`). */
+function repairedGate(source) {
+  const name = String(source || '')
+    .replace(/\s*\(run \d+\)\s*$/, '')
+    .trim();
+  return REPAIRED_GATE[name] || null;
+}
+
+/** Latest `gate/<id>` status per gate on a commit (`revision`: PR revision it was recorded for). */
+async function getGateStatuses({ github, context, sha }) {
+  const { owner, repo } = context.repo;
+  const { data } = await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha, per_page: 100 });
+  const result = {};
+  for (const status of data.statuses || []) {
+    const match = /^gate\/([\w-]+)$/.exec(status.context || '');
+    if (!match || result[match[1]]) continue;
+    const full = status.description || '';
+    const carried = CARRIED.exec(full);
+    result[match[1]] = {
+      state: status.state,
+      description: full.replace(/ \[rev [0-9a-f.]+\]$/, ''),
+      targetUrl: status.target_url,
+      carriedFrom: carried ? carried[1] : null,
+      revision: parseRevision(full)
+    };
+  }
+  return result;
+}
+
+/**
+ * Record a gate status on `sha`. `rev` (the PR revision checked) is kept at the end of the
+ * description. With `prNumber`, the `<gate>-passed` label mirrors the
+ * result, but only while `sha` is still the PR head (a stale check must not relabel the PR).
+ */
+async function setGateStatus({ github, context, core, prNumber, sha, gate, state, description, targetUrl, rev }) {
+  const { owner, repo } = context.repo;
+  const suffix = rev ? ` [rev ${rev}]` : '';
+  await github.rest.repos.createCommitStatus({
+    owner,
+    repo,
+    sha,
+    state,
+    context: gateContext(gate),
+    description: `${truncate(description, 140 - suffix.length)}${suffix}`,
+    target_url: targetUrl
+  });
+  if (!prNumber) return;
+  const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  if (pr.head.sha !== sha) return;
+  const label = passedLabel(gate);
+  if (state === 'success') await helpers().addLabel({ github, context, core, prNumber, label });
+  else await helpers().removeLabel({ github, context, core, prNumber, label });
+}
+
+/** Record the outcome of a gate job (`job.status`: success, failure or cancelled). */
+async function recordGate({ github, context, core, prNumber, sha, gate, result }) {
+  const { name } = gateById(gate);
+  const state = result === 'success' ? 'success' : result === 'failure' ? 'failure' : 'error';
+  const description = {
+    success: `${name} passed`,
+    failure: `${name} failed`,
+    error: `${name} did not finish (${result || 'unknown'})`
+  }[state];
+  const { owner, repo } = context.repo;
+  const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const rev = revision({ ...pr, head: { ...pr.head, sha } });
+  await setGateStatus({ github, context, core, prNumber, sha, gate, state, description, targetUrl: runUrl(context), rev });
+  core.info(`gate/${gate} = ${state} on ${sha}`);
+  return state;
+}
+
+/** Mark every gate as pending on a commit the pipeline is about to check. */
+async function startGates({ github, context, core, prNumber, sha }) {
+  for (const gate of GATES) {
+    await setGateStatus({
+      github,
+      context,
+      core,
+      prNumber,
+      sha,
+      gate: gate.id,
+      state: 'pending',
+      description: `${gate.name}: checking`,
+      targetUrl: runUrl(context)
+    });
+  }
+}
+
+async function activeRuns({ github, context, workflow, branch, event }) {
+  const { owner, repo } = context.repo;
+  try {
+    const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+      owner,
+      repo,
+      workflow_id: workflow,
+      ...(branch ? { branch } : {}),
+      ...(event ? { event } : {}),
+      per_page: 50
+    });
+    return runs.filter((r) => ACTIVE_STATUSES.has(r.status));
+  } catch (e) {
+    if (e.status === 404) return [];
+    throw e;
+  }
+}
+
+/**
+ * Repairs still in flight for a branch: agents that have not handed off yet, stacked
+ * remediation PRs waiting to be merged, and relay runs still consolidating them.
+ */
+async function remediationInProgress({ github, context, branch, excludeRunIds = [] }) {
+  const { owner, repo } = context.repo;
+  const exclude = new Set(excludeRunIds.map(Number));
+  const work = (await pendingRemediationRuns({ github, context, branch })).filter((r) => !exclude.has(r.id));
+
+  const stacked = (await github.paginate(github.rest.pulls.list, { owner, repo, state: 'open', base: branch, per_page: 100 }))
+    .filter((p) => p.labels.some((l) => REMEDIATION_LABELS.includes(l.name)))
+    .filter((p) => !p.labels.some((l) => l.name === BLOCKED_LABEL));
+  for (const pr of stacked) work.push({ workflow: `stacked PR #${pr.number}`, id: pr.number, url: pr.html_url });
+
+  const relays = (await activeRuns({ github, context, workflow: RELAY_WORKFLOW }))
+    .filter((r) => !exclude.has(r.id) && String(r.display_title || '').endsWith(` ${branch}`));
+  for (const run of relays) work.push({ workflow: RELAY_WORKFLOW, id: run.id, url: run.html_url });
+  return work;
+}
+
+/**
+ * Bring the gate statuses of the PR head commit up to date after a repair landed.
+ * - `repaired` gates are re-checked alone on the new commit;
+ * - other gates keep their result from the commit before the repair (`before`), marked as
+ *   carried; gates with no final result anywhere are re-checked too;
+ * - Metadata and Docs results recorded for different PR metadata (title, body, decision
+ *   labels) are re-checked, so a metadata repair is never missed even without `repaired`.
+ * @returns {Promise<{recheck: string[], carried: string[], kept: string[]}>}
+ */
+async function recheckGates({ github, context, core, prNumber, branch, before, sha, repaired = [], reason = 'remediation' }) {
+  const { owner, repo } = context.repo;
+  const current = await getGateStatuses({ github, context, sha });
+  const previous = before && before !== sha ? await getGateStatuses({ github, context, sha: before }) : {};
+  const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const metadataHash = revision(pr).split('.')[1];
+  const plan = { recheck: [], carried: [], kept: [] };
+
+  for (const gate of GATES) {
+    const cur = current[gate.id];
+    const prev = previous[gate.id];
+    const outdated = (status) =>
+      METADATA_GATES.includes(gate.id) && Boolean(status.revision) && status.revision.split('.')[1] !== metadataHash;
+    if (repaired.includes(gate.id)) {
+      plan.recheck.push(gate.id);
+    } else if (cur && cur.state !== 'pending') {
+      (outdated(cur) ? plan.recheck : plan.kept).push(gate.id);
+    } else if (cur) {
+      const running = await activeRuns({ github, context, workflow: gate.workflow, branch, event: 'workflow_dispatch' });
+      (running.length ? plan.kept : plan.recheck).push(gate.id);
+    } else if (prev && FINAL_STATES.has(prev.state) && !outdated(prev)) {
+      const description = prev.carriedFrom ? prev.description : `carried from ${before.slice(0, 7)}: ${prev.description}`;
+      await setGateStatus({
+        github,
+        context,
+        core,
+        sha,
+        gate: gate.id,
+        state: prev.state,
+        description,
+        targetUrl: prev.targetUrl,
+        rev: prev.revision
+      });
+      plan.carried.push(gate.id);
+    } else {
+      plan.recheck.push(gate.id);
+    }
+  }
+
+  for (const id of plan.recheck) {
+    const gate = gateById(id);
+    await setGateStatus({
+      github,
+      context,
+      core,
+      prNumber,
+      sha,
+      gate: id,
+      state: 'pending',
+      description: `${gate.name}: re-checking after ${reason}`,
+      targetUrl: runUrl(context)
+    });
+    await github.rest.actions.createWorkflowDispatch({
+      owner,
+      repo,
+      workflow_id: gate.workflow,
+      ref: branch,
+      inputs: { pr_number: String(prNumber) }
+    });
+    core.info(`🔁 Re-checking the ${gate.name} gate (${gate.workflow}) on ${sha.slice(0, 7)}.`);
+  }
+  return plan;
+}
+
+/**
+ * Derive the `pr-quality` verdict for the PR head commit from its gate statuses.
+ * `reported` ({ sha, results: { gate: job result } }) first marks gates that finished
+ * without recording a result as errored. `announce` posts a comment on a final failure.
+ */
+async function evaluateVerdict({ github, context, core, prNumber, reported, excludeRunIds = [], announce = true }) {
+  const { owner, repo } = context.repo;
+  const targetUrl = runUrl(context);
+  const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  if (pr.state !== 'open') return { state: 'closed', summary: `PR is ${pr.state}` };
+
+  if (reported && reported.sha) {
+    const statuses = await getGateStatuses({ github, context, sha: reported.sha });
+    for (const [gate, result] of Object.entries(reported.results || {})) {
+      const status = statuses[gate];
+      if (status && status.state !== 'pending') continue;
+      await setGateStatus({
+        github,
+        context,
+        core,
+        prNumber,
+        sha: reported.sha,
+        gate,
+        state: 'error',
+        description: `${gateById(gate).name} did not report a result (${result || 'not run'})`,
+        targetUrl
+      });
+    }
+  }
+
+  const sha = pr.head.sha;
+  const rev = revision(pr);
+  const statuses = await getGateStatuses({ github, context, sha });
+  const names = (predicate) => GATES.filter((g) => predicate(statuses[g.id])).map((g) => g.name);
+  const waiting = names((s) => !s || s.state === 'pending');
+  const failed = names((s) => s && (s.state === 'failure' || s.state === 'error'));
+  const carried = names((s) => s && s.state === 'success' && s.carriedFrom);
+
+  let state;
+  let summary;
+  let repairing = [];
+  if (waiting.length) {
+    state = 'pending';
+    summary = `Checking: ${waiting.join(', ')}${failed.length ? `; failed: ${failed.join(', ')}` : ''}`;
+  } else if (failed.length) {
+    repairing = await remediationInProgress({ github, context, branch: pr.head.ref, excludeRunIds: [context.runId, ...excludeRunIds] });
+    state = repairing.length ? 'pending' : 'failure';
+    summary = `${repairing.length ? 'Repairing' : 'Failed'}: ${failed.join(', ')}`;
+  } else if (carried.length) {
+    state = 'pending';
+    summary = 'Final check: re-running all gates together after the repairs';
+    const running = await activeRuns({ github, context, workflow: PIPELINE_WORKFLOW, branch: pr.head.ref });
+    if (!running.length) {
+      await github.rest.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: PIPELINE_WORKFLOW,
+        ref: pr.head.ref,
+        inputs: { pr_number: String(prNumber), force: 'true' }
+      });
+      core.info(`Gates ${carried.join(', ')} were carried over from earlier commits; dispatched a final full check.`);
+    }
+  } else {
+    state = 'success';
+    summary = 'All gates passed';
+  }
+
+  await setQualityStatus({ github, context, sha, state, summary, rev, targetUrl });
+  core.info(`pr-quality = ${state}: ${summary} [rev ${rev}]`);
+
+  if (state === 'success') {
+    const ref = (context.payload.repository && context.payload.repository.default_branch) || 'main';
+    try {
+      await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: REVIEW_WORKFLOW, ref, inputs: { pr_number: String(prNumber) } });
+    } catch (e) {
+      core.warning(`Could not dispatch ${REVIEW_WORKFLOW}: ${e.message}`);
+    }
+  } else if (state === 'failure' && announce) {
+    const links = GATES.filter((g) => statuses[g.id] && ['failure', 'error'].includes(statuses[g.id].state))
+      .map((g) => `- **${g.name}**: ${statuses[g.id].description} ([run](${statuses[g.id].targetUrl}))`);
+    await helpers().commentOnce({
+      github,
+      context,
+      prNumber,
+      marker: `<!-- pr-quality-failed:${rev} -->`,
+      body: [
+        '### ❌ Quality gates still failing after remediation',
+        '',
+        ...links,
+        '',
+        'No remediation agent is working on this PR any more. Please fix the remaining issues manually ' +
+          '(pushing a commit re-runs every gate), or re-check with ' +
+          `\`gh workflow run ${PIPELINE_WORKFLOW} --ref ${pr.head.ref} -f pr_number=${prNumber} -f force=true\`.`
+      ].join('\n')
+    });
+  }
+  return { state, summary, rev, waiting, failed, carried, repairing };
+}
+
+/**
+ * Watchdog: re-evaluate PRs whose `pr-quality` has been pending for `staleMinutes` while no
+ * pipeline or relay runs for them, e.g. when an agent failed before handing off to the relay
+ * or a gate run was lost. Stuck gates are re-checked; finished repairs get a final verdict.
+ */
+async function sweepStalled({ github, context, core, staleMinutes = 30, now = Date.now() }) {
+  const { owner, repo } = context.repo;
+  const pulls = await github.paginate(github.rest.pulls.list, { owner, repo, state: 'open', per_page: 100 });
+  const swept = [];
+  for (const pr of pulls) {
+    if (pr.labels.some((l) => REMEDIATION_LABELS.includes(l.name))) continue;
+    if (pr.head.repo && pr.head.repo.full_name !== `${owner}/${repo}`) continue;
+    const status = await getQualityStatus({ github, context, sha: pr.head.sha });
+    if (!status || status.state !== 'pending') continue;
+    if (status.updatedAt && now - Date.parse(status.updatedAt) < staleMinutes * 60000) continue;
+    const branch = pr.head.ref;
+    const pipelines = await activeRuns({ github, context, workflow: PIPELINE_WORKFLOW, branch });
+    const relays = (await activeRuns({ github, context, workflow: RELAY_WORKFLOW })).filter((r) =>
+      String(r.display_title || '').endsWith(` ${branch}`)
+    );
+    if (pipelines.length || relays.length) continue;
+    try {
+      core.info(`PR #${pr.number}: pr-quality pending since ${status.updatedAt || 'unknown'}; re-evaluating.`);
+      const plan = await recheckGates({ github, context, core, prNumber: pr.number, branch, sha: pr.head.sha, reason: 'watchdog' });
+      const verdict = await evaluateVerdict({ github, context, core, prNumber: pr.number });
+      swept.push({ number: pr.number, recheck: plan.recheck, state: verdict.state, summary: verdict.summary });
+    } catch (e) {
+      core.warning(`PR #${pr.number}: watchdog could not re-evaluate: ${e.message}`);
+    }
+  }
+  return swept;
+}
+
 module.exports = {
   STATUS_CONTEXT,
   DECISION_LABELS,
   REMEDIATION_WORKFLOWS,
+  REMEDIATION_LABELS,
+  BLOCKED_LABEL,
+  METADATA_GATES,
+  GATES,
   revision,
   parseRevision,
   getQualityStatus,
   setQualityStatus,
-  pendingRemediationRuns
+  pendingRemediationRuns,
+  repairedGate,
+  passedLabel,
+  getGateStatuses,
+  setGateStatus,
+  recordGate,
+  startGates,
+  remediationInProgress,
+  recheckGates,
+  evaluateVerdict,
+  sweepStalled
 };

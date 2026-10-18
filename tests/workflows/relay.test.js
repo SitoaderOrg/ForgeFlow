@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createContext,
+  createCore,
   createGitHub,
   getScript,
   loadWorkflow,
@@ -8,8 +9,7 @@ import {
   makePR,
   makeRun,
   quality,
-  runScript,
-  seedQualityStatus
+  runScript
 } from './helpers/harness.js';
 
 const FILE = 'pr-stacked-merge.yml';
@@ -58,9 +58,49 @@ function relay(github, env = {}, opts = {}) {
 
 const pipelineDispatches = (github) =>
   github.state.dispatches.filter((d) => d.workflow_id === 'pr-pipeline.yml');
+const gateDispatches = (github) =>
+  github.state.dispatches
+    .filter((d) =>
+      /^pr-(gatekeeper|lint|build|test|security|docs)\.yml$/.test(d.workflow_id)
+    )
+    .map((d) => d.workflow_id);
+
+const ALL_PASSED = {
+  metadata: 'success',
+  lint: 'success',
+  build: 'success',
+  tests: 'success',
+  security: 'success',
+  docs: 'success'
+};
+
+/** Record gate results on a commit, as the gate workflows do. */
+async function seedGates(github, sha, states) {
+  for (const [gate, state] of Object.entries(states)) {
+    await quality.setGateStatus({
+      github,
+      context: createContext(),
+      sha,
+      gate,
+      state,
+      description: `${gate} ${state}`,
+      targetUrl: `https://github.com/octo/demo/actions/runs/${gate}`
+    });
+  }
+}
+
+const gatesOn = (github, sha) =>
+  quality.getGateStatuses({ github, context: createContext(), sha });
 
 describe('pr-stacked-merge.yml structure', () => {
   const wf = loadWorkflow(FILE);
+
+  it('names each run after the branch so the verdict can see relays in flight', () => {
+    expect(wf['run-name']).toBe(
+      'Remediation relay for ${{ inputs.branch || github.event.pull_request.base.ref }}'
+    );
+    expect(wf.permissions.statuses).toBe('write');
+  });
 
   it('is dispatched by agents with branch, agent_result and source inputs', () => {
     expect(Object.keys(wf.on.workflow_dispatch.inputs)).toEqual([
@@ -106,7 +146,7 @@ describe('pr-stacked-merge.yml relay: nothing to do', () => {
 });
 
 describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => {
-  it('squash-merges labelled stacked PRs and re-checks the new commit', async () => {
+  it('squash-merges labelled stacked PRs and re-checks only the repaired gates', async () => {
     const { github, parent } = world({
       stacked: [
         stackedPR(31),
@@ -115,7 +155,11 @@ describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => 
       ]
     });
     const oldSha = parent.head.sha;
-    await seedQualityStatus(github, parent, 'failure', 'Failed: Lint');
+    await seedGates(github, oldSha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      docs: 'failure'
+    });
 
     await relay(github);
 
@@ -138,21 +182,36 @@ describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => 
     expect(comments).toHaveLength(2);
     expect(comments[0]).toContain('Autonomous Remediation Auto-Merged');
     expect(comments[0]).toContain('#31');
-    expect(comments[0]).toContain('not trusted until the gates pass');
+    expect(comments[0]).toContain(
+      'the **Lint** gate re-checks this commit now'
+    );
+    expect(comments[1]).toContain('the **Docs** gate re-checks');
 
-    // Gate labels are never cleared by the relay
+    // Gate failure labels are never cleared by the relay
     expect(github.labels(20)).toEqual(['lint-failed']);
 
-    expect(github.pr(20).head.sha).not.toBe(oldSha);
-    expect(pipelineDispatches(github)).toEqual([
-      {
-        owner: 'octo',
-        repo: 'demo',
-        workflow_id: 'pr-pipeline.yml',
-        ref: BRANCH,
-        inputs: { pr_number: '20' }
-      }
-    ]);
+    const newSha = github.pr(20).head.sha;
+    expect(newSha).not.toBe(oldSha);
+    expect(pipelineDispatches(github)).toEqual([]);
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-docs.yml']);
+    expect(github.state.dispatches[0]).toEqual({
+      owner: 'octo',
+      repo: 'demo',
+      workflow_id: 'pr-lint.yml',
+      ref: BRANCH,
+      inputs: { pr_number: '20' }
+    });
+
+    const gates = await gatesOn(github, newSha);
+    expect(gates.lint.state).toBe('pending');
+    expect(gates.docs.state).toBe('pending');
+    for (const gate of ['metadata', 'build', 'tests', 'security']) {
+      expect(gates[gate].state).toBe('success');
+      expect(gates[gate].carriedFrom).toBe(oldSha.slice(0, 7));
+    }
+    expect(github.qualityStatuses(newSha)[0].description).toMatch(
+      /^Checking: Lint, Docs \[rev /
+    );
   });
 
   it('never merges into a PR other than the one for the branch', async () => {
@@ -172,6 +231,8 @@ describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => 
     expect(core.warnings.join()).toContain('Failed to merge stacked PR #31');
     expect(github.comments(20)[0]).toContain('#31 could not be auto-merged');
     expect(github.comments(20)[0]).toContain('Merge conflict');
+    expect(github.labels(31)).toContain(quality.BLOCKED_LABEL);
+    expect(github.labels(32)).not.toContain(quality.BLOCKED_LABEL);
   });
 
   it('still reports the merge when the branch cannot be deleted', async () => {
@@ -185,11 +246,28 @@ describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => 
     );
     expect(github.comments(20)[0]).toContain('Auto-Merged');
   });
+
+  it('uses the base branch of the stacked PR on pull_request events', async () => {
+    const { github } = world({ stacked: [stackedPR(31, 'test-remediation')] });
+    await relay(
+      github,
+      { INPUT_BRANCH: '', SOURCE: '', AGENT_RESULT: '' },
+      {
+        context: {
+          eventName: 'pull_request',
+          payload: { pull_request: { number: 31, base: { ref: BRANCH } } }
+        }
+      }
+    );
+    expect(github.state.merges.map((m) => m.number)).toEqual([31]);
+    expect(gateDispatches(github)).toContain('pr-test.yml');
+  });
 });
 
-describe('pr-stacked-merge.yml relay: waiting for the repair round', () => {
-  it('defers to the last agent while another agent is still working', async () => {
-    const { github } = world({
+describe('pr-stacked-merge.yml relay: parallel repairs', () => {
+  it('does not wait for other agents still repairing their own gates', async () => {
+    const { github, parent } = world({
+      stacked: [stackedPR(31)],
       runs: [
         makeAgentRun({
           id: 2000,
@@ -198,41 +276,187 @@ describe('pr-stacked-merge.yml relay: waiting for the repair round', () => {
         })
       ]
     });
-    const { core } = await relay(github);
-    expect(pipelineDispatches(github)).toEqual([]);
-    expect(core.summaryText).toContain('deferred');
-    expect(core.summaryText).toContain('pr-test-generator.lock.yml');
-  });
-
-  it('does not wait for the agent that dispatched it', async () => {
-    const { github } = world({
-      runs: [
-        makeAgentRun({
-          id: 1000,
-          workflow: 'pr-lint-fixer.lock.yml',
-          branch: BRANCH
-        })
-      ]
+    const oldSha = parent.head.sha;
+    await seedGates(github, oldSha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      tests: 'failure'
     });
-    await relay(github, { SOURCE: 'PR Lint Fixer (run 1000)' });
-    expect(pipelineDispatches(github)).toHaveLength(1);
+
+    const { core } = await relay(github);
+
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+    const gates = await gatesOn(github, github.pr(20).head.sha);
+    expect(gates.tests).toMatchObject({
+      state: 'failure',
+      carriedFrom: oldSha.slice(0, 7)
+    });
+    expect(core.summaryText).toContain('Re-checking: Lint');
+    expect(core.summaryText).toContain(
+      'Carried over: Metadata, Build, Tests, Security, Docs'
+    );
   });
 
-  it('does not wait for agents that are already in their conclusion job', async () => {
-    const { github } = world({
-      runs: [
-        makeAgentRun({
-          id: 2000,
-          workflow: 'pr-doc-updater.lock.yml',
-          branch: BRANCH,
-          phase: 'conclusion'
-        })
-      ]
+  it('carries results across successive repairs and keeps the original commit', async () => {
+    const { github, parent } = world({ stacked: [stackedPR(31)] });
+    const a = parent.head.sha;
+    await seedGates(github, a, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      tests: 'failure'
     });
     await relay(github);
-    expect(pipelineDispatches(github)).toHaveLength(1);
+    const b = github.pr(20).head.sha;
+    // The lint gate passes on B while the test generator is still working.
+    await seedGates(github, b, { lint: 'success' });
+
+    github.state.pulls.push(stackedPR(32, 'test-remediation'));
+    github.state.dispatches = [];
+    await relay(github, { SOURCE: 'PR Test Generator (run 1001)' });
+
+    const c = github.pr(20).head.sha;
+    expect(gateDispatches(github)).toEqual(['pr-test.yml']);
+    const gates = await gatesOn(github, c);
+    expect(gates.lint).toMatchObject({
+      state: 'success',
+      carriedFrom: b.slice(0, 7)
+    });
+    expect(gates.metadata.carriedFrom).toBe(a.slice(0, 7));
+    expect(gates.tests.state).toBe('pending');
   });
 
+  it('re-checks a gate whose re-check was still running on the previous commit', async () => {
+    const { github, parent } = world({
+      stacked: [stackedPR(32, 'doc-remediation')]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'pending',
+      docs: 'failure'
+    });
+    await relay(github, { SOURCE: 'PR Documentation Updater (run 1)' });
+    expect(gateDispatches(github).sort()).toEqual([
+      'pr-docs.yml',
+      'pr-lint.yml'
+    ]);
+  });
+
+  it('re-checks every gate that has no result anywhere (e.g. a manual merge)', async () => {
+    const { github } = world({ stacked: [stackedPR(31)] });
+    await relay(github);
+    expect(gateDispatches(github)).toHaveLength(6);
+  });
+});
+
+describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
+  it('re-checks the Metadata gate after PR Validation rewrote the PR', async () => {
+    const { github, parent } = world({ parentLabels: ['needs-metadata'] });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      metadata: 'failure'
+    });
+    parent.title = 'feat(app): add a sample feature';
+    await relay(github, { SOURCE: 'PR Validation (run 1000)' });
+    expect(gateDispatches(github)).toEqual(['pr-gatekeeper.yml']);
+    expect((await gatesOn(github, parent.head.sha)).metadata.state).toBe(
+      'pending'
+    );
+  });
+
+  it('re-checks the Docs gate after a docs-not-required decision', async () => {
+    const { github, parent } = world({ parentLabels: ['docs-required'] });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      docs: 'failure'
+    });
+    parent.labels.push({ name: 'docs-not-required' });
+    await relay(github, { SOURCE: 'PR Documentation Updater (run 7)' });
+    expect(gateDispatches(github)).toEqual(['pr-docs.yml']);
+  });
+
+  it('keeps a gate that is already being re-checked on the head commit', async () => {
+    const { github, parent } = world({
+      runs: [
+        makeRun({
+          id: 77,
+          workflow: 'pr-docs.yml',
+          branch: BRANCH,
+          status: 'in_progress',
+          conclusion: null
+        })
+      ]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      docs: 'pending'
+    });
+    await relay(github, { SOURCE: '' });
+    expect(gateDispatches(github)).toEqual([]);
+  });
+
+  it('re-checks a gate stuck pending without a running gate workflow', async () => {
+    const { github, parent } = world();
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      docs: 'pending'
+    });
+    await relay(github, { SOURCE: '' });
+    expect(gateDispatches(github)).toEqual(['pr-docs.yml']);
+  });
+
+  it('reports a final failure once nothing repairs a failing gate any more', async () => {
+    const { github, parent } = world({ parentLabels: ['build-failed'] });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      build: 'failure'
+    });
+    const { core } = await relay(github, { SOURCE: '' });
+    expect(gateDispatches(github)).toEqual([]);
+    const [status] = github.qualityStatuses(parent.head.sha);
+    expect(status.state).toBe('failure');
+    const [comment] = github.comments(20);
+    expect(comment).toContain(
+      `<!-- pr-quality-failed:${quality.revision(parent)} -->`
+    );
+    expect(comment).toContain('**Build**: build failure');
+    expect(comment).toContain(
+      'gh workflow run pr-pipeline.yml --ref feat/sample -f pr_number=20 -f force=true'
+    );
+    expect(core.summaryText).toContain('pr-quality: **failure**');
+  });
+
+  it('stays pending while another relay for the branch is still running', async () => {
+    const { github, parent } = world({
+      runs: [
+        makeRun({
+          id: 5000,
+          workflow: 'pr-stacked-merge.yml',
+          branch: 'main',
+          status: 'in_progress',
+          conclusion: null,
+          title: `Remediation relay for ${BRANCH}`
+        }),
+        makeRun({
+          id: 4242,
+          workflow: 'pr-stacked-merge.yml',
+          branch: 'main',
+          status: 'in_progress',
+          conclusion: null,
+          title: `Remediation relay for ${BRANCH}`
+        })
+      ]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      build: 'failure'
+    });
+    await relay(github, { SOURCE: '' });
+    expect(github.qualityStatuses(parent.head.sha)[0].state).toBe('pending');
+    expect(github.comments(20)).toEqual([]);
+  });
+});
+
+describe('pr-stacked-merge.yml relay: waiting for a running pipeline', () => {
   it('waits for a running pipeline before deciding', async () => {
     const { github } = world({
       runs: [
@@ -255,39 +479,7 @@ describe('pr-stacked-merge.yml relay: waiting for the repair round', () => {
       }
     );
     expect(sleeps).toEqual([30000, 30000, 30000]);
-    expect(pipelineDispatches(github)).toHaveLength(1);
-  });
-
-  it('defers when the pipeline it waited for dispatched another agent', async () => {
-    const { github } = world({
-      runs: [
-        makeRun({
-          id: 3000,
-          workflow: 'pr-pipeline.yml',
-          branch: BRANCH,
-          status: 'in_progress',
-          conclusion: null
-        })
-      ]
-    });
-    await relay(
-      github,
-      {},
-      {
-        onSleep: () => {
-          github.state.runs[0].status = 'completed';
-          github.state.runs.push(
-            makeAgentRun({
-              id: 2001,
-              workflow: 'pr-validation.lock.yml',
-              branch: BRANCH,
-              phase: 'queued'
-            })
-          );
-        }
-      }
-    );
-    expect(pipelineDispatches(github)).toEqual([]);
+    expect(gateDispatches(github)).toContain('pr-lint.yml');
   });
 
   it('decides anyway when the pipeline exceeds PIPELINE_WAIT_MINUTES', async () => {
@@ -307,131 +499,46 @@ describe('pr-stacked-merge.yml relay: waiting for the repair round', () => {
     });
     expect(sleeps).toEqual([]);
     expect(core.warnings.join()).toContain('still running after -1 minutes');
-    expect(pipelineDispatches(github)).toHaveLength(1);
+    expect(gateDispatches(github)).toContain('pr-lint.yml');
   });
 });
 
-describe('pr-stacked-merge.yml relay: Recheck decision', () => {
-  it('re-dispatches when the revision has no verdict yet', async () => {
-    const { github } = world();
-    const { core } = await relay(github);
-    expect(pipelineDispatches(github)).toHaveLength(1);
-    expect(core.summaryText).toContain('Recheck: dispatched');
-  });
-
-  it('re-dispatches when only a pending status exists', async () => {
-    const { github, parent } = world();
-    await seedQualityStatus(github, parent, 'pending');
-    await relay(github);
-    expect(pipelineDispatches(github)).toHaveLength(1);
-  });
-
-  it('re-dispatches when the agent changed PR metadata on the same commit', async () => {
+describe('pr-stacked-merge.yml relay: lost hand-offs', () => {
+  it('re-checks a docs-not-required decision whose own relay never ran', async () => {
     const { github, parent } = world({
-      parentLabels: ['pr-validation-failed']
+      parentLabels: ['docs-required'],
+      stacked: [stackedPR(31)]
     });
-    await seedQualityStatus(github, parent, 'failure', 'Failed: Metadata');
-    parent.title = 'feat(app): add a sample feature';
-    await relay(github, { SOURCE: 'PR Validation (run 1000)' });
-    expect(pipelineDispatches(github)).toHaveLength(1);
-  });
-
-  it('re-dispatches when the agent recorded a docs-not-required decision', async () => {
-    const { github, parent } = world({ parentLabels: ['docs-required'] });
-    await seedQualityStatus(github, parent, 'failure', 'Failed: Docs');
-    parent.labels.push({ name: 'docs-not-required' });
-    await relay(github);
-    expect(pipelineDispatches(github)).toHaveLength(1);
-  });
-
-  it('does nothing when the revision already passed', async () => {
-    const { github, parent } = world({ parentLabels: [] });
-    const rev = await seedQualityStatus(
-      github,
-      parent,
-      'success',
-      'All gates passed'
-    );
-    const { core } = await relay(github);
-    expect(github.state.dispatches).toEqual([]);
-    expect(github.comments(20)).toEqual([]);
-    expect(core.summaryText).toContain(`revision \`${rev}\` already passed`);
-  });
-
-  it('stops the loop with one comment when the round changed nothing', async () => {
-    const { github, parent } = world();
-    const rev = await seedQualityStatus(
-      github,
-      parent,
-      'failure',
-      'Failed: Lint'
-    );
-
-    const first = await relay(github);
-    await relay(github);
-
-    expect(github.state.dispatches).toEqual([]);
-    const comments = github.comments(20);
-    expect(comments).toHaveLength(1);
-    expect(comments[0]).toContain(`<!-- remediation-stalled:${rev} -->`);
-    expect(comments[0]).toContain('Failed: Lint');
-    expect(comments[0]).toContain('did not change the code');
-    expect(comments[0]).toContain(
-      'gh workflow run pr-pipeline.yml --ref feat/sample -f pr_number=20 -f force=true'
-    );
-    expect(first.core.summaryText).toContain('Recheck: stopped');
-  });
-
-  it.each(['failure', 'cancelled'])(
-    'explains that the agent finished with %s',
-    async (agentResult) => {
-      const { github, parent } = world();
-      await seedQualityStatus(github, parent, 'failure', 'Failed: Tests');
-      await relay(github, {
-        AGENT_RESULT: agentResult,
-        SOURCE: 'PR Test Generator (run 1000)'
+    const before = parent.head.sha;
+    for (const [gate, result] of Object.entries({
+      metadata: 'success',
+      lint: 'failure',
+      build: 'success',
+      tests: 'success',
+      security: 'success',
+      docs: 'failure'
+    })) {
+      await quality.recordGate({
+        github,
+        context: createContext(),
+        core: createCore(),
+        prNumber: 20,
+        sha: before,
+        gate,
+        result
       });
-      expect(github.comments(20)[0]).toContain(
-        `\`PR Test Generator (run 1000)\` finished with **${agentResult}**`
-      );
     }
-  );
+    // The doc agent recorded its decision, but its relay was replaced in the queue.
+    github.pr(20).labels.push({ name: 'docs-not-required' });
 
-  it('comments again once a new failing revision also stalls', async () => {
-    const { github, parent } = world();
-    await seedQualityStatus(github, parent, 'failure', 'Failed: Lint');
     await relay(github);
-    parent.head.sha = 'b'.repeat(40);
-    await seedQualityStatus(github, parent, 'failure', 'Failed: Lint');
-    await relay(github);
-    expect(github.comments(20)).toHaveLength(2);
-  });
 
-  it('uses the base branch of the stacked PR on pull_request events', async () => {
-    const { github } = world({ stacked: [stackedPR(31)] });
-    await relay(
-      github,
-      { INPUT_BRANCH: '' },
-      {
-        context: {
-          eventName: 'pull_request',
-          payload: { pull_request: { number: 31, base: { ref: BRANCH } } }
-        }
-      }
-    );
-    expect(github.state.merges.map((m) => m.number)).toEqual([31]);
-    expect(pipelineDispatches(github)).toHaveLength(1);
-  });
-
-  it('dispatches once per round even with several stacked PRs', async () => {
-    const { github } = world({
-      stacked: [stackedPR(31), stackedPR(32, 'test-remediation')]
-    });
-    const { core } = await relay(github);
-    expect(pipelineDispatches(github)).toHaveLength(1);
-    expect(core.summaryText).toContain('Stacked PRs merged: 2');
-    expect(quality.revision(github.pr(20))).toContain(
-      github.pr(20).head.sha.slice(0, 7)
-    );
+    expect(gateDispatches(github).sort()).toEqual([
+      'pr-docs.yml',
+      'pr-gatekeeper.yml',
+      'pr-lint.yml'
+    ]);
+    const gates = await gatesOn(github, github.pr(20).head.sha);
+    expect(gates.build.carriedFrom).toBe(before.slice(0, 7));
   });
 });

@@ -8,7 +8,7 @@ This step implements automated testing and coverage validation combined with an 
 
 ```mermaid
 flowchart TD
-    BuildPass[Stage 2 Passed: Build OK] --> TestGate[Stage 3a: Tests & Coverage Gatekeeper\n.github/workflows/pr-test.yml]
+    BuildPass[Pipeline autofix done] --> TestGate[Tests & Coverage Gate, in parallel with the other gates\n.github/workflows/pr-test.yml]
     
     TestGate --> PolyglotDetect{Detect Test Runner}
     PolyglotDetect -->|Node.js / TS| RunNpm[npm test]
@@ -23,7 +23,7 @@ flowchart TD
     RunCargo --> StatusCheck
 
     StatusCheck -->|✅ Pass| NextGate[Stage 4: Copilot Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
-    StatusCheck -->|❌ Tests Fail / <80% Coverage| AddLabel[Apply 'test-required' Label\nFail Fast / Halt Pipeline]
+    StatusCheck -->|❌ Tests Fail / <80% Coverage| AddLabel[Apply 'test-required' Label\ngate/tests: failure]
 
     AddLabel --> Generator[Autonomous Test Generator\n.github/workflows/pr-test-generator.md]
     Generator --> Inspect[Inspect PR Diff & Failed Test Logs]
@@ -31,7 +31,7 @@ flowchart TD
     Generator --> StackedPR[Create Stacked PR targeting feature branch\nTagged: test-remediation]
 
     StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit & posts audit link\nGate clears label on recheck]
-    AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
+    AutoMerge --> Recheck([Feature Branch Updated & Tests gate re-checked alone])
 ```
 
 ---

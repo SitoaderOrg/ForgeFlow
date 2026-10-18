@@ -12,6 +12,15 @@ on:
       base_ref:
         required: true
         type: string
+      head_sha:
+        required: false
+        type: string
+        default: ''
+      from_pipeline:
+        description: 'Called by the PR Quality Pipeline, which publishes the verdict itself'
+        required: false
+        type: boolean
+        default: true
   # Re-run this gate alone; head/base refs are resolved from the PR.
   workflow_dispatch:
     inputs:
@@ -25,9 +34,10 @@ permissions:
   pull-requests: write
   issues: write
   actions: write
+  statuses: write
 
 env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '2' }}
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '1' }}
   COVERAGE_THRESHOLD: ${{ vars.COVERAGE_THRESHOLD || '80' }}
 
 jobs:
@@ -260,3 +270,38 @@ jobs:
             let summary = '### ✅ PR Tests & Coverage Gatekeeper Passed\n\n' +
               'All test suites executed and passed successfully.\n';
             await core.summary.addRaw(summary).write();
+
+      - name: Record gate result
+        if: always() && steps.pr.outcome == 'success'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha || github.sha }}
+          GATE_RESULT: ${{ job.status }}
+        with:
+          script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/pr-quality.cjs`);
+            await quality.recordGate({
+              github, context, core, gate: 'tests',
+              prNumber: Number(process.env.PR_NUMBER),
+              sha: process.env.HEAD_SHA,
+              result: process.env.GATE_RESULT
+            });
+
+  # Re-checked alone after a repair: update the pr-quality verdict.
+  verdict:
+    name: Update pr-quality verdict
+    needs: [test]
+    if: ${{ always() && !inputs.from_pipeline }}
+    uses: ./.github/workflows/pr-quality-verdict.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      gate: tests
+      gate_result: ${{ needs.test.result }}
+      sha: ${{ github.sha }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
+      statuses: write

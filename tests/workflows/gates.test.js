@@ -10,6 +10,7 @@ import {
   makePR,
   makeRun,
   makeTempDir,
+  quality,
   readWorkflow,
   runScript
 } from './helpers/harness.js';
@@ -676,5 +677,187 @@ describe('pr-review-dispatcher.yml', () => {
     expect(text).not.toMatch(
       /gh pr merge|--auto|enablePullRequestAutoMerge|pulls\/\$PR_NUM\/merge/
     );
+  });
+});
+
+describe('gate workflows: per-gate status and verdict', () => {
+  const GATE_JOBS = [
+    ['pr-gatekeeper.yml', 'gatekeeper', 'metadata'],
+    ['pr-lint.yml', 'lint', 'lint'],
+    ['pr-build.yml', 'build', 'build'],
+    ['pr-test.yml', 'test', 'tests'],
+    ['pr-security.yml', 'security-gatekeeper', 'security'],
+    ['pr-docs.yml', 'docs-drift', 'docs']
+  ];
+
+  it('covers every gate listed in pr-quality.cjs', () => {
+    expect(GATE_JOBS.map(([file, , gate]) => [gate, file])).toEqual(
+      quality.GATES.map((g) => [g.id, g.workflow])
+    );
+  });
+
+  describe.each(GATE_JOBS)('%s', (file, job, gate) => {
+    const wf = loadWorkflow(file);
+
+    it('knows whether it runs inside the pipeline', () => {
+      expect(wf.on.workflow_call.inputs.from_pipeline).toEqual(
+        expect.objectContaining({ type: 'boolean', default: true })
+      );
+      expect(wf.on.workflow_call.inputs.head_sha).toBeDefined();
+      expect(wf.on.workflow_dispatch.inputs.pr_number).toBeDefined();
+      expect((wf.jobs[job].permissions || wf.permissions).statuses).toBe(
+        'write'
+      );
+    });
+
+    it(`records the gate/${gate} status as the last step, whatever the outcome`, () => {
+      const steps = wf.jobs[job].steps;
+      const record = steps[steps.length - 1];
+      expect(record.name).toBe('Record gate result');
+      expect(record.if).toMatch(/^always\(\)/);
+      expect(record.env).toEqual(
+        expect.objectContaining({
+          HEAD_SHA: '${{ inputs.head_sha || github.sha }}',
+          GATE_RESULT: '${{ job.status }}'
+        })
+      );
+      expect(record.with.script).toContain(`gate: '${gate}'`);
+    });
+
+    it('publishes the verdict only when re-checked alone', () => {
+      const verdict = wf.jobs.verdict;
+      expect(verdict.needs).toEqual([job]);
+      expect(verdict.if).toBe('${{ always() && !inputs.from_pipeline }}');
+      expect(verdict.uses).toBe('./.github/workflows/pr-quality-verdict.yml');
+      expect(verdict.with).toEqual({
+        pr_number: '${{ inputs.pr_number }}',
+        gate,
+        gate_result: `\${{ needs.${job}.result }}`,
+        sha: '${{ github.sha }}'
+      });
+      expect(verdict.permissions).toEqual(
+        expect.objectContaining({
+          statuses: 'write',
+          actions: 'write',
+          issues: 'write',
+          'pull-requests': 'write'
+        })
+      );
+    });
+
+    it('records the job result for the checked commit', async () => {
+      const pr = makePR({ number: 20, branch: BRANCH });
+      const github = createGitHub({ pulls: [pr] });
+      await runScript(getScript(file, job, 'Record gate result'), {
+        github,
+        env: { PR_NUMBER: '20', HEAD_SHA: pr.head.sha, GATE_RESULT: 'failure' }
+      });
+      const gates = await quality.getGateStatuses({
+        github,
+        context: createContext(),
+        sha: pr.head.sha
+      });
+      expect(gates[gate].state).toBe('failure');
+    });
+  });
+});
+
+describe('pr-quality-verdict.yml', () => {
+  const wf = loadWorkflow('pr-quality-verdict.yml');
+  const script = getScript(
+    'pr-quality-verdict.yml',
+    'verdict',
+    'Publish pr-quality status'
+  );
+
+  it('serializes verdicts per PR without cancelling', () => {
+    expect(wf.jobs.verdict.concurrency).toEqual({
+      group: "pr-quality-verdict-${{ inputs.pr_number || 'watchdog' }}",
+      'cancel-in-progress': false
+    });
+    expect(Object.keys(wf.on.workflow_call.inputs)).toEqual([
+      'pr_number',
+      'gate',
+      'gate_result',
+      'sha'
+    ]);
+    expect(wf.on.workflow_dispatch.inputs.pr_number.required).toBe(true);
+    expect(wf.permissions.statuses).toBe('write');
+  });
+
+  it('marks the reporting gate as errored when it never recorded a result', async () => {
+    const pr = makePR({ number: 20, branch: BRANCH });
+    const github = createGitHub({ pulls: [pr] });
+    const { core } = await runScript(script, {
+      github,
+      env: {
+        PR_NUMBER: '20',
+        GATE: 'lint',
+        GATE_RESULT: 'cancelled',
+        GATE_SHA: pr.head.sha
+      }
+    });
+    const gates = await quality.getGateStatuses({
+      github,
+      context: createContext(),
+      sha: pr.head.sha
+    });
+    expect(gates.lint.state).toBe('error');
+    expect(github.qualityStatuses(pr.head.sha)[0].state).toBe('pending');
+    expect(core.summaryText).toContain('### pr-quality: pending');
+  });
+
+  it('works when dispatched by hand without a gate', async () => {
+    const pr = makePR({ number: 20, branch: BRANCH });
+    const github = createGitHub({ pulls: [pr] });
+    for (const g of quality.GATES) {
+      await quality.setGateStatus({
+        github,
+        context: createContext(),
+        sha: pr.head.sha,
+        gate: g.id,
+        state: 'success',
+        description: 'ok'
+      });
+    }
+    await runScript(script, {
+      github,
+      env: { PR_NUMBER: '20', GATE: '', GATE_RESULT: '', GATE_SHA: '' }
+    });
+    expect(github.qualityStatuses(pr.head.sha)[0].state).toBe('success');
+  });
+});
+
+describe('pr-quality-verdict.yml watchdog', () => {
+  const wf = loadWorkflow('pr-quality-verdict.yml');
+  const script = getScript(
+    'pr-quality-verdict.yml',
+    'verdict',
+    'Publish pr-quality status'
+  );
+
+  it('runs on a schedule with a configurable staleness', () => {
+    expect(wf.on.schedule).toEqual([{ cron: '*/15 * * * *' }]);
+    expect(wf.jobs.verdict.steps[1].env.STALE_VERDICT_MINUTES).toBe(
+      "${{ vars.STALE_VERDICT_MINUTES || '30' }}"
+    );
+  });
+
+  it('sweeps stalled PRs when started without a PR number', async () => {
+    const pr = makePR({ number: 20, branch: BRANCH });
+    const github = createGitHub({ pulls: [pr] });
+    const { core } = await runScript(script, {
+      github,
+      context: createContext({ eventName: 'schedule' }),
+      env: {
+        PR_NUMBER: '',
+        GATE: '',
+        GATE_RESULT: '',
+        GATE_SHA: '',
+        STALE_VERDICT_MINUTES: '30'
+      }
+    });
+    expect(core.summaryText).toContain('### pr-quality watchdog');
+    expect(core.summaryText).toContain('No stalled PRs.');
   });
 });

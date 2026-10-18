@@ -1,20 +1,23 @@
 name: PR Quality Pipeline
 
 # Check -> Repair -> Recheck -> Review & merge
-#   Check:   every gate runs once per PR revision (head SHA + PR metadata + decision labels).
-#   Repair:  failing gates dispatch their gh-aw agent (bounded by MAX_REMEDIATION_ATTEMPTS).
-#   Recheck: the remediation relay re-dispatches this pipeline only once the repair round
-#            is over and only if the revision changed. Agents never mark a gate as passed.
-#   Review:  the `pr-quality` commit status set by the verdict job gates human review; only
-#            stacked remediation PRs are merged automatically. A human approves and merges
-#            the feature PR into main.
+#   Check:   lint is auto-fixed (ESLint --fix + Prettier) first, then every gate runs in parallel
+#            and records a `gate/<id>` commit status (mirrored by a `<id>-passed` label).
+#   Repair:  each failing gate dispatches its gh-aw agent right away, so all agents of a round
+#            work in parallel (bounded by MAX_REMEDIATION_ATTEMPTS, default 1).
+#   Recheck: when an agent's stacked PR is merged, the relay (pr-stacked-merge.yml) re-checks
+#            only that gate; the other gates keep their results. A gate that still fails after
+#            its repair fails with an error. Once every gate is green, this pipeline runs once
+#            more (force=true) to confirm all gates together on the final commit.
+#   Review:  the `pr-quality` commit status gates human review; only stacked remediation PRs
+#            are merged automatically. A human approves and merges the feature PR into main.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  # Re-entry point used by the remediation relay (pr-stacked-merge.yml) after a repair
-  # round. Commits made with GITHUB_TOKEN do not raise `synchronize` events, so the
-  # pipeline is re-dispatched on the PR head branch instead.
+  # Re-entry point after the lint auto-fix commit and for the final all-gates check once every
+  # gate is green (pr-quality.cjs). Commits made with GITHUB_TOKEN do not raise `synchronize`
+  # events, so the pipeline is re-dispatched on the PR head branch instead.
   workflow_dispatch:
     inputs:
       pr_number:
@@ -27,7 +30,7 @@ on:
         type: boolean
         default: false
 
-# New pushes cancel a running check; relay re-dispatches queue behind it and are
+# New pushes cancel a running check; dispatched re-checks queue behind it and are
 # de-duplicated by revision instead.
 concurrency:
   group: pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -57,6 +60,7 @@ jobs:
       base_ref: ${{ steps.pr.outputs.base_ref }}
       revision: ${{ steps.pr.outputs.revision }}
       skip: ${{ steps.pr.outputs.skip }}
+      same_repo: ${{ steps.pr.outputs.same_repo }}
     steps:
       - name: Checkout shared scripts
         uses: actions/checkout@v4
@@ -100,6 +104,26 @@ jobs:
               return;
             }
 
+            // The gates check out the commit this run was started for. If the branch moved since
+            // (e.g. a queued dispatch), skip so no result is published for code that was not checked.
+            const sameRepo = !pr.head.repo || pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            const eventSha = context.eventName === 'pull_request' ? context.payload.pull_request.head?.sha : context.sha;
+            if (!skip && eventSha && eventSha !== pr.head.sha) {
+              skip = true;
+              if (context.eventName === 'workflow_dispatch' && sameRepo) {
+                core.notice(`Started for ${eventSha.slice(0, 7)} but the PR head is now ${pr.head.sha.slice(0, 7)}; re-dispatching on the new head.`);
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: 'pr-pipeline.yml',
+                  ref: pr.head.ref,
+                  inputs: { pr_number: String(prNumber), force: process.env.FORCE === 'true' ? 'true' : 'false' }
+                });
+              } else {
+                core.notice(`Started for ${eventSha.slice(0, 7)} but the PR head is now ${pr.head.sha.slice(0, 7)}; the newer commit is checked separately.`);
+              }
+            }
+
             // Check each revision once: skip when it already has a final verdict
             // (e.g. a relay re-dispatch racing a `pull_request` run for the same commit).
             const rev = quality.revision(pr);
@@ -128,26 +152,142 @@ jobs:
             core.setOutput('base_ref', pr.base.ref);
             core.setOutput('revision', rev);
             core.setOutput('skip', String(skip));
+            core.setOutput('same_repo', String(sameRepo));
             core.info(`PR #${prNumber}: ${pr.head.ref} (${pr.head.sha}) -> ${pr.base.ref}, revision ${rev}`);
 
-  # Stage 1: Pre-flight & Lint (~30s, fail fast)
-  gatekeeper:
-    name: 'Stage 1a: Metadata'
+  # Stage 1: Deterministic lint auto-fix (~1m). ESLint --fix and Prettier repair most lint
+  # findings in seconds, so the PR Lint Fixer agent is only needed for what is left. A fix is
+  # pushed to the PR branch and the pipeline re-dispatched on the new commit; otherwise every
+  # gate is marked pending on the head commit and the gates start.
+  autofix:
+    name: 'Stage 1: Lint auto-fix'
     needs: [context]
     if: needs.context.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+      statuses: write
+    outputs:
+      pushed: ${{ steps.fix.outputs.pushed }}
+    steps:
+      - name: Checkout PR branch
+        # Fork PRs (also when dispatched) cannot be pushed to with GITHUB_TOKEN.
+        if: needs.context.outputs.same_repo == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.head_ref }}
+          fetch-depth: 0
+
+      - name: Auto-fix lint & formatting in changed files
+        id: fix
+        if: needs.context.outputs.same_repo == 'true'
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ needs.context.outputs.base_ref }}
+          HEAD_REF: ${{ needs.context.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+        run: |
+          echo "pushed=false" >> "$GITHUB_OUTPUT"
+          if git log -1 --format=%B | grep -qF '[pr-autofix]'; then
+            echo "Head is already an auto-fix commit; not fixing again."
+            exit 0
+          fi
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "Branch moved since the pipeline started; a newer run checks it."
+            exit 0
+          fi
+          if [ ! -f package.json ] || ! grep -q '"lint:fix"' package.json; then
+            echo "No lint:fix script; nothing to auto-fix."
+            exit 0
+          fi
+          MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          mapfile -t FILES < <(git diff --name-only --diff-filter=d "$MERGE_BASE" HEAD \
+            | grep -E '\.(js|jsx|mjs|cjs|ts|tsx|json|css|scss|html)$' \
+            | grep -vE '^(\.github|docs|node_modules|dist|coverage)/|(^|/)package-lock\.json$' || true)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No lintable files changed."
+            exit 0
+          fi
+          npm ci --no-audit --no-fund
+          mapfile -t JS < <(printf '%s\n' "${FILES[@]}" | grep -E '\.(js|jsx|mjs|cjs|ts|tsx)$' || true)
+          if [ ${#JS[@]} -gt 0 ]; then npx eslint --fix "${JS[@]}" || true; fi
+          npx prettier --write --ignore-unknown "${FILES[@]}" || true
+          if git diff --quiet; then
+            echo "Nothing to auto-fix."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am 'style: auto-fix lint and formatting [pr-autofix]'
+          git push origin "HEAD:$HEAD_REF"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git show --stat --format='%h %s' HEAD
+
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          path: .gate-scripts
+
+      - name: Re-check the auto-fixed commit or start the gates
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.context.outputs.pr_number }}
+          HEAD_REF: ${{ needs.context.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          PUSHED: ${{ steps.fix.outputs.pushed }}
+          FIX_SHA: ${{ steps.fix.outputs.sha }}
+        with:
+          script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/pr-quality.cjs`);
+            const prNumber = Number(process.env.PR_NUMBER);
+            if (process.env.PUSHED === 'true') {
+              // Pushes made with GITHUB_TOKEN do not raise `synchronize`: re-dispatch on the new commit.
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'pr-pipeline.yml',
+                ref: process.env.HEAD_REF,
+                inputs: { pr_number: String(prNumber) }
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `### 🧹 Lint & formatting auto-fixed\n\nESLint \`--fix\` and Prettier were applied to the files changed in this PR ` +
+                  `(commit ${process.env.FIX_SHA.slice(0, 7)}). The quality gates now run on that commit.`
+              });
+              await core.summary.addRaw(`### 🧹 Auto-fixed lint in ${process.env.FIX_SHA}\n\nThe pipeline was re-dispatched on the fixed commit.\n`).write();
+              return;
+            }
+            await quality.startGates({ github, context, core, prNumber, sha: process.env.HEAD_SHA });
+
+  # Stage 2: every gate runs in parallel, so all failures (and their repair agents) start in
+  # the first round. Each gate records a `gate/<id>` status and dispatches its own agent.
+  gatekeeper:
+    name: 'Stage 2: Metadata'
+    needs: [context, autofix]
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
     uses: ./.github/workflows/pr-gatekeeper.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
       head_ref: ${{ needs.context.outputs.head_ref }}
+      head_sha: ${{ needs.context.outputs.head_sha }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
       actions: write
+      statuses: write
 
   lint:
-    name: 'Stage 1b: Linters'
-    needs: [context, gatekeeper]
+    name: 'Stage 2: Linters'
+    needs: [context, autofix]
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
     uses: ./.github/workflows/pr-lint.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -159,37 +299,44 @@ jobs:
       pull-requests: write
       issues: write
       actions: write
+      statuses: write
 
-  # Stage 2: Compilation & Build (~30s)
   build:
     name: 'Stage 2: Build'
-    needs: [context, lint]
+    needs: [context, autofix]
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
     uses: ./.github/workflows/pr-build.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
+      head_sha: ${{ needs.context.outputs.head_sha }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
+      actions: write
+      statuses: write
 
-  # Stage 3: Deep Verification in Parallel (~1-3m)
   test:
-    name: 'Stage 3a: Tests & Coverage'
-    needs: [context, build]
+    name: 'Stage 2: Tests & Coverage'
+    needs: [context, autofix]
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
     uses: ./.github/workflows/pr-test.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
       head_ref: ${{ needs.context.outputs.head_ref }}
+      head_sha: ${{ needs.context.outputs.head_sha }}
       base_ref: ${{ needs.context.outputs.base_ref }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
       actions: write
+      statuses: write
 
   security:
-    name: 'Stage 3b: Security & CodeQL'
-    needs: [context, build]
+    name: 'Stage 2: Security & CodeQL'
+    needs: [context, autofix]
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
     uses: ./.github/workflows/pr-security.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -202,10 +349,12 @@ jobs:
       issues: write
       actions: write
       security-events: write
+      statuses: write
 
   docs:
-    name: 'Stage 3c: Documentation Drift'
-    needs: [context, build]
+    name: 'Stage 2: Documentation Drift'
+    needs: [context, autofix]
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
     uses: ./.github/workflows/pr-docs.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -217,29 +366,24 @@ jobs:
       pull-requests: write
       issues: write
       actions: write
+      statuses: write
 
-  # Stage 4: Copilot Code Review Dispatcher (only when all gates pass)
-  dispatcher:
-    name: 'Stage 4: Review Dispatcher'
-    needs: [context, test, security, docs]
-    uses: ./.github/workflows/pr-review-dispatcher.yml
-    with:
-      pr_number: ${{ needs.context.outputs.pr_number }}
-      head_ref: ${{ needs.context.outputs.head_ref }}
-      head_sha: ${{ needs.context.outputs.head_sha }}
+  # Stage 3: Verdict. Derived from the gate statuses of the head commit: pending while agents
+  # repair, failure when a gate stays red, success only when every gate passed on this commit.
+  # On success it dispatches pr-review-dispatcher.yml (Copilot review + human hand-off).
+  verdict:
+    name: 'PR Quality Verdict'
+    needs: [context, autofix, gatekeeper, lint, build, test, security, docs]
+    if: always() && !cancelled() && needs.context.result == 'success' && needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-quality-verdict-${{ needs.context.outputs.pr_number }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
       issues: write
-
-  # Verdict: the only thing that marks a revision as passing. Required on main.
-  verdict:
-    name: 'PR Quality Verdict'
-    needs: [context, gatekeeper, lint, build, test, security, docs]
-    if: always() && !cancelled() && needs.context.result == 'success' && needs.context.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+      actions: write
       statuses: write
     steps:
       - name: Checkout shared scripts
@@ -251,39 +395,30 @@ jobs:
         uses: actions/github-script@v7
         env:
           NEEDS: ${{ toJSON(needs) }}
+          PR_NUMBER: ${{ needs.context.outputs.pr_number }}
           HEAD_SHA: ${{ needs.context.outputs.head_sha }}
-          REVISION: ${{ needs.context.outputs.revision }}
         with:
           script: |
             const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
             const needs = JSON.parse(process.env.NEEDS);
-            const gates = { gatekeeper: 'Metadata', lint: 'Lint', build: 'Build', test: 'Tests', security: 'Security', docs: 'Docs' };
-            const failed = [];
-            const notRun = [];
-            for (const [job, label] of Object.entries(gates)) {
-              const result = needs[job] ? needs[job].result : 'skipped';
-              if (result === 'success') continue;
-              (result === 'failure' ? failed : notRun).push(label);
-            }
+            const jobs = { metadata: 'gatekeeper', lint: 'lint', build: 'build', tests: 'test', security: 'security', docs: 'docs' };
+            const results = {};
+            for (const [gate, job] of Object.entries(jobs)) results[gate] = needs[job] ? needs[job].result : 'skipped';
 
-            const passed = failed.length === 0 && notRun.length === 0;
-            const parts = [];
-            if (failed.length) parts.push(`Failed: ${failed.join(', ')}`);
-            if (notRun.length) parts.push(`not run: ${notRun.join(', ')}`);
-            const summary = passed ? 'All gates passed' : parts.join('; ');
-
-            await quality.setQualityStatus({
-              github, context,
-              sha: process.env.HEAD_SHA,
-              state: passed ? 'success' : 'failure',
-              summary,
-              rev: process.env.REVISION,
-              targetUrl: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            // Agents dispatched a moment ago may not be listed yet: never post the failure comment here.
+            const verdict = await quality.evaluateVerdict({
+              github, context, core,
+              prNumber: Number(process.env.PR_NUMBER),
+              reported: { sha: process.env.HEAD_SHA, results },
+              announce: false
             });
+            const icon = { success: '✅', failure: '❌', pending: '⏳' }[verdict.state] || 'ℹ️';
             await core.summary.addRaw(
-              `### ${passed ? '✅' : '❌'} pr-quality: ${summary}\n\n` +
-              `Revision \`${process.env.REVISION}\` on \`${process.env.HEAD_SHA}\`. ` +
-              (passed
-                ? 'Ready for human review.'
-                : 'Remediation agents were dispatched for the failing gates; the relay re-checks the PR once they finish.') + '\n'
+              `### ${icon} pr-quality: ${verdict.summary}\n\n` +
+              `Revision \`${verdict.rev}\` on \`${process.env.HEAD_SHA}\`. ` +
+              ({
+                success: 'Ready for human review.',
+                pending: 'Remediation agents are repairing the failing gates in parallel; each repaired gate is re-checked on its own.',
+                failure: 'No remediation agent could repair the failing gates; manual changes are required.'
+              }[verdict.state] || '') + '\n'
             ).write();

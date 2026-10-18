@@ -22,7 +22,7 @@ flowchart TD
     AuthorDocs --> StackedPR[Open Stacked PR on Feature Branch\nTagged: doc-remediation]
 
     StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit & posts audit link\nGate clears docs-required on recheck]
-    AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
+    AutoMerge --> Recheck([Feature Branch Updated & Docs gate re-checked alone])
     Recheck --> DoneNoAction
 ```
 
@@ -52,7 +52,7 @@ The agent evaluates every PR diff using strict semantic rules:
 
 ## 2. Autonomous Documentation Updater (`.github/workflows/pr-doc-updater.md`)
 
-- **Documentation Drift Gate (`.github/workflows/pr-docs.yml`, Stage 3c)**:
+- **Documentation Drift Gate (`.github/workflows/pr-docs.yml`)**:
   - Cheap deterministic pre-check inside the pipeline: passes when no application source changed or when Markdown documentation changed alongside the code.
   - Otherwise fails with `docs-required` and dispatches the documentation agent with the list of undocumented source files.
   - Passes when the agent recorded the semantic decision `docs-not-required`.

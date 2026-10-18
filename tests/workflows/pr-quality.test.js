@@ -1,6 +1,10 @@
+import fs from 'fs';
+import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
+  WORKFLOWS_DIR,
   createContext,
+  createCore,
   createGitHub,
   makeAgentRun,
   makePR,
@@ -239,5 +243,723 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
   it('lists every remediation agent workflow', () => {
     expect(quality.REMEDIATION_WORKFLOWS).toHaveLength(7);
     expect(quality.DECISION_LABELS).toEqual(['docs-not-required']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-gate statuses and the verdict
+// ---------------------------------------------------------------------------
+
+const BRANCH = 'feat/sample';
+const ALL_PASSED = Object.fromEntries(
+  quality.GATES.map((g) => [g.id, 'success'])
+);
+
+function gateWorld({ labels = [], runs = [], pulls = [] } = {}) {
+  const pr = makePR({ number: 20, branch: BRANCH, labels });
+  const github = createGitHub({ pulls: [pr, ...pulls], runs });
+  return { github, pr, context: createContext(), core: createCore() };
+}
+
+async function seedGates(
+  github,
+  sha,
+  states,
+  describe = (g, s) => `${g} ${s}`
+) {
+  for (const [gate, state] of Object.entries(states)) {
+    await quality.setGateStatus({
+      github,
+      context: createContext(),
+      sha,
+      gate,
+      state,
+      description: describe(gate, state),
+      targetUrl: `https://github.com/octo/demo/actions/runs/${gate}`
+    });
+  }
+}
+
+const dispatched = (github) =>
+  github.state.dispatches.map((d) => d.workflow_id);
+
+describe('pr-quality.cjs repairedGate', () => {
+  it.each([
+    ['lint-remediation', 'lint'],
+    ['test-remediation', 'tests'],
+    ['security-remediation', 'security'],
+    ['doc-remediation', 'docs'],
+    ['PR Validation (run 12)', 'metadata'],
+    ['PR Lint Fixer (run 3)', 'lint'],
+    ['PR Test Generator', 'tests'],
+    ['PR CodeQL Fixer (run 1)', 'security'],
+    ['PR Dependency Fixer (run 1)', 'security'],
+    ['PR Secret Fixer (run 1)', 'security'],
+    ['PR Documentation Updater (run 9)', 'docs']
+  ])('maps %s to the %s gate', (source, gate) => {
+    expect(quality.repairedGate(source)).toBe(gate);
+  });
+
+  it('returns null for unknown or empty sources', () => {
+    expect(quality.repairedGate('')).toBeNull();
+    expect(quality.repairedGate(undefined)).toBeNull();
+    expect(quality.repairedGate('PR Review (run 1)')).toBeNull();
+  });
+
+  it('has a gate workflow file for every gate', () => {
+    for (const gate of quality.GATES) {
+      expect(fs.existsSync(path.join(WORKFLOWS_DIR, gate.workflow))).toBe(true);
+    }
+  });
+});
+
+describe('pr-quality.cjs gate statuses', () => {
+  it('returns the latest status per gate and parses carried results', async () => {
+    const { github, pr, context } = gateWorld();
+    const sha = pr.head.sha;
+    await seedGates(github, sha, { lint: 'pending' });
+    await seedGates(
+      github,
+      sha,
+      { lint: 'failure', docs: 'success' },
+      (g, s) =>
+        g === 'docs' ? 'carried from abcdef1: Docs passed' : `${g} ${s}`
+    );
+    const gates = await quality.getGateStatuses({ github, context, sha });
+    expect(gates.lint).toMatchObject({ state: 'failure', carriedFrom: null });
+    expect(gates.docs).toMatchObject({
+      state: 'success',
+      carriedFrom: 'abcdef1',
+      description: 'carried from abcdef1: Docs passed'
+    });
+    expect(gates.build).toBeUndefined();
+  });
+
+  it('mirrors the result as a <gate>-passed label on the PR head only', async () => {
+    const { github, pr, context, core } = gateWorld();
+    const set = (sha, state) =>
+      quality.setGateStatus({
+        github,
+        context,
+        core,
+        prNumber: 20,
+        sha,
+        gate: 'lint',
+        state,
+        description: 'x'
+      });
+    await set(pr.head.sha, 'success');
+    expect(github.labels(20)).toEqual(['lint-passed']);
+    await set('0'.repeat(40), 'failure');
+    expect(github.labels(20)).toEqual(['lint-passed']);
+    await set(pr.head.sha, 'failure');
+    expect(github.labels(20)).toEqual([]);
+  });
+
+  it('truncates long descriptions to the 140 characters GitHub accepts', async () => {
+    const { github, pr, context } = gateWorld();
+    await quality.setGateStatus({
+      github,
+      context,
+      sha: pr.head.sha,
+      gate: 'docs',
+      state: 'failure',
+      description: 'x'.repeat(300)
+    });
+    const [status] = github.state.statuses[pr.head.sha];
+    expect(status.context).toBe('gate/docs');
+    expect(status.description).toHaveLength(140);
+  });
+
+  it.each([
+    ['success', 'success', 'Lint passed'],
+    ['failure', 'failure', 'Lint failed'],
+    ['cancelled', 'error', 'Lint did not finish (cancelled)']
+  ])('records job.status %s as %s', async (result, state, description) => {
+    const { github, pr, context, core } = gateWorld();
+    expect(
+      await quality.recordGate({
+        github,
+        context,
+        core,
+        prNumber: 20,
+        sha: pr.head.sha,
+        gate: 'lint',
+        result
+      })
+    ).toBe(state);
+    const gates = await quality.getGateStatuses({
+      github,
+      context,
+      sha: pr.head.sha
+    });
+    expect(gates.lint).toMatchObject({
+      state,
+      description,
+      targetUrl: 'https://github.com/octo/demo/actions/runs/9000'
+    });
+  });
+});
+
+describe('pr-quality.cjs remediationInProgress', () => {
+  const inProgress = (github, excludeRunIds) =>
+    quality.remediationInProgress({
+      github,
+      context: createContext(),
+      branch: BRANCH,
+      excludeRunIds
+    });
+
+  it('is empty when nothing is repairing the branch', async () => {
+    const { github } = gateWorld();
+    expect(await inProgress(github)).toEqual([]);
+  });
+
+  it('counts running agents, open stacked PRs and relays for the branch', async () => {
+    const stacked = makePR({
+      number: 31,
+      branch: 'lint-remediation-31',
+      base: BRANCH,
+      labels: ['lint-remediation']
+    });
+    const unlabelled = makePR({ number: 32, branch: 'other', base: BRANCH });
+    const { github } = gateWorld({
+      pulls: [stacked, unlabelled],
+      runs: [
+        makeAgentRun({
+          id: 1,
+          workflow: 'pr-test-generator.lock.yml',
+          branch: BRANCH
+        }),
+        makeRun({
+          id: 2,
+          workflow: 'pr-stacked-merge.yml',
+          branch: 'main',
+          status: 'in_progress',
+          conclusion: null,
+          title: `Remediation relay for ${BRANCH}`
+        }),
+        makeRun({
+          id: 3,
+          workflow: 'pr-stacked-merge.yml',
+          branch: 'main',
+          status: 'in_progress',
+          conclusion: null,
+          title: 'Remediation relay for feat/sample-2'
+        })
+      ]
+    });
+    expect((await inProgress(github)).map((w) => [w.workflow, w.id])).toEqual([
+      ['pr-test-generator.lock.yml', 1],
+      ['stacked PR #31', 31],
+      ['pr-stacked-merge.yml', 2]
+    ]);
+    expect((await inProgress(github, [1, 2])).map((w) => w.id)).toEqual([31]);
+  });
+});
+
+describe('pr-quality.cjs evaluateVerdict', () => {
+  const verdict = (w, extra = {}) =>
+    quality.evaluateVerdict({
+      github: w.github,
+      context: w.context,
+      core: w.core,
+      prNumber: 20,
+      ...extra
+    });
+
+  it('succeeds when every gate passed on the head commit and hands off to review', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, ALL_PASSED);
+    const result = await verdict(w);
+    expect(result.state).toBe('success');
+    const [status] = w.github.qualityStatuses(w.pr.head.sha);
+    expect(status.state).toBe('success');
+    expect(status.description).toMatch(/^All gates passed \[rev /);
+    expect(w.github.state.dispatches).toEqual([
+      {
+        owner: 'octo',
+        repo: 'demo',
+        workflow_id: 'pr-review-dispatcher.yml',
+        ref: 'main',
+        inputs: { pr_number: '20' }
+      }
+    ]);
+  });
+
+  it('stays pending while a gate is still checking', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      tests: 'pending',
+      lint: 'failure'
+    });
+    const result = await verdict(w);
+    expect(result.state).toBe('pending');
+    expect(result.summary).toBe('Checking: Tests; failed: Lint');
+    expect(dispatched(w.github)).toEqual([]);
+  });
+
+  it('treats gates without any status as still checking', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, { lint: 'success' });
+    expect((await verdict(w)).waiting).toEqual([
+      'Metadata',
+      'Build',
+      'Tests',
+      'Security',
+      'Docs'
+    ]);
+  });
+
+  it('marks gates that finished without reporting as errored', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      build: 'pending'
+    });
+    const result = await verdict(w, {
+      reported: {
+        sha: w.pr.head.sha,
+        results: { lint: 'success', build: 'cancelled' }
+      }
+    });
+    const gates = await quality.getGateStatuses({
+      github: w.github,
+      context: w.context,
+      sha: w.pr.head.sha
+    });
+    expect(gates.build).toMatchObject({
+      state: 'error',
+      description: 'Build did not report a result (cancelled)'
+    });
+    expect(gates.lint.state).toBe('success');
+    expect(result.state).toBe('failure');
+  });
+
+  it('stays pending while remediation is repairing a failed gate', async () => {
+    const w = gateWorld({
+      runs: [
+        makeAgentRun({
+          id: 1,
+          workflow: 'pr-lint-fixer.lock.yml',
+          branch: BRANCH
+        })
+      ]
+    });
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    const result = await verdict(w);
+    expect(result).toMatchObject({
+      state: 'pending',
+      summary: 'Repairing: Lint'
+    });
+    expect(w.github.comments(20)).toEqual([]);
+  });
+
+  it('ignores the calling run and excluded runs when looking for repairs', async () => {
+    const w = gateWorld({
+      runs: [
+        makeAgentRun({
+          id: 1,
+          workflow: 'pr-lint-fixer.lock.yml',
+          branch: BRANCH
+        })
+      ]
+    });
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    expect(
+      (await verdict(w, { excludeRunIds: [1], announce: false })).state
+    ).toBe('failure');
+    expect(w.github.comments(20)).toEqual([]);
+  });
+
+  it('fails and comments once per revision when nothing is repairing', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      security: 'error'
+    });
+    const result = await verdict(w);
+    await verdict(w);
+    expect(result).toMatchObject({
+      state: 'failure',
+      summary: 'Failed: Lint, Security'
+    });
+    const comments = w.github.comments(20);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain(
+      `<!-- pr-quality-failed:${quality.revision(w.pr)} -->`
+    );
+    expect(comments[0]).toContain(
+      '- **Lint**: lint failure ([run](https://github.com/octo/demo/actions/runs/lint))'
+    );
+    expect(comments[0]).toContain('- **Security**: security error');
+    expect(dispatched(w.github)).toEqual([]);
+  });
+
+  it('dispatches one final full check when passing results were carried over', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, ALL_PASSED, (g) =>
+      g === 'lint' ? 'Lint passed' : `carried from abcdef1: ${g} passed`
+    );
+    const result = await verdict(w);
+    expect(result.state).toBe('pending');
+    expect(result.carried).toEqual([
+      'Metadata',
+      'Build',
+      'Tests',
+      'Security',
+      'Docs'
+    ]);
+    expect(w.github.state.dispatches).toEqual([
+      {
+        owner: 'octo',
+        repo: 'demo',
+        workflow_id: 'pr-pipeline.yml',
+        ref: BRANCH,
+        inputs: { pr_number: '20', force: 'true' }
+      }
+    ]);
+  });
+
+  it('does not dispatch the final check while a pipeline already runs', async () => {
+    const w = gateWorld({
+      runs: [
+        makeRun({
+          id: 5,
+          workflow: 'pr-pipeline.yml',
+          branch: BRANCH,
+          status: 'queued',
+          conclusion: null
+        })
+      ]
+    });
+    await seedGates(
+      w.github,
+      w.pr.head.sha,
+      ALL_PASSED,
+      (g) => `carried from abcdef1: ${g}`
+    );
+    expect((await verdict(w)).state).toBe('pending');
+    expect(dispatched(w.github)).toEqual([]);
+  });
+
+  it('does nothing for a closed PR', async () => {
+    const w = gateWorld();
+    w.github.pr(20).state = 'closed';
+    expect((await verdict(w)).state).toBe('closed');
+    expect(w.github.qualityStatuses(w.pr.head.sha)).toEqual([]);
+  });
+});
+
+describe('pr-quality.cjs recheckGates', () => {
+  it('re-checks repaired gates and carries the rest from the previous commit', async () => {
+    const w = gateWorld();
+    const before = 'a'.repeat(40);
+    await seedGates(w.github, before, { ...ALL_PASSED, lint: 'failure' });
+    const plan = await quality.recheckGates({
+      github: w.github,
+      context: w.context,
+      core: w.core,
+      prNumber: 20,
+      branch: BRANCH,
+      before,
+      sha: w.pr.head.sha,
+      repaired: ['lint']
+    });
+    expect(plan).toEqual({
+      recheck: ['lint'],
+      carried: ['metadata', 'build', 'tests', 'security', 'docs'],
+      kept: []
+    });
+    expect(dispatched(w.github)).toEqual(['pr-lint.yml']);
+    const gates = await quality.getGateStatuses({
+      github: w.github,
+      context: w.context,
+      sha: w.pr.head.sha
+    });
+    expect(gates.lint.description).toBe('Lint: re-checking after remediation');
+    expect(gates.docs.description).toBe('carried from aaaaaaa: docs success');
+  });
+
+  it('keeps the original origin when carrying an already-carried result', async () => {
+    const w = gateWorld();
+    const before = 'b'.repeat(40);
+    await seedGates(
+      w.github,
+      before,
+      { docs: 'success' },
+      () => 'carried from aaaaaaa: Docs passed'
+    );
+    await quality.recheckGates({
+      github: w.github,
+      context: w.context,
+      core: w.core,
+      prNumber: 20,
+      branch: BRANCH,
+      before,
+      sha: w.pr.head.sha
+    });
+    const gates = await quality.getGateStatuses({
+      github: w.github,
+      context: w.context,
+      sha: w.pr.head.sha
+    });
+    expect(gates.docs.carriedFrom).toBe('aaaaaaa');
+  });
+});
+
+describe('pr-quality.cjs gate revisions', () => {
+  it('records the PR revision checked and strips it from the description', async () => {
+    const { github, pr, context, core } = gateWorld();
+    await quality.recordGate({
+      github,
+      context,
+      core,
+      prNumber: 20,
+      sha: pr.head.sha,
+      gate: 'metadata',
+      result: 'failure'
+    });
+    const [status] = github.state.statuses[pr.head.sha];
+    expect(status.description).toBe(
+      `Metadata failed [rev ${quality.revision(pr)}]`
+    );
+    const gates = await quality.getGateStatuses({
+      github,
+      context,
+      sha: pr.head.sha
+    });
+    expect(gates.metadata).toMatchObject({
+      description: 'Metadata failed',
+      revision: quality.revision(pr)
+    });
+  });
+
+  it('keeps the revision when a long description is truncated', async () => {
+    const { github, pr, context } = gateWorld();
+    await quality.setGateStatus({
+      github,
+      context,
+      sha: pr.head.sha,
+      gate: 'docs',
+      state: 'failure',
+      description: 'x'.repeat(300),
+      rev: quality.revision(pr)
+    });
+    const [status] = github.state.statuses[pr.head.sha];
+    expect(status.description).toHaveLength(140);
+    expect(quality.parseRevision(status.description)).toBe(
+      quality.revision(pr)
+    );
+  });
+
+  const recheck = (w, extra = {}) =>
+    quality.recheckGates({
+      github: w.github,
+      context: w.context,
+      core: w.core,
+      prNumber: 20,
+      branch: BRANCH,
+      sha: w.pr.head.sha,
+      ...extra
+    });
+
+  async function recordAll(w, sha, pr, states) {
+    for (const [gate, state] of Object.entries(states)) {
+      await quality.setGateStatus({
+        github: w.github,
+        context: w.context,
+        sha,
+        gate,
+        state,
+        description: `${gate} ${state}`,
+        rev: quality.revision({ ...pr, head: { ...pr.head, sha } })
+      });
+    }
+  }
+
+  it('re-checks Metadata and Docs when the PR metadata changed since they ran', async () => {
+    const w = gateWorld();
+    await recordAll(w, w.pr.head.sha, w.pr, {
+      ...ALL_PASSED,
+      metadata: 'failure'
+    });
+    w.github.pr(20).title = 'feat(app): a better title';
+    const plan = await recheck(w);
+    expect(plan.recheck).toEqual(['metadata', 'docs']);
+    expect(dispatched(w.github)).toEqual(['pr-gatekeeper.yml', 'pr-docs.yml']);
+  });
+
+  it('re-checks Docs after a docs-not-required decision even without a relay source', async () => {
+    const w = gateWorld({ labels: ['docs-required'] });
+    const before = 'c'.repeat(40);
+    await recordAll(w, before, w.pr, { ...ALL_PASSED, docs: 'failure' });
+    w.github.pr(20).labels.push({ name: 'docs-not-required' });
+    const plan = await recheck(w, { before, repaired: ['lint'] });
+    expect(plan.recheck).toEqual(['metadata', 'lint', 'docs']);
+    expect(plan.carried).toEqual(['build', 'tests', 'security']);
+  });
+
+  it('carries results with the revision they were recorded for', async () => {
+    const w = gateWorld();
+    const before = 'd'.repeat(40);
+    await recordAll(w, before, w.pr, ALL_PASSED);
+    const plan = await recheck(w, { before, repaired: ['lint'] });
+    expect(plan.carried).toEqual([
+      'metadata',
+      'build',
+      'tests',
+      'security',
+      'docs'
+    ]);
+    const gates = await quality.getGateStatuses({
+      github: w.github,
+      context: w.context,
+      sha: w.pr.head.sha
+    });
+    expect(gates.metadata.revision).toBe(
+      quality.revision({ ...w.pr, head: { ...w.pr.head, sha: before } })
+    );
+    expect(gates.metadata.description).toBe(
+      'carried from ddddddd: metadata success'
+    );
+  });
+
+  it('keeps gates whose results predate revisions in statuses', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, ALL_PASSED);
+    w.github.pr(20).title = 'feat(app): renamed';
+    expect((await recheck(w)).recheck).toEqual([]);
+  });
+});
+
+describe('pr-quality.cjs blocked stacked PRs', () => {
+  it('does not count a stacked PR the relay could not merge as repair in progress', async () => {
+    const blocked = makePR({
+      number: 31,
+      branch: 'lint-remediation-31',
+      base: BRANCH,
+      labels: ['lint-remediation', quality.BLOCKED_LABEL]
+    });
+    const w = gateWorld({ pulls: [blocked] });
+    expect(
+      await quality.remediationInProgress({
+        github: w.github,
+        context: w.context,
+        branch: BRANCH
+      })
+    ).toEqual([]);
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    const result = await quality.evaluateVerdict({
+      github: w.github,
+      context: w.context,
+      core: w.core,
+      prNumber: 20
+    });
+    expect(result.state).toBe('failure');
+  });
+});
+
+describe('pr-quality.cjs sweepStalled (watchdog)', () => {
+  const NOW = Date.parse('2030-01-01T12:00:00Z');
+  const ago = (minutes) => new Date(NOW - minutes * 60000).toISOString();
+
+  async function stalled(
+    w,
+    { minutes = 45, state = 'pending', summary = 'Repairing: Lint' } = {}
+  ) {
+    await seedQualityStatus(w.github, w.pr, state, summary);
+    for (const s of w.github.state.statuses[w.pr.head.sha])
+      s.updated_at = ago(minutes);
+  }
+  const sweep = (w) =>
+    quality.sweepStalled({
+      github: w.github,
+      context: w.context,
+      core: w.core,
+      staleMinutes: 30,
+      now: NOW
+    });
+
+  it('fails a PR whose repair ended without handing off to the relay', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    await stalled(w);
+    const swept = await sweep(w);
+    expect(swept).toEqual([
+      { number: 20, recheck: [], state: 'failure', summary: 'Failed: Lint' }
+    ]);
+    expect(w.github.comments(20)[0]).toContain('Quality gates still failing');
+  });
+
+  it('re-checks gates stuck pending without a running gate workflow', async () => {
+    const w = gateWorld();
+    await seedGates(w.github, w.pr.head.sha, {
+      ...ALL_PASSED,
+      tests: 'pending'
+    });
+    await stalled(w, { summary: 'Checking: Tests' });
+    const [result] = await sweep(w);
+    expect(result).toMatchObject({ recheck: ['tests'], state: 'pending' });
+    expect(dispatched(w.github)).toEqual(['pr-test.yml']);
+  });
+
+  it('leaves recent, final, busy, fork and stacked PRs alone', async () => {
+    const recent = gateWorld();
+    await stalled(recent, { minutes: 5 });
+    expect(await sweep(recent)).toEqual([]);
+
+    const final = gateWorld();
+    await stalled(final, { state: 'failure' });
+    expect(await sweep(final)).toEqual([]);
+
+    const busy = gateWorld({
+      runs: [
+        makeRun({
+          id: 7,
+          workflow: 'pr-pipeline.yml',
+          branch: BRANCH,
+          status: 'in_progress',
+          conclusion: null
+        })
+      ]
+    });
+    await stalled(busy);
+    expect(await sweep(busy)).toEqual([]);
+
+    const fork = gateWorld();
+    fork.github.pr(20).head.repo = { full_name: 'someone/demo' };
+    await stalled(fork);
+    expect(await sweep(fork)).toEqual([]);
+
+    const stacked = gateWorld({ labels: ['lint-remediation'] });
+    await stalled(stacked);
+    expect(await sweep(stacked)).toEqual([]);
+  });
+
+  it('keeps going when one PR cannot be re-evaluated', async () => {
+    const w = gateWorld();
+    await stalled(w);
+    w.github.rest.actions.createWorkflowDispatch = async () => {
+      throw new Error('boom');
+    };
+    expect(await sweep(w)).toEqual([]);
+    expect(w.core.warnings.join()).toContain(
+      'watchdog could not re-evaluate: boom'
+    );
   });
 });

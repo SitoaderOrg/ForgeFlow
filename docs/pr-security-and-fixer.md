@@ -8,7 +8,7 @@ This step implements security gates powered by **GitHub Code Security** combined
 
 ```mermaid
 flowchart TD
-    BuildPass[Stage 2 Passed: Build OK] --> SecGate[Stage 3b: Security Gatekeeper\n.github/workflows/pr-security.yml]
+    BuildPass[Pipeline autofix done] --> SecGate[Security Gate, in parallel with the other gates\n.github/workflows/pr-security.yml]
     
     subgraph GitHub_Code_Security [GitHub Code Security Engines]
         SecGate --> DepReview[Dependency Review Action\nChecks PR diff for CVEs / license issues]
@@ -34,7 +34,7 @@ flowchart TD
 
     StackedPRDep & StackedPRCodeql & StackedPRSecret --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit & posts audit link\nGates clear security labels on recheck]
 
-    AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
+    AutoMerge --> Recheck([Feature Branch Updated & Security gate re-checked alone])
 ```
 ```
 
@@ -62,7 +62,7 @@ The deterministic security gate leverages native GitHub Code Security features:
   - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. The **`secret-alert`** label and `pr-secret-fixer.md` remain available for manual dispatch.
 - **Autonomous Label Management**:
   - Each label is independent: if only one check fails, only its specific alert label is attached.
-  - The remediation relay auto-merges the stacked PR into the feature branch and re-checks it once the repair round is over; the security gate clears the labels only if the re-check passes.
+  - The remediation relay auto-merges the stacked PR into the feature branch and re-runs only the security gate on the new commit; the security gate clears the labels only if the re-check passes.
 
 ---
 

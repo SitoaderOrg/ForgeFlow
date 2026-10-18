@@ -115,11 +115,13 @@ export function makeRun({
   event = 'workflow_dispatch',
   status = 'completed',
   conclusion = 'success',
-  jobs = []
+  jobs = [],
+  title
 }) {
   return {
     id,
     workflow_id: workflow,
+    display_title: title ?? workflow,
     head_branch: branch,
     event,
     status,
@@ -332,7 +334,8 @@ export function createGitHub(initial = {}) {
           context,
           state: st,
           description,
-          target_url
+          target_url,
+          updated_at: new Date().toISOString()
         });
         return { data: {} };
       })

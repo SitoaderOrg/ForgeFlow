@@ -1,30 +1,28 @@
 flowchart LR
-    subgraph Orchestrator [PR Pipeline DAG]
-        S1[Stage 1: Gatekeeper & Lint]
-        S2[Stage 2: Build Verification]
-        S3[Stage 3: Tests, Security, Docs]
+    subgraph Orchestrator [PR Pipeline]
+        AF[Autofix: eslint/prettier]
+        G[All 6 gates in parallel\nMetadata, Lint, Build, Tests, Security, Docs]
+        AF --> G
     end
 
-    subgraph DirectFix [Direct Fixes]
-        A1[Agent: Fix Metadata via API]
-        A2[Agent: Commit Lint Fix to Branch]
-    end
-
-    subgraph StackedRemediation [Autonomous Stacked Remediation]
+    subgraph Agents [Remediation agents, one per failed gate]
         direction TB
+        A1[Agent: Fix Metadata via API]
+        A2[Agent: Fix Lint]
         A4[Agent: Generate Unit Tests]
-        A3[Agent / Autofix: Patch Vulns]
+        A3[Agent: Patch Vulns]
         A5[Agent: Generate Docs]
-        StackedMerge[Auto-Merge & Link to Parent PR]
     end
 
-    S1 -->|needs-metadata| A1 -->|Update PR| S1
-    S1 -->|lint-failed| A2 -->|Commit Fix| S1
-    S1 -->|Pass| S2 -->|Pass| S3
+    G -->|needs-metadata| A1
+    G -->|lint-failed| A2
+    G -->|test-required| A4
+    G -->|security alerts| A3
+    G -->|docs-required| A5
 
-    S3 -->|test-required| A4 --> StackedMerge
-    S3 -->|security alerts| A3 --> StackedMerge
-    S3 -->|docs-required| A5 --> StackedMerge
-    StackedMerge -->|Squash, clear label & audit link| S1
-
-    S3 -->|All Pass & Settled| Dispatcher[Stage 4: Review Dispatcher] --> Review[Developer Final Sign-Off & Merge]
+    A1 & A2 & A3 & A4 & A5 --> Relay[Relay: merge stacked PR,\nre-check that gate only]
+    Relay --> V{pr-quality verdict}
+    G --> V
+    V -->|all green, some carried over| AF
+    V -->|still failing, nothing repairing| Fail[❌ Fail with error]
+    V -->|all green on this commit| Dispatcher[Review Dispatcher] --> Review[Developer Final Sign-Off & Merge]

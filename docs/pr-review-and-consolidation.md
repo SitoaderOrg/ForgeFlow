@@ -27,19 +27,22 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ```mermaid
 flowchart TD
-    PR[Contributor Opens PR] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml\nStages 1-3: Lint, Build, Test, Sec, Docs]
+    PR[Contributor Opens PR] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml\nAll gates in parallel: Metadata, Lint, Build, Tests, Security, Docs]
     
     Pipeline -->|Fails / Alerts| Agents[Remediation Agents Open Stacked PRs\n- Lint Fixes: lint-remediation\n- Unit Tests: test-remediation\n- Security Patches: security-remediation\n- Markdown Docs: doc-remediation]
     
     subgraph Auto_Consolidation [Review & Auto-Consolidation Stage]
-        Agents --> AutoMerge[Auto-Merge Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash commit, wait for the repair round to end]
+        Agents --> AutoMerge[Auto-Merge Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash commit per agent, as soon as it finishes]
         AutoMerge --> CommentParent[Post Audit Trail Comment on Parent PR\nDirect links to merged PR & commit SHA]
     end
 
-    AutoMerge --> SyncBranch[Recheck once, only if the revision changed]
-    SyncBranch --> Pipeline
+    AutoMerge --> SyncBranch[Re-check only the repaired gate\nother gates carried over]
+    SyncBranch --> Verdict{pr-quality verdict}
+    Pipeline --> Verdict
+    Verdict -->|all green, some carried over:\none final full run| Pipeline
+    Verdict -->|still failing, nothing repairing| Fail([❌ pr-quality failure])
 
-    Pipeline -->|✅ pr-quality status: success| Dispatcher[Stage 4: Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
+    Verdict -->|✅ all green on this commit| Dispatcher[Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
 
     Dispatcher --> RequestCopilot[Request GitHub Copilot Code Review\nDeep semantic & architectural analysis]
     Dispatcher --> PostSummary[Post Consolidated Summary on Parent PR\nItemized links to all auto-merged PRs]
@@ -58,7 +61,7 @@ flowchart TD
 Instead of pinging the developer to manually review and merge 3–4 separate stacked PRs (the relay is dispatched by each agent's `dispatch-workflow` safe output, because PRs created with `GITHUB_TOKEN` never raise `pull_request` events — see [Remediation Chaining](remediation-chaining.md)):
 - **Automatic Ingestion**: Automatically merges valid remediation PRs with labels (`lint-remediation`, `test-remediation`, `security-remediation`, `doc-remediation`) targeting the feature branch.
 - **Ready & Squash & Delete**: Marks draft stacked PRs ready, squashes the remediation commit into the developer's feature branch and deletes the temporary agent branch.
-- **Recheck, once**: Waits until no remediation agent is still working on the branch and no pipeline is running, then re-dispatches `pr-pipeline.yml` only if the PR revision changed. Gate labels are never cleared here — merging a fix is not evidence that it works.
+- **Re-check the repaired gate only**: Waits for a running pipeline, then re-runs only the gate the agent repaired (e.g. `pr-test.yml` for `test-remediation`) on the new commit and carries the other gates' `gate/<id>` results over. It does not wait for other agents — each agent's relay re-checks its own gate. Once every gate is green, one final full pipeline run verifies the combined fixes. Gate labels are never cleared here — merging a fix is not evidence that it works.
 - **Transparent Audit Trail**: Posts a comment directly to the parent PR:
   > **🤖 Autonomous Remediation Auto-Merged**:
   > - **Stacked PR**: [#12 - test: add unit test coverage for PR changes](url)
@@ -80,5 +83,5 @@ Once all automated checks pass and all stacked PRs are settled:
 ## 3. Human Final Approval
 
 Only stacked remediation PRs are merged automatically, and only into the feature branch. The feature PR is never merged by automation:
-- **`pr-quality` commit status**: the pipeline's verdict job is the only thing that marks a revision as passing (see [Remediation Chaining](remediation-chaining.md#check--repair--recheck--review--merge)).
+- **`pr-quality` commit status**: it turns green only when every `gate/<id>` status passed on the head commit itself — carried-over results trigger a final full run first (see [Remediation Chaining](remediation-chaining.md#check--repair--re-check-one-gate--final-check--review--merge)).
 - **Human merge**: once `pr-quality` is green and Copilot has reviewed, a maintainer approves and merges the PR into `main`.

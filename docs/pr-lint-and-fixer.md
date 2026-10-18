@@ -8,17 +8,17 @@ This step implements a language-agnostic code quality gate combined with an auto
 
 ```mermaid
 flowchart TD
-    GatekeeperPass[Stage 1a Passed] --> Linter[Stage 1b: Deterministic Linter Gate\n.github/workflows/pr-lint.yml]
+    Autofix[Pipeline autofix job\neslint --fix / prettier --write\non changed files] --> Linter[Lint Gate, in parallel with the other gates\n.github/workflows/pr-lint.yml]
     
-    Linter -->|✅ All Linters Pass| NextStage[Stage 2: Build Verification\n.github/workflows/pr-build.yml]
-    Linter -->|❌ Lint / Style Failure| AddLabel[Apply 'lint-failed' Label\nFail Fast / Halt Pipeline]
+    Linter -->|✅ All Linters Pass| Passed[gate/lint: success\nlabel 'lint-passed']
+    Linter -->|❌ Lint / Style Failure| AddLabel[gate/lint: failure\nApply 'lint-failed' Label]
     
     AddLabel --> Fixer[Autonomous gh-aw Workflow\n.github/workflows/pr-lint-fixer.md]
     Fixer --> Inspect[Inspect PR Diff & Failed Linter Logs]
     Fixer --> Remediate[Format Code & Correct Lint Violations]
     Fixer --> SafeOutputs[Safe Outputs Execution:\n- Open stacked PR 'lint-remediation'\n- Comment on parent PR]
-    SafeOutputs --> Relay[pr-stacked-merge.yml\nSquash-merge stacked PR\nRecheck once the repair round ends]
-    Relay --> Recheck([Pipeline re-checks the new revision\nLint gate clears 'lint-failed' only if it passes])
+    SafeOutputs --> Relay[pr-stacked-merge.yml\nSquash-merge stacked PR\nre-run pr-lint.yml alone]
+    Relay --> Recheck([Lint gate re-checks the new commit\npasses: 'lint-passed' / still failing: pr-quality fails])
 ```
 
 ---
@@ -32,9 +32,10 @@ The linter gate uses GitHub's official **Super-Linter** to provide out-of-the-bo
   - Excludes noisy non-code linters (`VALIDATE_CHECKOV: false`, `VALIDATE_MARKDOWN: false`, `VALIDATE_NATURAL_LANGUAGE: false`, `VALIDATE_JSCPD: false`) to keep focus on code logic and formatting.
   - Skips internal metadata paths (`.github/`, `docs/`, `*.lock.yml`, and temp logs) via `FILTER_REGEX_EXCLUDE`.
 - **Diff-Aware**: Sets `VALIDATE_ALL_CODEBASE: false` to only inspect changed files in the PR, minimizing runtime and avoiding legacy repo-wide noise.
-- **Fail-Fast & Triggering Remediation**:
-  - If any linter detects errors, the workflow marks the job as failed and automatically attaches the **`lint-failed`** label to the PR.
-  - If all linters pass (or after autonomous fixes are applied), it clears the `lint-failed` label.
+- **Deterministic autofix first**: before any gate runs, the pipeline's `autofix` job runs `eslint --fix` and `prettier --write` on the changed files and pushes a `style: auto-fix lint and formatting [pr-autofix]` commit if anything changed (same-repository PRs only). Most formatting failures therefore never reach the agent.
+- **Gate result & Triggering Remediation**:
+  - If any linter detects errors, the workflow marks the job as failed, records `gate/lint: failure` and attaches the **`lint-failed`** label to the PR.
+  - If all linters pass, it clears the `lint-failed` label and records `gate/lint: success` (label `lint-passed`).
 
 ---
 
@@ -49,4 +50,4 @@ When formatting or style issues break the build, this GitHub Agentic Workflow au
 - **Safe Outputs Execution**:
   - `create-pull-request`: Opens a stacked PR (labelled `lint-remediation`, title prefix `style(lint): `) targeting the author's feature branch with the formatting and lint fixes.
   - `add-comment`: Posts a summary on the parent PR of which files were formatted and which lint rules were corrected.
-- **Auto-merge**: The agent's `dispatch-workflow` safe output dispatches `pr-stacked-merge.yml`, which squash-merges the stacked PR into the feature branch, posts an audit comment with the merged commit on the parent PR, and — once the repair round is over — re-runs the PR Quality Pipeline on the new revision. The `lint-failed` label is only removed by the Lint gate when the re-check passes.
+- **Auto-merge**: The agent's `dispatch-workflow` safe output dispatches `pr-stacked-merge.yml`, which squash-merges the stacked PR into the feature branch, posts an audit comment with the merged commit on the parent PR, and re-runs only the Lint gate (`pr-lint.yml`) on the new commit, carrying the other gates' results over. The `lint-failed` label is only removed by the Lint gate when the re-check passes; if it still fails and nothing else is repairing the PR, `pr-quality` fails with an error comment (see [Remediation Chaining](remediation-chaining.md)).
