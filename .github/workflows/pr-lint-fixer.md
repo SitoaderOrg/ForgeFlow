@@ -65,6 +65,15 @@ steps:
   - name: Install project dependencies
     run: |
       if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; fi
+  - name: Snapshot pull request diff for the agent
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.inputs.pr_number }}
+    run: |
+      mkdir -p /tmp/gh-aw
+      gh pr view "$PR_NUMBER" --json number,title,body,headRefName,files > /tmp/gh-aw/pr.json || true
+      gh pr diff "$PR_NUMBER" > /tmp/gh-aw/pr.diff || true
+      wc -l /tmp/gh-aw/pr.diff || true
 
 strict: true
 
@@ -119,6 +128,9 @@ ${{ github.event.inputs.findings }}
 ```
 
 Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
+
+## Efficiency Rules (keep the run small)
+- The full PR diff is pre-fetched to `/tmp/gh-aw/pr.diff`. Fix only the files named in the gate findings. Finish in fewer than 15 tool calls.
 
 ## Objective
 Automatically fix code formatting and lint issues on this pull request to help it pass the PR Lint & Format gatekeeper.

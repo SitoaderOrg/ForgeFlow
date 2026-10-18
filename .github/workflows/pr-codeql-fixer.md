@@ -62,6 +62,15 @@ steps:
   - name: Install project dependencies
     run: |
       if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; fi
+  - name: Snapshot pull request diff for the agent
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.inputs.pr_number }}
+    run: |
+      mkdir -p /tmp/gh-aw
+      gh pr view "$PR_NUMBER" --json number,title,body,headRefName,files > /tmp/gh-aw/pr.json || true
+      gh pr diff "$PR_NUMBER" > /tmp/gh-aw/pr.diff || true
+      wc -l /tmp/gh-aw/pr.diff || true
 
 strict: true
 
@@ -117,6 +126,10 @@ ${{ github.event.inputs.findings }}
 ```
 
 Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
+
+## Efficiency Rules (keep the run small)
+- The full PR diff is pre-fetched to `/tmp/gh-aw/pr.diff`. Each finding already contains the rule id and `file:line`; open only those files.
+- Prefer safe DOM APIs (`textContent`, `createElement`) over `innerHTML` for untrusted input. Run `npm test` and `npm run lint` once after the fix. Finish in fewer than 15 tool calls.
 
 ## Objective
 Automatically create a stacked remediation pull request targeting the developer's feature branch to resolve CodeQL SAST vulnerabilities—leveraging GitHub Copilot Autofix suggestions when available or synthesizing defensive code patches—with distinct, itemized commit-style sections explaining each fix, allowing the developer to review and merge the solution.

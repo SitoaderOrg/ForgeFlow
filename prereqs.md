@@ -46,7 +46,7 @@ Navigate to **Settings → Code security and analysis**:
 All `gh-aw` workflows use GitHub Copilot as their default reasoning engine via GitHub Actions permissions:
 - Ensure the repository belongs to an organization or account with an active **GitHub Copilot** subscription (Copilot Business, Enterprise, or Pro).
 - Workflows declare `permissions: copilot-requests: write`, which authorizes the workflow to use Copilot inference without requiring personal API keys or third-party secrets.
-- Agents read their model from the `GH_AW_AGENT_MODEL` repository variable (fallback `gpt-4.1`). It must be a model enabled for the organization's Copilot inference — the available list is written to `sandbox/firewall/logs/api-proxy-logs/models.json` in every agent run's `agent` artifact. Avoid `auto` (it can resolve to models that reject Copilot CLI tools). Switch models (e.g. when one hits its rate limit / `429 Too Many Requests`) by updating the variable — no recompilation needed.
+- Agents read their model from the `GH_AW_AGENT_MODEL` repository variable (fallback `gpt-4.1`). It must be a model enabled for the organization's Copilot inference — the available list is written to `sandbox/firewall/logs/api-proxy-logs/models.json` in every agent run's `agent` artifact. Avoid `auto` (it can resolve to models that reject Copilot CLI tools). Switch models (e.g. when one hits its rate limit / `429 Too Many Requests`) by updating the variable — no recompilation needed. Observed with gh-aw v0.89.21 / Copilot CLI 1.0.87: `gpt-4.1` works; `auto` (→ `gpt-5.6-luna-utility`) and `gpt-4o` fail with `Unsupported Responses custom tool`, and `gpt-5.3-codex` fails after its first edit with `Invalid 'input[n].id' ... Expected an ID that begins with 'fc'`.
 
 ---
 
