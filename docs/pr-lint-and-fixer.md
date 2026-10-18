@@ -1,51 +1,102 @@
-# Step 2: Polyglot Linting & Autonomous Style Remediation
+# Repository Lint Checks and Native Repair
 
-This step implements a language-agnostic code quality gate combined with an autonomous AI remediation loop for formatting, styling, and static linting errors.
-
----
-
-## Architecture Overview
+[`pr-lint.yml`](../.github/workflows/pr-lint.yml) is a reusable `workflow_call`
+gate after workflow compilation and metadata, and before build. It invokes the
+repository's explicitly configured lint script at the immutable PR head.
+[`pr-pipeline.yml`](../.github/workflows/pr-pipeline.yml) owns ordering and repair;
+the lint gate does not dispatch workflows or manage labels.
 
 ```mermaid
 flowchart TD
-    GatekeeperPass[Stage 1a Passed] --> Linter[Stage 1b: Deterministic Linter Gate\n.github/workflows/pr-lint.yml]
-    
-    Linter -->|✅ All Linters Pass| NextStage[Stage 2: Build Verification\n.github/workflows/pr-build.yml]
-    Linter -->|❌ Lint / Style Failure| AddLabel[Apply 'lint-failed' Label\nFail Fast / Halt Pipeline]
-    
-    AddLabel --> Fixer[Autonomous gh-aw Workflow\n.github/workflows/pr-lint-fixer.md]
-    Fixer --> Inspect[Inspect PR Diff & Failed Linter Logs]
-    Fixer --> Remediate[Format Code & Correct Lint Violations]
-    Fixer --> SafeOutputs[Safe Outputs Execution:\n- Push fix directly to PR branch\n- Post explanatory comment\n- Remove 'lint-failed' label]
-    SafeOutputs --> Recheck([PR Updated & Pipeline Re-triggered])
+    Metadata["Workflow compilation and metadata passed"] --> Lint["Run repository lint check at exact head SHA"]
+    Lint -->|Native success| Build["Repository build check"]
+    Lint -->|"needs.lint.result is failure"| Findings["Select from native run/candidate result and diagnostics<br/>Labels are visibility only"]
+    Findings -->|"Lint selected; workflow_call; fewer than 6 calls"| Repair["ALL lint file fixes in separate repair PR<br/>Base feature first, preceding repair later; never direct feature push"]
+    Repair --> Scoped["Verify native identity, expected stack, protected scope<br/>Lint plus previously green project gates"]
+    Scoped -->|Pass| Register["Controller: ordinary at 1; native at 2; append later<br/>Persist state and round; no merge"]
+    Register --> Candidate["Next run: full current-candidate gates"]
+    Candidate -->|All green| Land["Guarded asynchronous squash into feature only<br/>Feature PR outside stack; verify all snapshots and results"]
+    Land --> Recheck["Comment links initial_head_sha, baseline-to-final compare, EACH PR and squash SHA<br/>Preserve baseline and round; rerun all parent gates at actual updated feature head"]
+    Scoped & Register & Land -->|"Failure, stale, or unknown"| Stop["Stop; preserve stack and branches; manual handling"]
 ```
 
----
+## Repository-owned lint policy
 
-## 1. Deterministic Gate (`.github/workflows/pr-lint.yml`)
+The lifecycle is language-neutral; it does not choose linters by inspecting
+extensions or manifests. The repository's check definitions and configuration
+are the source of truth for:
 
-The linter gate uses GitHub's official **Super-Linter** to provide out-of-the-box linting across any programming language without manual per-language tooling setup.
+- The fixed lint command and its required toolchain.
+- Formatting and static-analysis rules.
+- Files included or excluded, and whether the check covers a diff or the
+  complete repository.
+- Which findings produce a failing exit status.
 
-- **Universal & Polyglot**: Automatically detects languages in the repository (JavaScript, TypeScript, Python, Go, Rust, Java, C#, Shell, JSON, YAML, etc.) and executes the appropriate linters.
-- **Tuned & Noise-Free**:
-  - Excludes noisy non-code linters (`VALIDATE_CHECKOV: false`, `VALIDATE_MARKDOWN: false`, `VALIDATE_NATURAL_LANGUAGE: false`, `VALIDATE_JSCPD: false`) to keep focus on code logic and formatting.
-  - Skips internal metadata paths (`.github/`, `docs/`, `*.lock.yml`, and temp logs) via `FILTER_REGEX_EXCLUDE`.
-- **Diff-Aware**: Sets `VALIDATE_ALL_CODEBASE: false` to only inspect changed files in the PR, minimizing runtime and avoiding legacy repo-wide noise.
-- **Fail-Fast & Triggering Remediation**:
-  - If any linter detects errors, the workflow marks the job as failed and automatically attaches the **`lint-failed`** label to the PR.
-  - If all linters pass (or after autonomous fixes are applied), it clears the `lint-failed` label.
+The reusable workflow is a thin adapter around that command. It checks out the
+exact head SHA and preserves command/setup failures as native GitHub job
+failures. A missing configured command is an error, not a reason to select
+another tool or silently pass.
 
----
+Brief logs and findings help diagnose the failure and guide repair. They do
+not determine the result: the orchestrator neither searches for error-like
+words in logs nor infers success from an empty diagnostic excerpt.
 
-## 2. Autonomous `gh-aw` Remediation Loop (`.github/workflows/pr-lint-fixer.md`)
+Secret scanning is a separate [security check](pr-security-and-fixer.md), not
+an implied property of passing lint.
 
-When formatting or style issues break the build, this GitHub Agentic Workflow automatically remediates the files rather than forcing developer context-switching.
+## Repair and revalidation
 
-- **Trigger**: Activates automatically when the **`lint-failed`** label is added to a PR (or manually via `workflow_dispatch`).
-- **Log & Code Analysis**:
-  - Inspects `gh pr diff` and recent linter failure logs from `pr-lint.yml`.
-  - Pinpoints exact syntax, whitespace, import ordering, or style discrepancies reported by the linter.
-- **Safe Outputs Execution**:
-  - `push-to-pull-request-branch`: Commits and pushes the clean formatting and lint fixes directly to the author's PR branch.
-  - `add-comment`: Posts a summary of which files were formatted and which lint rules were corrected.
-  - `remove-labels`: Removes the `lint-failed` label to unblock the gatekeeper.
+The pipeline selects from native **`needs.<gate>.result`** failures. In particular,
+**`needs.lint.result == 'failure'`**, not the presence of `lint-failed`, makes
+lint eligible. If lint is selected and identity/state/budget guards pass, it calls
+[`pr-repair.md`](../.github/workflows/pr-repair.md), compiled to
+`pr-repair.lock.yml` via `workflow_call` with that gate's findings. Repairs should address the repository's reported rules
+without unrelated changes or weakening the check configuration.
+
+**Lint and formatting are not exceptions:** every automated lint file change
+must have its own scoped repair PR, just like all other automated file repairs.
+No direct feature-branch push, amendment of the original feature commits, or
+"small formatting fix" shortcut is allowed.
+
+The agent publishes only the next repair PR; native creation output supplies its
+identity. The first repair targets feature and later repairs target the preceding
+repair branch. The feature PR targets `main` outside the native stack, whose
+trunk is feature. `pr-validate-repair.yml` checks bot provenance, same-repository
+immutable root/member identities, expected membership/order, and
+bounded/protected file scope.
+
+Scoped validation reruns lint and previously green project gates. Inherited
+red or unexecuted gates remain unresolved, not certified regression-free.
+After scoped success, the controller registers a native repair-only stack at two
+PRs or appends later layers; it does not merge. A single repair remains ordinary.
+Typed state from a verified prior attempt of the same workflow records root
+snapshot, ordered entries/check IDs, native stack number, repair round, and
+**`initial_head_sha`** captured at bounded-cycle start. Native landing never
+changes that initial baseline.
+
+The next run checks the full current candidate. Only all-green candidate gates
+permit guarded asynchronous squash landing into feature, for either the native
+stack or single ordinary repair. The controller pins the top, verifies every
+root/member snapshot, order, target, and result. Its feature comment links the
+initial baseline, a baseline-to-final feature comparison, and each repair PR
+and per-layer squash SHA/revert target. The combined feature diff includes the
+merged lint changes; those links distinguish original work from automated
+additions. Bounded explicit dispatch then reruns all gates at the actual updated
+feature head. Candidate success cannot certify an unmerged feature PR as
+**`PR Quality / Ready for review`**.
+
+Feature-branch requirements can block intermediate layers; never weaken them.
+Queues are blocked. Stale snapshots, conflicts, scope errors, API/poll failures,
+or missing state stop with stacks and branches preserved; manual handling replaces
+automatic unstack/recreate/rebase/force-push recovery.
+
+`pr-status.yml` adds `lint-failed` from candidate failures and clears it only from
+passing actual current-parent checks. Skipped/cancelled or missing results retain
+unresolved status. Labels never trigger or authorize repair: token-created label
+events generally do not start runs, and mutable labels carry no SHA-bound
+diagnostics. Native results retain run/candidate identity; see
+[the trigger rationale](remediation-chaining.md#what-triggers-a-repair-and-why-not-labels).
+Six repair calls total include
+metadata; landing does not reset the budget. See
+[native chaining](remediation-chaining.md) and
+[fresh human approval before main](pr-review-and-consolidation.md).
