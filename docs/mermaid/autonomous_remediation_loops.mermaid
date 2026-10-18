@@ -1,41 +1,33 @@
 flowchart TD
-    Start([PR Created / Synchronized]) --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
+    Start["Capture initial_head_sha at clean cycle start or verify same-workflow continuation"] --> State["Typed root snapshot, initial_head_sha, ordered entries/check IDs, stack number, round<br/>Preserve initial baseline through landing; never infer from logs"]
+    State --> Context["Feature PR targets main OUTSIDE native stack<br/>Candidate is feature initially, top repair while pending"]
+    Context --> Checks["Full current-candidate validation<br/>Compilation, metadata, lint, build, then tests/security/docs"]
+    Checks --> Labels["Add candidate failure labels on feature<br/>Clear ONLY passing actual current-parent checks"]
+    Checks --> Green{"All candidate gates green?"}
+    Green -->|No| Budget{"Below 6 repair calls total including metadata?<br/>Valid evidence, no unknown bot repairs or changed snapshots?"}
+    Budget -->|No| Stop["Stop explicitly; manual handling<br/>Preserve stacks and branches; no unstack/recreate/rebase/force-push"]
+    Budget -->|Yes| Select["Native needs gate result failure selects repair; workflow_call<br/>Consume one durable call; labels are not triggers"]
+    Select -->|Metadata| Metadata["Update root title/body only; explicit audit comment<br/>Verify real change and unchanged code/baseline; no fake file PR"]
+    Metadata --> Save["Persist verified transition and round for next attempt"]
+    Select -->|"ALL file repairs including lint"| Publish["Agent publishes next separate repair PR only; no direct feature push<br/>First base: feature; later base: preceding repair branch"]
+    Publish --> Inspect["Validator verifies bot/native identity and all snapshots<br/>Expected membership/order/trunk, protected paths, bounded scope"]
+    Inspect --> Scoped["Selected gate plus previously green project gates<br/>Inherited red/unexecuted gates remain unresolved"]
+    Scoped -->|Required checks pass| Register["Controller pr-register-repair-stack.yml<br/>Ordinary at 1; register real native stack at 2; append later"]
+    Register --> NoMerge["Read back all native membership/order/trunk<br/>Do NOT merge after scoped success"]
+    NoMerge --> Save
+    Save --> Dispatch["Bounded explicit dispatch of next exact revision"]
+    Dispatch --> State
 
-    subgraph Stage1 [Stage 1: Pre-Flight & Syntax Validation ~30s]
-        Pipeline --> Gate[1. PR Gatekeeper\n.github/workflows/pr-gatekeeper.yml\nBranch name & PR template]
-        Gate -->|Pass| Lint[2. Polyglot Linters\n.github/workflows/pr-lint.yml\nSuper-Linter / ESLint / Prettier]
-        Gate -->|Fail| GateFail[Apply 'needs-metadata'\nHalt pipeline]
-        Lint -->|Fail| LintFail[Apply 'lint-failed'\nHalt pipeline]
-    end
+    Green -->|Yes| Pending{"Unmerged repairs?"}
+    Pending -->|Yes| Guard["Controller pr-land-repair-stack.yml pins top SHA<br/>Verify every root/member snapshot, check, order, stack number, feature trunk"]
+    Guard --> Rules["Enforce feature rules on every member<br/>Intermediate layers may block; never weaken rules; queues blocked"]
+    Rules --> Land["Guarded native asynchronous squash landing into feature only<br/>Entire stack atomic ascending; single ordinary repair uses same API"]
+    Land --> Poll["Bounded poll; confirm EACH repair merged and squash SHA<br/>Verify actual feature head and landing history"]
+    Poll --> Audit["Feature comment links initial_head_sha, baseline-to-final compare, EACH PR and squash SHA<br/>Distinguish original vs automated additions; retain baseline, branches, round"]
+    Audit --> Parent["Record verified landed transition<br/>Rerun compilation and ALL parent gates at actual updated feature head"]
+    Parent --> State
+    Pending -->|No| Ready["PR Quality / Ready for review<br/>Actual-parent results and live snapshot only; no unmerged candidate certification"]
+    Ready --> Review["Fresh human approval plus required readiness before main<br/>No queue or rule bypass"]
 
-    subgraph Stage2 [Stage 2: Compilation & Build ~30s]
-        Lint -->|Pass| Build[3. Build Verification\n.github/workflows/pr-build.yml\nTypeScript, Go, Rust, .NET, Java]
-        Build -->|Fail| BuildFail[Apply 'build-failed'\nHalt pipeline]
-    end
-
-    subgraph Stage3 [Stage 3: Deep Verification in Parallel ~1-2m]
-        Build -->|Pass| ParallelStage{Parallel Execution}
-        ParallelStage --> Test[4. Automated Tests & Coverage\n.github/workflows/pr-test.yml\nDiff-scoped >= 80% coverage]
-        ParallelStage --> Sec[5. Security & Quality\n.github/workflows/pr-security.yml\nCodeQL SAST, Dep Review, Secrets]
-        ParallelStage --> DocEval[6. Semantic Doc Evaluation\n.github/workflows/pr-doc-updater.md\ngh-aw agentic evaluator]
-    end
-
-    %% Direct fix loops (no stacked PR)
-    GateFail --> AgentMeta[🤖 PR Validation Agent\nUpdates title & description via API] --> Start
-    LintFail --> AgentLint[🤖 PR Lint Fixer\nPushes formatting fix directly to branch] --> Start
-
-    %% Stacked PR remediation loops (auto-merged)
-    Test -->|< 80% Coverage| CovFail[Apply 'test-required'] --> AgentTest[🤖 PR Test Generator\nOpens Stacked PR]
-    Sec -->|Vulnerabilities| SecFail[Apply 'codeql-alert' / 'dependency-alert'] --> AgentSec[🤖 PR Security Fixers\nOpens Stacked PR]
-    DocEval -->|Docs Missing for APIs| DocFail[Apply 'docs-required'] --> AgentDoc[🤖 PR Documentation Updater\nOpens Stacked PR]
-
-    AgentTest & AgentSec & AgentDoc --> StackedPR[Stacked PR on Feature Branch\nTagged: test/doc/security-remediation]
-    StackedPR --> AutoMerge[Auto-Merge Stacked PR into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquash, delete branch, clear labels, post audit link]
-    AutoMerge --> Start
-
-    %% Review Stage
-    Test & Sec & DocEval -->|All Gates Pass & Labels Cleared| Stage4[Stage 4: PR Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
-    Stage4 --> PostSummary[Post Consolidated Summary on PR\nAudit links to all auto-merged fixes]
-    Stage4 --> AICodeReview[Request GitHub Copilot Code Review\nAI architectural & semantic analysis]
-    AICodeReview --> HumanReview[Developer Final Sign-Off & Review\nSingle review session for all changes]
-    HumanReview --> Merge([🚀 Merge PR into Main])
+    State & Inspect & Scoped & Register & Guard & Rules & Poll & Audit -->|"Missing state/evidence, changed snapshot, conflict, scope, API/poll failure"| Stop
+    External["Human edit or partial external landing"] --> Stop

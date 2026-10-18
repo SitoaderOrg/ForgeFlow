@@ -1,111 +1,123 @@
-# Step 5: GitHub Code Security & Autonomous Remediation
+# Repository Security Checks and Native Repair
 
-This step implements security gates powered by **GitHub Code Security** combined with specialized, autonomous AI remediation loops for vulnerable dependencies, static code vulnerabilities, and exposed secrets.
-
----
-
-## Architecture Overview
+[`pr-security.yml`](../.github/workflows/pr-security.yml) is a reusable
+`workflow_call` gate after build, alongside tests and documentation. The repository
+explicitly configures its scanners and policies; the lifecycle does not discover
+languages or generate a scanning matrix. It consumes native GitHub check
+results and passes brief diagnostics to the repair planner.
 
 ```mermaid
 flowchart TD
-    BuildPass[Stage 2 Passed: Build OK] --> SecGate[Stage 3b: Security Gatekeeper\n.github/workflows/pr-security.yml]
-    
-    subgraph GitHub_Code_Security [GitHub Code Security Engines]
-        SecGate --> DepReview[Dependency Review Action\nChecks PR diff for CVEs / license issues]
-        SecGate --> CodeQL[CodeQL SAST Analysis\nScans code for security vulnerabilities]
-        SecGate --> SecScan[Secret Protection & Scanning\nChecks for exposed credentials & tokens]
-    end
-
-    DepReview -->|❌ High/Crit CVE| AddDepLabel[Apply 'dependency-alert' Label]
-    CodeQL -->|❌ Code Vulnerability| AddCodeqlLabel[Apply 'codeql-alert' Label]
-    SecScan -->|❌ Hardcoded Secret| AddSecretLabel[Apply 'secret-alert' Label]
-
-    AddDepLabel --> DepFixer[Autonomous Dependency Fixer\n.github/workflows/pr-dependency-fixer.md]
-    DepFixer --> BumpDep[Bump to Minimum Secure Versions in Manifest]
-    DepFixer --> StackedPRDep[Create Stacked PR: security-remediation]
-
-    AddCodeqlLabel --> CodeqlFixer[Autonomous CodeQL Fixer\n.github/workflows/pr-codeql-fixer.md]
-    CodeqlFixer --> AutofixCheck[Query Copilot Autofix or Synthesize Fix]
-    CodeqlFixer --> StackedPRCodeql[Create Stacked PR: security-remediation]
-
-    AddSecretLabel --> SecretFixer[Autonomous Secret Fixer\n.github/workflows/pr-secret-fixer.md]
-    SecretFixer --> ScrubSecret[Scrub Secrets & Add Env Var Lookups]
-    SecretFixer --> StackedPRSecret[Create Stacked PR: security-remediation]
-
-    StackedPRDep & StackedPRCodeql & StackedPRSecret --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit, clears security labels & posts audit link]
-
-    AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
-```
+    Build["Repository build passed"] --> Checks["Run explicitly configured security checks"]
+    Checks --> Scan["Source security scan at immutable head"]
+    Checks --> Dependency["Dependency review against immutable base/head"]
+    Checks --> Secrets["Separate secret scan"]
+    Scan & Dependency & Secrets --> Result["Require native results of configured checks"]
+    Result -->|Success| Ready["Participate in PR Quality / Ready for review"]
+    Result -->|"Native needs gate result is failure"| Findings["Select from native run/candidate result<br/>Brief security diagnostics; not a label trigger"]
+    Findings -->|"Security selected; fewer than 6 calls"| Repair["Publish next repair: base feature first, preceding repair later"]
+    Repair --> Scoped["Verify bot identity, expected stack, protected scope<br/>Security plus previously green project gates"]
+    Scoped -->|Pass| Register["Controller: ordinary at 1; native at 2; append later<br/>Persist state and round; no merge"]
+    Register --> Candidate["Next run: full current-candidate gates"]
+    Candidate -->|All green| Land["Guarded asynchronous squash landing into feature<br/>Feature PR outside stack; verify all snapshots and results"]
+    Land --> Recheck["Comment links initial_head_sha, baseline-to-final compare, EACH PR and squash SHA<br/>Preserve baseline and round; rerun all parent gates at actual updated feature head"]
+    Scoped & Register & Land -->|"Failure, stale, or unknown"| Stop["Stop; preserve stack and branches; manual handling"]
 ```
 
----
+## Explicit security responsibilities
 
-## 1. Deterministic Security Gate (`.github/workflows/pr-security.yml`)
+The repository's scanner/check definitions are the source of truth for commands,
+scan scope, policy thresholds, reports, and required permissions. The conceptual
+roles are:
 
-The deterministic security gate leverages native GitHub Code Security features:
+- **Source security scanning:** assess code at the immutable head using the
+  configured scanner and its blocking policy.
+- **Dependency review:** assess dependency changes against the captured base
+  and head, applying the repository's vulnerability and other configured policies.
+- **Secret scanning:** run an explicitly configured secret check independently
+  of lint. Passing lint does not establish that secrets were checked.
 
-- **Dynamic Environment Detection**:
-  - Automatically identifies whether the repository contains CodeQL-supported languages (`javascript-typescript`, `python`, `go`, `java-kotlin`, `csharp`, `ruby`, `c-cpp`, `swift`) and dependency manifests (`package.json`, `requirements.txt`, `go.mod`, `pom.xml`, `Cargo.lock`, etc.).
-  - Skips jobs cleanly if no relevant source files exist, guaranteeing polyglot compatibility without false failures.
-- **GitHub Dependency Review (`actions/dependency-review-action`)**:
-  - Evaluates changes to dependency manifests introduced in the pull request against GitHub's Advisory Database.
-  - Blocks high- and critical-severity CVEs from entering the codebase.
-  - Applies the **`dependency-alert`** label on failure.
-- **GitHub CodeQL SAST (`github/codeql-action`)**:
-  - Runs a per-language matrix with a supported build mode (`none` for interpreted languages, `autobuild` for Go/Swift) and the `security-extended` query suite.
-  - CodeQL's analyze step succeeds even when it finds vulnerabilities, so the gate evaluates the SARIF output itself and fails on any result whose `security-severity` is at or above `CODEQL_MIN_SECURITY_SEVERITY` (repository variable, default `4.0` = medium).
-  - Results are not uploaded (`upload: never`) because repositories using CodeQL *default setup* reject advanced-configuration uploads; default setup still publishes alerts for the PR.
-  - Applies the **`codeql-alert`** label on failure and dispatches the CodeQL fixer with the rule id, severity, message and `file:line` of each finding.
-- **GitHub Secret Protection & Scanning**:
-  - Repositories configure native GitHub Push Protection to reject hardcoded secrets server-side at `git push`.
-  - Secrets introduced by the PR diff are caught by Super-Linter's **GITLEAKS** linter in the lint stage.
-  - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. The **`secret-alert`** label and `pr-secret-fixer.md` remain available for manual dispatch.
-- **Autonomous Label Management**:
-  - Each label is independent: if only one check fails, only its specific alert label is attached.
-  - The remediation relay auto-merges the stacked PR, clears the labels and re-runs the pipeline on the feature branch.
+These roles are not a promise that every language, dependency ecosystem, or
+vulnerability class is covered. Adding or changing a scanner is an explicit
+repository configuration decision, not an inference made by the lifecycle.
+License or severity guarantees should be stated only when the corresponding
+policy is actually enforced by the configured check.
 
----
+## Checks enforce policy; the pipeline consumes results
 
-## 2. Stacked PR Autonomous Remediation Loops
+Each scanner integration must translate blocking findings into a failing native
+result. A scanner that completed execution may still have found vulnerabilities;
+the configured integration, not the orchestration layer, enforces that policy.
+Required-report validation also belongs to the scanner integration.
 
-Rather than modifying the contributor's in-flight feature branch directly without consent, remediators propose their solutions as **Stacked Pull Requests**:
+The lifecycle does not use universal report parsers, count alert-like log lines,
+or treat a lack of diagnostic text as success. Brief findings are diagnostic
+context only. Scanner, setup, permission, service, or dependency-review errors
+must remain failures rather than being swallowed as an empty clean result.
+Missing, skipped, or cancelled required checks cannot establish readiness.
 
-```mermaid
-gitGraph
-   commit id: "main base"
-   branch "feat/my-feature"
-   commit id: "developer code (vulnerability)"
-   branch "fix/security-remediation"
-   commit id: "AI security remediation"
-   checkout "feat/my-feature"
-   merge "fix/security-remediation" id: "dev merges stacked PR"
-   checkout main
-   merge "feat/my-feature" id: "merge to main"
-```
+Configure only the permissions and services required by the selected checks.
+Repository-wide alert state is not automatically evidence about the current
+PR revision. Changes to check policy and protected workflow files require
+human review, not autonomous weakening of enforcement.
 
-### 2a. PR Dependency Fixer (`.github/workflows/pr-dependency-fixer.md`)
-- **Trigger**: Activates on the **`dependency-alert`** label.
-- **Batched Remediation**: Reads Dependency Review failure logs and updates all vulnerable packages across manifests in a single stacked PR.
-- **Itemized Commit-Style Structure**:
-  - The PR body details each package bump with a distinct commit title (e.g. `fix(deps): bump <package> from <old> to <new> to resolve <CVE>`), CVE/GHSA advisory details, and version deltas.
-  - Opens the stacked PR against the developer's feature branch and adds a notification comment on the parent PR.
+## Secrets and operational responsibility
 
-### 2b. PR CodeQL Fixer (`.github/workflows/pr-codeql-fixer.md`)
-- **Trigger**: Activates on the **`codeql-alert`** label.
-- **Copilot Autofix Integration**:
-  - Queries `gh api repos/{owner}/{repo}/code-scanning/alerts/<alert-number>/autofix` and PR review suggestions for an existing Copilot Autofix recommendation.
-  - If a valid Copilot Autofix suggestion exists, it incorporates the patch into the remediation.
-  - If Copilot Autofix is not enabled or produces no fix, the agent performs autonomous defensive refactoring using CodeQL taint analysis.
-- **Itemized Commit-Style Structure**:
-  - Remediates all open CodeQL alerts together in a single stacked PR.
-  - The PR body documents each vulnerability resolved with a distinct commit title (e.g. `fix(security): sanitize input to prevent path traversal in <file>`), CWE number, sink, and defensive pattern.
+The explicit secret scanner is separate from lint and from independently
+configured repository push protection. This refactor does not enable repository
+security settings automatically.
 
-### 2c. PR Secret Fixer (`.github/workflows/pr-secret-fixer.md`)
-- **Trigger**: Activates on the **`secret-alert`** label.
-- **Secret Scrubbing**:
-  - Identifies exposed secrets from secret scanning alerts.
-  - Scrubs hardcoded credentials from source files and replaces them with standard environment variable lookups (`process.env.SECRET_NAME`, `os.environ.get(...)`).
-  - Adds dummy placeholder entries in `.env.example`.
-- **Rotation Warning & Stacked PR**:
-  - Opens a stacked PR targeting the author's feature branch with itemized commit titles for each scrubbed secret.
-  - Posts a high-priority warning comment on the parent PR reminding the author to **immediately revoke and rotate the exposed credential** with the issuing provider.
+If a credential is exposed, a human must revoke and rotate it with the issuing
+provider. Removing the value from current source does not invalidate it or
+remove it from existing history. An automated code repair cannot complete that
+external operational obligation.
+
+## Scoped repair and fresh validation
+
+Native `needs.<gate>.result == 'failure'`, not a failure label, makes security
+eligible for repair. The single [`pr-repair.md`](../.github/workflows/pr-repair.md)
+workflow, compiled to `pr-repair.lock.yml`, receives the selected security
+findings through `workflow_call` after controller guards pass.
+It may correct
+insecure code, dependencies, or exposed values within the repository's allowed
+repair scope, but cannot suppress findings or disable checks to obtain a pass.
+
+The agent publishes only the next repair PR; native creation output supplies its
+identity. The first repair targets feature and later repairs target the preceding
+repair branch. The feature PR targets `main` outside the native stack, whose
+trunk is feature. Validation verifies bot provenance, same-repository immutable
+root/member snapshots, expected membership/order, and bounded/protected scope.
+
+It reruns security and previously green project gates. Other inherited failures
+or unexecuted gates remain unresolved, not certified regression-free. Scoped
+success permits controller registration at two repairs or append of later
+layers, **not immediate merge**. A single repair stays ordinary. Typed state
+from a verified prior attempt of the same workflow records root snapshot,
+ordered entries/check IDs, native stack number, consumed round, and the
+cycle-start `initial_head_sha`, preserved through native landing.
+
+The next run evaluates the full current candidate. Only all-green candidate
+gates permit guarded asynchronous squash landing into feature, after pinning
+the top and verifying every root/member snapshot, order, target, and applicable
+rules. A single ordinary repair uses the same asynchronous API. Confirm every
+repair's merged result and squash SHA, then comment on feature linking the
+initial baseline, a SHA-pinned baseline-to-final comparison, each repair PR
+and its per-layer squash SHA/revert target, and validation evidence. Those
+references distinguish feature-original work from automated additions within
+the combined feature diff. Full parent revalidation is still pending.
+
+Feature-branch requirements may block intermediate layers; never weaken them.
+Queues are blocked. Stale snapshots, conflicts, scope failures, API/poll failures,
+or missing state stop explicitly for manual handling. Preserve stacks and
+branches without unstack/recreate/rebase/force-push recovery.
+
+Six repair calls total include metadata; landing does not reset the budget.
+Bounded explicit dispatch validates each next exact candidate or feature head.
+After landing, all parent gates rerun at the actual updated feature head.
+Candidate results cannot certify the unmerged parent as
+**`PR Quality / Ready for review`**; compilation, all six quality gates, and live
+head/base/metadata must pass there. `pr-status.yml` adds `security-failed` and
+source/dependency/secret labels from candidate failures, clearing each only from
+passing actual current-parent component checks. Missing or skipped/cancelled
+evidence retains unresolved labels. Labels never authorize actions, and `main`
+still requires fresh human approval. See [native chaining](remediation-chaining.md).

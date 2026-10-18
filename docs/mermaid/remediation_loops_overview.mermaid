@@ -1,30 +1,22 @@
 flowchart LR
-    subgraph Orchestrator [PR Pipeline DAG]
-        S1[Stage 1: Gatekeeper & Lint]
-        S2[Stage 2: Build Verification]
-        S3[Stage 3: Tests, Security, Docs]
-    end
+    State["Capture initial_head_sha at clean cycle start or verify prior same-workflow typed state<br/>Root snapshot, preserved initial baseline, ordered entries/check IDs, stack number, round"] --> Full["Full current-candidate checks<br/>Feature initially; top repair while unmerged"]
+    Full --> Labels["Add candidate failure labels on feature<br/>Clear ONLY passing actual current-parent checks"]
+    Full --> Green{"All candidate gates green?"}
+    Green -->|No| Select["Native needs gate result failure selects repair via workflow_call, not labels<br/>Within 6 calls TOTAL including metadata; no reset after landing"]
+    Select -->|Metadata| Metadata["Update root title/body only; explicit audit comment<br/>Verify change and unchanged code/baseline; no fake file PR"]
+    Select -->|"ALL file repairs including lint"| Publish["Agent publishes next separate repair PR only; no direct feature push<br/>First base feature; later base preceding repair"]
+    Publish --> Scoped["Validate identity, protected scope, expected stack<br/>Selected plus previously green gates; other gates unresolved"]
+    Scoped -->|Pass| Register["Controller registers native stack at 2 or appends later<br/>Single repair ordinary; no immediate merge"]
+    Register --> Persist["Verify state; bounded explicit dispatch checks full next exact candidate"]
+    Metadata --> Persist
+    Persist --> State
 
-    subgraph DirectFix [Direct Fixes]
-        A1[Agent: Fix Metadata via API]
-        A2[Agent: Commit Lint Fix to Branch]
-    end
+    Green -->|Yes| Pending{"Unmerged repairs?"}
+    Pending -->|Yes| Land["Controller pins top, verifies EVERY root/member snapshot, check, order, feature trunk<br/>Native async squash landing; atomic ascending stack; single uses same API"]
+    Land --> Audit["Poll/verify result; comment links initial_head_sha, baseline-to-final compare, EACH PR and squash SHA<br/>Distinguish original vs automated additions; preserve baseline, branches, round"]
+    Audit --> Parent["Rerun ALL parent gates at actual updated feature head<br/>Candidate success cannot certify unmerged feature"]
+    Parent --> State
+    Pending -->|No| Ready["Actual-parent Ready for review<br/>Feature PR to main OUTSIDE stack; fresh human approval required"]
 
-    subgraph StackedRemediation [Autonomous Stacked Remediation]
-        direction TB
-        A4[Agent: Generate Unit Tests]
-        A3[Agent / Autofix: Patch Vulns]
-        A5[Agent: Generate Docs]
-        StackedMerge[Auto-Merge & Link to Parent PR]
-    end
-
-    S1 -->|needs-metadata| A1 -->|Update PR| S1
-    S1 -->|lint-failed| A2 -->|Commit Fix| S1
-    S1 -->|Pass| S2 -->|Pass| S3
-
-    S3 -->|test-required| A4 --> StackedMerge
-    S3 -->|security alerts| A3 --> StackedMerge
-    S3 -->|docs-required| A5 --> StackedMerge
-    StackedMerge -->|Squash, clear label & audit link| S1
-
-    S3 -->|All Pass & Settled| Dispatcher[Stage 4: Review Dispatcher] --> Review[Developer Final Sign-Off & Merge]
+    State & Select & Scoped & Register & Land & Audit -->|"Changed snapshot, conflict, scope, budget, API/poll, or missing-state failure"| Stop["Stop explicitly; manual handling, also for human edits or partial external landing<br/>Preserve stacks/branches; no unstack/recreate/rebase/force-push"]
+    Rules["Feature rules apply to every member and may block intermediate layers<br/>Never weaken or bypass; merge queues blocked"] --> Land

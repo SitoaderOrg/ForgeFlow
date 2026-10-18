@@ -1,39 +1,47 @@
 flowchart TD
-    PR[Pull Request Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
+    Event["Supported feature-PR bootstrap or deliberate clean start"] --> Initial["No unreconciled bot repairs; initial round 0<br/>Capture initial_head_sha once for origin audit"]
+    Initial --> Context
+    Resume["Verified prior attempt of SAME workflow<br/>Typed root snapshot, initial_head_sha, ordered entries/check IDs, stack number, round"] --> Context
 
-    subgraph Stage1 [Stage 1: Pre-Flight & Syntax Gate ~30s]
-        Pipeline --> Gate[1. PR Gatekeeper\nMetadata & branch convention]
-        Gate -->|Pass| Lint[2. Linters & Formatters\nSuper-Linter / ESLint / Prettier]
-        Gate -->|Fail: needs-metadata| FixMeta[🤖 PR Validation Agent\nDirect API Update]
-        Lint -->|Fail: lint-failed| FixLint[🤖 PR Lint Fixer\nDirect Commit Push]
+    subgraph Validation["Full validation: language-neutral repository checks"]
+        Context["pr-pipeline.yml: verify ref, github.sha, root and member snapshots<br/>Feature PR to main stays OUTSIDE native repair stack"]
+        Context --> Target["Use feature head initially or after landing<br/>Use complete top candidate head while repairs remain unmerged"]
+        Target --> Compile["Workflow compilation against root base<br/>Skip compiler work only if immutable workflow diff is empty"]
+        Compile -->|Pass| Metadata["Root feature PR metadata policy"]
+        Compile -->|Fail| PolicyStop["Human policy correction; repair blocked"]
+        Metadata -->|Pass| Lint["Repository lint check"]
+        Lint -->|Pass| Build["Repository build check"]
+        Build -->|Pass| Tests["Repository tests and coverage policy"]
+        Build -->|Pass| Security["Explicit source, dependency, and secret checks"]
+        Build -->|Pass| Docs["Always call documentation reviewer for complete feature change<br/>Version-2 decision: not_needed/sufficient pass; missing/uncertain fail"]
+        Compile & Metadata & Lint & Build & Tests & Security & Docs --> Green{"All mandatory candidate results successful and current?"}
     end
 
-    subgraph Stage2 [Stage 2: Build Verification ~30s]
-        Lint -->|Pass| Build[3. Build & Compilation Gate\nNode/TS, Go, Rust, Java, .NET]
-        Build -->|Fail: build-failed| BlockBuild[❌ Pipeline Halted]
-    end
+    Compile & Metadata & Lint & Build & Tests & Security & Docs --> Status["pr-status.yml: add candidate failure labels on feature<br/>Clear ONLY passing actual current-parent checks; labels never authorize"]
+    Green -->|No| Budget{"Repairable failure, valid evidence, below 6 calls total?<br/>No unknown bot repairs; never adopt PR-list results"}
+    Budget -->|No| Stop["Explicit stop; preserve stacks and branches<br/>Manual handling; no unstack/recreate/rebase/force-push recovery"]
+    Budget -->|Yes| Select["Native needs gate result failure selects repair; workflow_call<br/>Consume one call including metadata; labels are not triggers"]
+    Select -->|Metadata| Update["Root title/body update and explicit audit comment; no fake file PR<br/>Verify progress with code/base/members and initial baseline unchanged"]
+    Select -->|"ALL file repairs including lint"| Publish["pr-repair.lock.yml publishes next separate repair PR only; no direct feature push<br/>First base feature; later base preceding repair"]
+    Publish --> Inspect["pr-validate-repair.yml: native identity, bot provenance<br/>Exact snapshots, expected membership/order/trunk, bounded/protected scope"]
+    Inspect --> Scoped["Selected gate plus previously green project gates<br/>Other red/unexecuted gates remain unresolved"]
+    Scoped -->|Required scoped checks pass| Register["pr-register-repair-stack.yml: controller metadata only<br/>Ordinary at 1; real native stack at 2; append later; NO merge"]
+    Register --> Save["Verify native state and persist typed continuation"]
+    Update --> Save
+    Save --> Dispatch["Bounded explicit dispatch for next exact revision"]
+    Dispatch --> Resume
 
-    subgraph Stage3 [Stage 3: Deep Verification in Parallel ~1-2m]
-        Build -->|Pass| Tests[4. Tests & Coverage Gate\nDiff-scoped >= 80%]
-        Build -->|Pass| Security[5. Code Quality & Security\nCodeQL SAST, Dep Review, Secrets]
-        Build -->|Pass| DocEval[6. Documentation Drift Gate\npr-docs.yml + gh-aw semantic evaluator]
-    end
+    Green -->|Yes| Pending{"Pending unmerged repairs?"}
+    Pending -->|Yes| Guard["pr-land-repair-stack.yml: pin top SHA<br/>Verify EVERY root/member snapshot, check ID, order, stack number, feature target"]
+    Guard --> Rules["Feature trunk rules enforced on every layer<br/>Intermediate requirements may block; queues unsupported and blocked"]
+    Rules --> Land["Native asynchronous squash landing: whole repair group into feature<br/>Atomic ascending order; same guarded API for single ordinary repair"]
+    Land --> Confirm["Bounded polling; verify each merged PR and squash SHA<br/>Verify actual feature head and history"]
+    Confirm --> Audit["Comment links initial_head_sha, baseline-to-final compare, EACH PR and squash SHA<br/>Distinguish original vs automated additions; preserve baseline, branches, round"]
+    Audit --> Parent["Record verified root transition; never reset budget<br/>Dispatch ALL parent gates on actual updated feature head"]
+    Parent --> Resume
 
-    subgraph Auto_Consolidation [Autonomous Remediation & Auto-Merge]
-        Tests -->|test-required| AgentTest[🤖 PR Test Generator]
-        Security -->|alerts| AgentSec[🤖 PR Security Fixers]
-        DocEval -->|docs-required| AgentDoc[🤖 PR Doc Updater]
-        AgentTest & AgentSec & AgentDoc --> StackedPRs[Stacked PRs targeting feature branch]
-        StackedPRs --> AutoConsolidate[7. Auto-Merge Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash into feature branch, clear labels & post audit links]
-    end
-
-    AutoConsolidate --> Pipeline
-    FixMeta & FixLint --> Pipeline
-
-    subgraph Code_Review [Stage 4: Review & Final Sign-Off]
-        Tests & Security & DocEval -->|All Gates Pass & Labels Cleared| Dispatcher[8. PR Review Dispatcher\nPost consolidated summary]
-        Dispatcher --> CopilotReview[GitHub Copilot Code Review\nAI semantic & architecture review\n1-click commit suggestions]
-        CopilotReview --> HumanReview[Human Peer Review & Sign-Off\nSingle review session for all changes]
-    end
-
-    HumanReview --> Merge([🚀 Merge into Main])
+    Pending -->|No| Ready["PR Quality / Ready for review<br/>Actual current-parent evidence only; full live snapshot and no pending repairs"]
+    Ready --> Handoff["pr-review-dispatcher.yml: keep drafts; human review"]
+    Handoff --> Main["Fresh human approval plus required readiness for main<br/>Optional policy-checked auto-merge; queues blocked; no bypass"]
+    Context & Inspect & Scoped & Register & Guard & Rules & Confirm & Audit -->|"Changed snapshot, conflict, scope, API/poll, missing evidence/state"| Stop
+    External["Human editing or partial external landing"] --> Stop
