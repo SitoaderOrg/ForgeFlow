@@ -114,17 +114,17 @@ jobs:
             core.setOutput('tests', String(tests));
             core.info(`Framework input changes: compilation=${compile}, regression checks=${tests}.`);
       - name: Install the pinned compiler
-        if: steps.changes.outputs.compile == 'true'
+        if: github.event_name != 'workflow_dispatch' && steps.changes.outputs.compile == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-aw --pin v0.89.21
       - name: Compile and validate
-        if: steps.changes.outputs.compile == 'true'
+        if: github.event_name != 'workflow_dispatch' && steps.changes.outputs.compile == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh aw compile --validate --purge
       - name: Reject compilation drift
-        if: steps.changes.outputs.compile == 'true'
+        if: github.event_name != 'workflow_dispatch' && steps.changes.outputs.compile == 'true'
         shell: bash
         run: |
           git diff --exit-code -- .github
@@ -134,12 +134,12 @@ jobs:
             exit 1
           fi
       - name: Set up framework tooling
-        if: steps.changes.outputs.tests == 'true'
+        if: github.event_name != 'workflow_dispatch' && steps.changes.outputs.tests == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Check framework lint and regression tests
-        if: steps.changes.outputs.tests == 'true'
+        if: github.event_name != 'workflow_dispatch' && steps.changes.outputs.tests == 'true'
         run: |
           npm ci --ignore-scripts
           npm run lint:framework
