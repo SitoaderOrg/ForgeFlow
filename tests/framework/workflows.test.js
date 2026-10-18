@@ -1165,6 +1165,20 @@ describe('native workflow structure', () => {
     expect(compilation).not.toMatch(/git push|gh pr create|curl.*bash/);
   });
 
+  it('pins the patched secret scanner and enables only Gitleaks', () => {
+    const scan = workflow('pr-security').jobs['secret-scan'].steps.find(
+      (step) => step.name === 'Scan Checked-Out Files for Secrets'
+    );
+    expect(scan.uses).toBe(
+      'super-linter/super-linter/slim@47984f49b4e87383eed97890fe2dca6063bbd9c3'
+    );
+    expect(scan.env).toEqual({
+      RUN_LOCAL: true,
+      VALIDATE_ALL_CODEBASE: true,
+      VALIDATE_GITLEAKS: true
+    });
+  });
+
   it.each(['pr-gatekeeper', 'pr-lint', 'pr-build', 'pr-test', 'pr-security'])(
     '%s exposes findings without dispatch or coordination helpers',
     (name) => {
