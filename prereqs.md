@@ -103,6 +103,9 @@ it never substitutes a direct merge for a queue requirement.
 
 Allow the explicitly declared per-job token permissions. Ordinary code checks use
 read-only repository credentials with checkout credential persistence disabled.
+PR-code jobs do not restore or publish shared npm Actions caches. The separate
+label writer checks out no code and needs both issue-write and PR-write access
+to manage repository labels and attach them to pull requests.
 The repair agent runs read-only; gh-aw's isolated safe-output job receives the
 permissions needed to publish permitted fixes. No PAT or GitHub App credential is
 required for chaining.

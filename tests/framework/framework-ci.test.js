@@ -106,6 +106,9 @@ describe('independent framework change classification', () => {
       ) {
         expect(step.if).toBe("steps.changes.outputs.tests == 'true'");
       }
+      if (step.uses?.startsWith('actions/setup-node@')) {
+        expect(step.with.cache).toBeUndefined();
+      }
     }
     const tests = job.steps.find((step) => step.run?.includes('npm ci'));
     expect(tests.run).toContain('npm ci --ignore-scripts');

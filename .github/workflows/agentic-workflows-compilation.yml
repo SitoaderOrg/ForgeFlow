@@ -138,7 +138,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
       - name: Check framework lint and regression tests
         if: steps.changes.outputs.tests == 'true'
         run: |

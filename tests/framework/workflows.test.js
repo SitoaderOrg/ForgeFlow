@@ -1174,9 +1174,14 @@ describe('native workflow structure', () => {
     );
     expect(scan.env).toEqual({
       RUN_LOCAL: true,
+      DEFAULT_BRANCH: '${{ github.event.repository.default_branch }}',
       VALIDATE_ALL_CODEBASE: true,
       VALIDATE_GITLEAKS: true
     });
+    const checkout = workflow('pr-security').jobs['secret-scan'].steps.find(
+      (step) => step.uses?.startsWith('actions/checkout@')
+    );
+    expect(checkout.with['fetch-depth']).toBe(0);
   });
 
   it.each(['pr-gatekeeper', 'pr-lint', 'pr-build', 'pr-test', 'pr-security'])(
@@ -1204,6 +1209,9 @@ describe('native workflow structure', () => {
           if (step.uses?.startsWith('actions/checkout@')) {
             expect(step.with.ref).toBe('${{ inputs.head_sha }}');
             expect(step.with['persist-credentials']).toBe(false);
+          }
+          if (step.uses?.startsWith('actions/setup-node@')) {
+            expect(step.with.cache).toBeUndefined();
           }
         }
       }
@@ -1745,6 +1753,20 @@ describe('scoped stacked repair safety', () => {
 
 describe('failure labels are visibility, not control', () => {
   const status = workflow('pr-status');
+
+  it('grants the PR label writer both PR and issue permissions without checking out code', () => {
+    expect(status.permissions).toEqual({
+      contents: 'read',
+      'pull-requests': 'write',
+      issues: 'write'
+    });
+    expect(pipeline.jobs.status.permissions).toEqual(status.permissions);
+    expect(
+      status.jobs.labels.steps.some((step) =>
+        step.uses?.startsWith('actions/checkout@')
+      )
+    ).toBe(false);
+  });
 
   it('adds candidate failures but cannot clear labels from candidate-only successes', async () => {
     const gates = passingGates();

@@ -80,6 +80,7 @@ generation consistent; drift verification remains enabled.
 Framework regression checks install the shared root lockfile with
 `npm ci --ignore-scripts`, then run framework lint and tests. All jobs use
 read-only repository permissions and disable persisted checkout credentials.
+They do not restore or publish shared npm Actions caches from PR code execution.
 App-only changes do not install the compiler or framework dependencies.
 
 Code owners must correct framework failures. Automatic app repairs remain
