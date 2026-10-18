@@ -119,7 +119,8 @@ Automatically create a stacked remediation pull request targeting the developer'
    - Call `add-comment` on the parent PR to inform the developer that a stacked remediation PR has been opened with the itemized dependency updates and will be automatically consolidated into their branch. Include the direct link to the stacked PR.
 
 ## Safe Output Rules
-- When calling `create_pull_request`, provide `title`, `body` and (if needed) `base`/`branch` only — do **not** pass a `temporary_id`.
+- Before editing files, create a new branch from the checked-out pull request branch with `git switch -c dependency-fix/pr-${{ github.event.inputs.pr_number }}` and commit your changes there. Call `create_pull_request` with `branch` set to that new branch and `base` set to the pull request's head branch. Never use the pull request's head branch as `branch`: a pull request cannot be stacked on its own branch.
+- Provide only `title`, `body`, `branch` and `base` — do **not** pass a `temporary_id` or `dependencies`.
 - Do not invent or guess URLs for the stacked pull request in comments. Refer to it as "the stacked remediation PR"; the remediation relay posts the exact link once it is merged.
 
 ## Hand Off to the Remediation Relay

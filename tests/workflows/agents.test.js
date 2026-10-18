@@ -92,6 +92,14 @@ describe.each(AGENTS)('%s', (md) => {
     expect(create['title-prefix']).toMatch(
       /^(style|fix|docs|test)(\([\w-]+\))?: $/
     );
+    // gh-aw rejects a stacked PR whose branch is its own base ("circular dependency")
+    const body = loadAgentBody(md);
+    expect(body).toMatch(
+      /git switch -c [\w-]+\/pr-\$\{\{ github\.event\.inputs\.pr_number \}\}/
+    );
+    expect(body).toContain(
+      "Never use the pull request's head branch as `branch`"
+    );
   });
 
   it('is declarative: no scripted steps or custom jobs in the frontmatter', () => {
