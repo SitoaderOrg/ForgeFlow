@@ -1,0 +1,180 @@
+name: Register a Native Repair Stack
+
+on:
+  workflow_call:
+    inputs:
+      state:
+        required: true
+        type: string
+    outputs:
+      state:
+        value: ${{ jobs.register.outputs.state }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+
+jobs:
+  register:
+    name: Verify and register the repair-only chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      state: ${{ steps.register.outputs.state }}
+    steps:
+      - name: Snapshot, register or append, and verify
+        id: register
+        uses: actions/github-script@v7
+        env:
+          STATE: ${{ inputs.state }}
+        with:
+          script: |
+            const { createHash } = require('node:crypto');
+            const state = JSON.parse(process.env.STATE);
+            const positive = value => Number.isSafeInteger(value) && value > 0;
+            const sha = value => typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+            const ref = value => typeof value === 'string' && /^[A-Za-z0-9._/-]+$/.test(value) &&
+              !value.includes('..') && !value.includes('//') && !value.endsWith('.lock');
+            const feature = state?.feature;
+            const repairs = state?.repairs;
+            if (state?.version !== 1 || state.repository !== context.payload.repository.full_name ||
+                !positive(feature?.number) || !ref(feature.head_ref) || !ref(feature.base_ref) ||
+                !sha(feature.head_sha) || !sha(feature.base_sha) || !sha(state.initial_head_sha) ||
+                !/^[0-9a-f]{64}$/.test(feature.metadata_hash) ||
+                feature.head_ref === context.payload.repository.default_branch ||
+                !Number.isInteger(state.round) || state.round < 1 || state.round > 6 ||
+                !Array.isArray(repairs) || !repairs.length || repairs.length > state.round ||
+                (state.stack_number !== null && !positive(state.stack_number))) {
+              throw new Error('Invalid bounded repair-chain state.');
+            }
+            let previous = feature;
+            const numbers = new Set([feature.number]);
+            const refs = new Set([feature.head_ref, feature.base_ref]);
+            for (const repair of repairs) {
+              if (!positive(repair.number) || numbers.has(repair.number) || !ref(repair.head_ref) ||
+                  refs.has(repair.head_ref) || !sha(repair.head_sha) ||
+                  repair.base_ref !== previous.head_ref || repair.base_sha !== previous.head_sha ||
+                  !positive(repair.check_id) || !positive(repair.validation_run_id) ||
+                  !['lint', 'build', 'test', 'security', 'docs'].includes(repair.kind)) {
+                throw new Error('Repair identities, check evidence, or bottom-to-top chain are invalid.');
+              }
+              numbers.add(repair.number);
+              refs.add(repair.head_ref);
+              previous = repair;
+            }
+            if (repairs.length > 2 && state.stack_number === null) {
+              throw new Error('An existing native stack number is required before appending another layer.');
+            }
+            const headers = { 'X-GitHub-Api-Version': '2026-03-10' };
+            const membership = async number => {
+              const { data } = await github.request('GET /repos/{owner}/{repo}/stacks', {
+                ...context.repo, pull_request: number, headers
+              });
+              if (!Array.isArray(data) || data.length > 1 ||
+                  data.some(stack => !positive(stack.number))) throw new Error('Unknown native stack membership.');
+              return data[0]?.number ?? null;
+            };
+            const verifyStack = (stack, entries) => {
+              if (!positive(stack?.number) || stack.base?.ref !== feature.head_ref || stack.open !== true ||
+                  !Array.isArray(stack.pull_requests) || stack.pull_requests.length !== entries.length ||
+                  stack.pull_requests.some((pr, index) => pr.number !== entries[index].number ||
+                    pr.state !== 'open' || pr.draft || pr.merged_at ||
+                    pr.head?.ref !== entries[index].head_ref || pr.head?.sha !== entries[index].head_sha)) {
+                throw new Error('Native stack does not match the exact repair-only membership, target, and snapshots.');
+              }
+            };
+            const snapshot = async () => {
+              const { data: root } = await github.rest.pulls.get({ ...context.repo, pull_number: feature.number });
+              const hash = createHash('sha256').update(JSON.stringify([root.title, root.body || ''])).digest('hex');
+              if (root.state !== 'open' || root.head.repo?.full_name !== state.repository ||
+                  root.base.repo?.full_name !== state.repository || root.head.ref !== feature.head_ref ||
+                  root.head.sha !== feature.head_sha || root.base.ref !== feature.base_ref ||
+                  root.base.sha !== feature.base_sha || hash !== feature.metadata_hash ||
+                  await membership(feature.number) !== null) {
+                throw new Error('Feature PR changed or is itself stacked; it must remain outside the repair stack.');
+              }
+              const { data: trunk } = await github.rest.git.getRef({
+                ...context.repo, ref: `heads/${feature.head_ref}`
+              });
+              if (trunk.object?.sha !== feature.head_sha) throw new Error('Feature branch moved before registration.');
+              const members = [];
+              for (const entry of repairs) {
+                const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: entry.number });
+                if (pr.state !== 'open' || pr.draft || pr.merged || pr.auto_merge ||
+                    pr.user?.login !== 'github-actions[bot]' || pr.user?.type !== 'Bot' ||
+                    pr.head.repo?.full_name !== state.repository || pr.base.repo?.full_name !== state.repository ||
+                    pr.head.ref !== entry.head_ref || pr.head.sha !== entry.head_sha ||
+                    pr.base.ref !== entry.base_ref || pr.base.sha !== entry.base_sha) {
+                  throw new Error(`Repair #${entry.number} changed or is not an eligible native-published layer.`);
+                }
+                const { data: live } = await github.rest.git.getRef({
+                  ...context.repo, ref: `heads/${entry.head_ref}`
+                });
+                if (live.object?.sha !== entry.head_sha) throw new Error(`Repair #${entry.number} branch moved.`);
+                const { data: check } = await github.rest.checks.get({ ...context.repo, check_run_id: entry.check_id });
+                if (check.name !== 'Scoped repair validation' || check.head_sha !== entry.head_sha ||
+                    check.status !== 'completed' || check.conclusion !== 'success' ||
+                    check.app?.slug !== 'github-actions' ||
+                    check.details_url !== `${context.serverUrl}/${state.repository}/actions/runs/${entry.validation_run_id}`) {
+                  throw new Error(`Repair #${entry.number} lacks matching native scoped-check evidence.`);
+                }
+                members.push(await membership(entry.number));
+              }
+              return members;
+            };
+            let members = await snapshot();
+            if (repairs.length === 1) {
+              if (state.stack_number !== null || members[0] !== null) {
+                throw new Error('A single repair must remain standalone, not part of another native stack.');
+              }
+              core.setOutput('state', JSON.stringify(state));
+              return;
+            }
+            let number = state.stack_number;
+            let complete = false;
+            if (number === null && members.every(member => positive(member) && member === members[0])) {
+              number = members[0];
+            }
+            if (number !== null) {
+              const { data: stack } = await github.request('GET /repos/{owner}/{repo}/stacks/{stack_number}', {
+                ...context.repo, stack_number: number, headers
+              });
+              complete = stack.pull_requests?.length === repairs.length;
+              verifyStack(stack, complete ? repairs : repairs.slice(0, -1));
+              if (stack.number !== number || members.some((member, index) =>
+                member !== (complete || index < repairs.length - 1 ? number : null))) {
+                throw new Error('Unexpected membership while extending the recorded native stack.');
+              }
+            } else if (members.some(member => member !== null)) {
+              throw new Error('Cannot adopt unrelated or partially matching native stacks.');
+            }
+            const again = await snapshot();
+            if (JSON.stringify(again) !== JSON.stringify(members)) throw new Error('Native membership changed before registration.');
+            if (number !== null) {
+              const { data: live } = await github.request('GET /repos/{owner}/{repo}/stacks/{stack_number}', {
+                ...context.repo, stack_number: number, headers
+              });
+              verifyStack(live, complete ? repairs : repairs.slice(0, -1));
+            }
+            if (!complete) {
+              const { data: registered } = await github.request(number === null
+                ? 'POST /repos/{owner}/{repo}/stacks'
+                : 'POST /repos/{owner}/{repo}/stacks/{stack_number}/add', {
+                ...context.repo, ...(number === null ? {} : { stack_number: number }), headers,
+                pull_requests: number === null ? repairs.map(pr => pr.number) : [repairs.at(-1).number]
+              });
+              verifyStack(registered, repairs);
+              if (number !== null && registered.number !== number) throw new Error('Native stack identity changed during append.');
+              number = registered.number;
+            }
+            const { data: verified } = await github.request('GET /repos/{owner}/{repo}/stacks/{stack_number}', {
+              ...context.repo, stack_number: number, headers
+            });
+            verifyStack(verified, repairs);
+            if (verified.number !== number) throw new Error('Native stack identity was not preserved.');
+            members = await snapshot();
+            if (members.some(member => member !== number)) throw new Error('Native stack registration could not be verified.');
+            state.stack_number = number;
+            core.setOutput('state', JSON.stringify(state));
+            core.notice(`Native repair stack #${number} targets ${feature.head_ref}; feature PR #${feature.number} is not a member.`);
