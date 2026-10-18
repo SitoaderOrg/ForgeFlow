@@ -18,7 +18,9 @@ flowchart TD
     Decision -->|"missing or uncertain"| Findings["Failed findings to pipeline"]
     Artifact -->|"Missing, invalid, or stale"| Findings
     Assess -->|"Failure or missing evidence"| Findings
-    Findings -->|"Native needs gate result failure selects docs; workflow_call; below 6"| Repair["Publish next separate repair PR<br/>Base feature first, preceding repair later; no label trigger"]
+    Findings --> Missing{"Valid current-revision missing decision?"}
+    Missing -->|"Yes: native failure selects docs; below 6"| Repair["Publish next separate repair PR<br/>Base feature first, preceding repair later; no label trigger"]
+    Missing -->|No| Manual["Stop for service or evidence correction; do not invent a documentation patch"]
     Repair --> Scoped["Verify identity, expected stack, protected scope<br/>Docs plus previously green project gates"]
     Scoped -->|Pass| Register["Controller: ordinary at 1; native at 2; append later<br/>Persist state and round; no merge"]
     Register --> Candidate["Next run: full current-candidate checks and docs assessment"]
@@ -168,8 +170,11 @@ within the inference timeout.
 
 ## Scoped documentation repair PRs
 
-The native `needs.<gate>.result == 'failure'` makes docs eligible for repair;
-a `docs-required` label does not. When docs is selected and controller guards
+Only a native docs failure backed by a valid current-revision `missing`
+assessment makes docs eligible for repair. The verdict exposes this as
+`repairable=true`. Authentication/runtime failures, missing or invalid artifacts,
+and `uncertain` decisions still fail the gate, but do not authorize editing docs.
+A `docs-required` label does not authorize a repair. When docs is selected and controller guards
 pass, the pipeline calls [`pr-repair.md`](../.github/workflows/pr-repair.md)
 through `workflow_call`, passing the gate's findings. It is compiled as
 `pr-repair.lock.yml`. The shared repair workflow handles one selected gate per

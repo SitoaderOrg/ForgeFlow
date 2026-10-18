@@ -25,6 +25,8 @@ on:
     outputs:
       findings:
         value: ${{ jobs.verdict.outputs.findings }}
+      repairable:
+        value: ${{ jobs.verdict.outputs.repairable }}
       repair_kind:
         value: docs
 
@@ -55,6 +57,7 @@ jobs:
       contents: read
     outputs:
       findings: ${{ steps.verdict.outputs.findings }}
+      repairable: ${{ steps.verdict.outputs.repairable }}
     steps:
       - name: Download this run's assessment
         id: assessment
@@ -77,6 +80,7 @@ jobs:
           COMPARISON_BASE_SHA: ${{ inputs.comparison_base_sha || inputs.base_sha }}
         with:
           script: |
+            core.setOutput('repairable', 'false');
             core.setOutput('findings', 'Documentation assessment did not complete. Missing evidence is not a pass.');
             if (process.env.ASSESS_RESULT !== 'success' || process.env.DOWNLOAD_RESULT !== 'success') {
               throw new Error('A successful agent run and its assessment artifact are required.');
@@ -93,6 +97,7 @@ jobs:
               throw new Error('Invalid or stale documentation assessment.');
             }
             core.setOutput('findings', assessment.findings);
+            core.setOutput('repairable', String(assessment.decision === 'missing'));
             if (['missing', 'uncertain'].includes(assessment.decision)) {
               throw new Error(assessment.findings);
             }

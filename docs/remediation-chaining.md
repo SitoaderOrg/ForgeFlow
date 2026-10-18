@@ -97,6 +97,9 @@ change, including all candidate layers, against the captured root base.
 Its version-2 decision artifact maps `not_needed` or `sufficient` to pass and
 `missing` or `uncertain` to fail. See the
 [documentation contract](pr-docs-and-updater.md#implemented-evaluator-and-artifact-contract).
+Only a validated `missing` decision authorizes a docs repair. Uncertain
+assessments, authentication failures and missing evidence fail without launching
+an app documentation patch.
 
 | Gate                 | Workflow                            | Repair responsibility                                               |
 | :------------------- | :---------------------------------- | :------------------------------------------------------------------ |

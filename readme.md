@@ -76,6 +76,9 @@ merely because an unrelated Markdown file changed.
 The agent decides both whether documentation is needed and whether it is sufficient,
 without extension-based eligibility rules. Deterministic glue only verifies a valid,
 current-revision response and blocks missing or uncertain assessments.
+Only a verified `missing` decision authorizes a documentation repair.
+Runtime/authentication failures and uncertain or invalid evidence remain failed
+checks requiring intervention, not reasons to manufacture documentation changes.
 
 ## Generic orchestration, project-owned checks
 

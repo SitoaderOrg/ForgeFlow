@@ -663,6 +663,17 @@ describe('dependent repair event routing', () => {
 });
 
 describe('bounded repair planning and revalidation', () => {
+  it.each([undefined, 'false', 'true'])(
+    'only repairs documentation with verified missing evidence: %s',
+    async (repairable) => {
+      const gates = passingGates();
+      gates.docs = { result: 'failure', outputs: { repairable } };
+      const sandbox = harness(undefined, { GATES: JSON.stringify(gates) });
+      await execute('repair-plan', sandbox);
+      expect(sandbox.outputs.needed).toBe(String(repairable === 'true'));
+    }
+  );
+
   it('selects one scoped failing gate without bundling unrelated repairs', async () => {
     const gates = passingGates();
     gates.lint = {
@@ -1324,6 +1335,7 @@ describe('revision-scoped documentation gate', () => {
       const sandbox = docHarness({ ASSESSMENT: assessment({ decision }) });
       await execute('verdict', sandbox, docs);
       expect(sandbox.outputs.findings).toContain('application guide');
+      expect(sandbox.outputs.repairable).toBe('false');
     }
   );
 
@@ -1359,15 +1371,18 @@ describe('revision-scoped documentation gate', () => {
         'Document streak expiration'
       );
       expect(sandbox.outputs.findings).toContain('stealth bonus');
+      expect(sandbox.outputs.repairable).toBe(String(decision === 'missing'));
     }
   );
 
   it.each(['failure', 'cancelled', 'skipped'])(
     'rejects a %s assessor regardless of its output',
     async (result) => {
-      await expect(
-        execute('verdict', docHarness({ ASSESS_RESULT: result }), docs)
-      ).rejects.toThrow('successful agent');
+      const sandbox = docHarness({ ASSESS_RESULT: result });
+      await expect(execute('verdict', sandbox, docs)).rejects.toThrow(
+        'successful agent'
+      );
+      expect(sandbox.outputs.repairable).toBe('false');
     }
   );
 
@@ -1387,6 +1402,12 @@ describe('revision-scoped documentation gate', () => {
   });
 
   it('delegates documentation need to the agent without deterministic file eligibility', () => {
+    expect(docs.on.workflow_call.outputs.repairable.value).toBe(
+      '${{ jobs.verdict.outputs.repairable }}'
+    );
+    expect(docs.jobs.verdict.outputs.repairable).toBe(
+      '${{ steps.verdict.outputs.repairable }}'
+    );
     expect(docs.jobs.scope).toBeUndefined();
     expect(docs.jobs.assess.if).toBeUndefined();
     const source = readFileSync('.github/workflows/pr-doc-review.md', 'utf8');

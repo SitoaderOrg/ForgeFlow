@@ -350,12 +350,13 @@ jobs:
             const failures = ['metadata', 'lint', 'build', 'test', 'security', 'docs']
               .filter(name => gates[name].result === 'failure');
             const cancelled = Object.values(gates).some(gate => gate.result === 'cancelled');
-            const needed = failures.length > 0 && !cancelled &&
+            const kind = failures[0] || '';
+            const repairable = kind !== 'docs' || gates.docs.outputs?.repairable === 'true';
+            const needed = failures.length > 0 && repairable && !cancelled &&
               gates.context.outputs.pending_repairs !== 'true' &&
               !(failures[0] === 'metadata' && gates.context.outputs.has_repairs === 'true') &&
               Number(process.env.REPAIR_ROUND) < 6;
             core.setOutput('needed', String(needed));
-            const kind = failures[0] || '';
             core.setOutput('kind', kind);
             core.setOutput('baseline', JSON.stringify(Object.fromEntries(
               ['lint', 'build', 'test', 'security', 'docs'].map(name => [name, gates[name].result])
@@ -364,7 +365,7 @@ jobs:
               ? `Repair only the ${kind} gate.\n${(gates[kind].outputs.findings || 'Inspect the failed gate log; no diagnostics were published.').slice(0, 6000)}\nOther unresolved gates, not part of this repair: ${failures.slice(1).join(', ') || 'none'}.`
               : '');
             if (failures.length && !needed) {
-              core.error('Automatic repairs stopped: pending repair, cancelled gate, metadata change during a repair chain, or six-round budget exhausted.');
+              core.error('Automatic repairs stopped: pending repair, cancelled gate, unverified missing documentation, metadata change during a repair chain, or six-round budget exhausted.');
             }
 
   repair:
