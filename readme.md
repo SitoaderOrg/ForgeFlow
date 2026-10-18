@@ -85,6 +85,44 @@ build, testing/coverage and security commands and policies. A failing command
 fails its check natively; bounded log excerpts provide repair context, not the
 source of truth for scheduling.
 
+## Application workspaces
+
+Applications live under `apps/<app>` and own their package metadata, dependencies,
+source, tests, build/test configuration, documentation and generated output.
+The root package is a private npm workspace coordinator, not the sample game.
+Framework regression tests live in `tests/framework`; shared lint/format policy
+and lifecycle workflows remain at the root.
+
+Run these commands from the repository root:
+
+| Command | Scope |
+| --- | --- |
+| `npm ci` | Install all workspaces from the single root lockfile |
+| `npm run lint` | Framework lint, then every app's declared lint command |
+| `npm run build` | Every app's declared build command |
+| `npm run test:framework` | Lifecycle and guard regression tests only |
+| `npm test` | Framework tests, then every app's tests |
+| `npm run test:ci` | Framework tests, then every app's CI/coverage command |
+
+To add another compatible app, create `apps/<app>/package.json` with a unique
+name and explicit `lint`, `build`, `test`, and `test:ci` scripts, add its source,
+tests and configuration, then run `npm install` at the root and commit the updated
+root lockfile. The `apps/*` workspace declaration discovers
+the app without changing the lifecycle YAML. Required commands are not run with
+`--if-present`: missing app checks are failures, not silent successes.
+
+Use `npm run dev --workspace=<app-name>` or
+`npm run preview --workspace=<app-name>` to select a development server. The root
+`dev`/`preview` convenience commands run workspace scripts sequentially; they are
+not a multi-app parallel server launcher.
+
+App test runners own coverage thresholds and no-tests behavior. Build and
+coverage output stays inside each app, avoiding collisions. A different language
+or security toolchain still needs an explicit check adapter; this is not universal
+language detection. Framework tests and quality configuration stay protected from
+automatic app repairs; dependency fixes may change versions, not workspace
+membership, package scripts or gate policy.
+
 ## Workflow map
 
 | File                                               | Responsibility                                                                        |
@@ -143,7 +181,7 @@ unregisters, recreates, rebases, force-pushes or deletes them to force progress.
 
 See the [Ferret Heist guide](apps/ferret-heist/README.md) for the sample application.
 Project commands and coverage policy live in the project's configuration;
-`tests/workflows.test.js` covers the lifecycle's orchestration guards.
+`tests/framework` covers the lifecycle's orchestration guards.
 
 Deliberately failing game changes can exercise repair behavior, but they are not
 exempt from the gates. A failed assertion or security finding must be resolved

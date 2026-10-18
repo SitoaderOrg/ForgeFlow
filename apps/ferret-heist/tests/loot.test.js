@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Loot, generateLootList } from '../apps/ferret-heist/src/game/loot.js';
+import { Loot, generateLootList } from '../src/game/loot.js';
 
 describe('Loot System', () => {
   it('correctly creates loot instances from type config', () => {

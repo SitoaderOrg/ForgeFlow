@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
-  root: 'apps/ferret-heist',
+  root: fileURLToPath(new URL('.', import.meta.url)),
   base: './',
   build: {
-    outDir: '../../dist',
+    outDir: 'dist',
     emptyOutDir: true
   }
 });
