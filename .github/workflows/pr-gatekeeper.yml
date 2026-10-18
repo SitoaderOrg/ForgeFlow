@@ -9,115 +9,81 @@ on:
       head_ref:
         required: true
         type: string
+      head_sha:
+        required: true
+        type: string
+      base_ref:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+    outputs:
+      findings:
+        description: Metadata validation findings, limited to 6000 characters.
+        value: ${{ jobs.gatekeeper.outputs.findings }}
+      repair_kind:
+        description: Fixed repair route for this gate.
+        value: ${{ jobs.gatekeeper.outputs.repair_kind }}
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
-  actions: write
-env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
+  pull-requests: read
 
 jobs:
   gatekeeper:
     name: Validate PR Metadata
     runs-on: ubuntu-latest
-
+    outputs:
+      findings: ${{ steps.findings.outputs.findings }}
+      repair_kind: metadata
     steps:
-      - name: Checkout shared scripts
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-
       - name: Run Pre-Flight Checks
+        id: validate
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
           HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_SHA: ${{ inputs.head_sha }}
         with:
           script: |
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/remediation.cjs`);
-            // Fetch live PR data to ensure latest title and description are validated
             const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              ...context.repo,
               pull_number: Number(process.env.PR_NUMBER)
             });
-            const branchName = pr.head.ref;
+            const errors = [];
+            if (pr.head.sha !== process.env.HEAD_SHA || pr.head.ref !== process.env.HEAD_REF) {
+              errors.push('PR head changed: these metadata results must not authorize a different revision.');
+            }
+            const branchRegex = /^([a-zA-Z0-9_\-]+[\/\-])?(feat|fix|chore|docs|test|refactor|ci|sample)[\/\-][a-zA-Z0-9_\-\.]+$/;
+            if (!branchRegex.test(process.env.HEAD_REF)) {
+              errors.push('Branch name must use category/description (feat, fix, chore, docs, test, refactor, ci, or sample). Branch renaming requires author intervention.');
+            }
             const title = pr.title.trim();
             const body = (pr.body || '').trim();
-
-            const errors = [];
-            const results = [];
-
-            // 1. Branch Naming Check
-            // Convention: feat/*, fix/*, chore/*, docs/*, test/*, refactor/*, ci/* (allows optional user prefix for worktree branches)
-            const branchRegex = /^([a-zA-Z0-9_\-]+[\/\-])?(feat|fix|chore|docs|test|refactor|ci|sample)[\/\-][a-zA-Z0-9_\-\.]+$/;
-            if (branchRegex.test(branchName)) {
-              results.push({ check: 'Branch Naming', status: '✅ PASS', details: `\`${branchName}\`` });
-            } else {
-              const msg = `Branch name \`${branchName}\` does not follow convention \`category/description\` (allowed: feat/, fix/, chore/, docs/, test/, refactor/, ci/).`;
-              errors.push(msg);
-              results.push({ check: 'Branch Naming', status: '❌ FAIL', details: msg });
+            if (!/^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?:\s.+$/.test(title)) {
+              errors.push('PR title must follow Conventional Commits, for example feat: summary or fix(core): summary.');
             }
-
-            // 2. PR Title Check (Conventional Commits format)
-            // Example: feat(api): add auth endpoint
-            const titleRegex = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?:\s.+$/;
-            const titlePass = titleRegex.test(title);
-            if (titlePass) {
-              results.push({ check: 'PR Title', status: '✅ PASS', details: `\`${title}\`` });
-            } else {
-              const msg = `PR title \`${title}\` does not follow Conventional Commits format (e.g. \`feat: summary\` or \`fix(core): summary\`).`;
-              errors.push(msg);
-              results.push({ check: 'PR Title', status: '❌ FAIL', details: msg });
+            if (body.length < 20 || /todo|fill this out/i.test(body)) {
+              errors.push('PR description is under 20 characters or contains placeholder text.');
             }
+            core.setOutput('details', errors.join('\n') || 'Branch, title, and description passed validation.');
+            if (errors.length) core.setFailed(errors.join('\n'));
 
-            // 3. PR Description Check (Non-empty & minimum length)
-            const descPass = body.length >= 20 && !body.toLowerCase().includes('todo') && !body.toLowerCase().includes('fill this out');
-            if (descPass) {
-              results.push({ check: 'PR Description', status: '✅ PASS', details: `${body.length} characters provided` });
-            } else {
-              const msg = 'PR description is empty, contains placeholder text, or is under 20 characters.';
-              errors.push(msg);
-              results.push({ check: 'PR Description', status: '❌ FAIL', details: msg });
-            }
-
-            // 4. Autonomous Remediation (label + dispatch PR Validation agent)
-            const metadataNeedsHelp = !titlePass || !descPass;
-            let remediation = 'not-needed';
-            if (metadataNeedsHelp) {
-              await helpers.addLabel({ github, context, core, prNumber: pr.number, label: 'needs-metadata' });
-              remediation = await helpers.dispatchRemediation({
-                github, context, core,
-                prNumber: pr.number,
-                headRef: process.env.HEAD_REF,
-                workflow: 'pr-validation.lock.yml',
-                findings: errors.join('\n')
-              });
-            } else {
-              await helpers.removeLabel({ github, context, core, prNumber: pr.number, label: 'needs-metadata' });
-            }
-            // Write to Job Summary
-            let summaryTable = '### PR Gatekeeper Results\n\n| Check | Status | Details |\n|---|---|---|\n';
-            for (const r of results) {
-              summaryTable += `| **${r.check}** | ${r.status} | ${r.details} |\n`;
-            }
-
-            if (metadataNeedsHelp) {
-              summaryTable += `\n\n> 🤖 **Autonomous Remediation**: Added \`needs-metadata\` label. PR Validation agent dispatch status: **${remediation}**. It updates the PR title and description from the code diff, then the pipeline is re-run automatically.\n`;
-            }
-
-            if (errors.length > 0) {
-              summaryTable += '\n\n---\n\n### 💡 Manual Resolution (if needed)\n\n' +
-                '- **Branch name**: Rename branch locally using `git branch -m <category>/<name>` and push with `git push -u origin <category>/<name>`.\n' +
-                '- **PR Title**: Click **Edit** next to the PR title and use Conventional Commits (e.g., `feat: ...`, `fix(api): ...`).\n' +
-                '- **PR Description**: Fill out the sections defined in `.github/pull_request_template.md` (minimum 20 characters, no placeholder text).\n';
-            }
-
-            await core.summary.addRaw(summaryTable).write();
-
-            // Fail job if any check failed
-            if (errors.length > 0) {
-              core.setFailed(`PR Gatekeeper failed with ${errors.length} error(s):\n- ` + errors.join('\n- '));
-            }
+      - name: Publish Metadata Findings
+        id: findings
+        if: always()
+        env:
+          HEAD_SHA: ${{ inputs.head_sha }}
+          CHECK_RESULT: ${{ steps.validate.outcome }}
+          DETAILS: ${{ steps.validate.outputs.details }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const text = `Metadata (${process.env.HEAD_SHA}): ${process.env.CHECK_RESULT}\n${process.env.DETAILS || 'Metadata validation did not complete; inspect the API/check logs.'}`.slice(0, 6000);
+          let delimiter = 'GATE_FINDINGS_EOF';
+          while (text.includes(delimiter)) delimiter += '_';
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `findings<<${delimiter}\n${text}\n${delimiter}\n`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, text + '\n');
+          NODE

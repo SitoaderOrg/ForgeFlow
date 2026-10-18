@@ -3,117 +3,52 @@ name: PR Security Gatekeeper
 on:
   workflow_call:
     inputs:
-      pr_number:
-        required: true
-        type: string
-      head_ref:
-        required: true
-        type: string
       head_sha:
         required: true
         type: string
-      base_ref:
+      base_sha:
         required: true
         type: string
+    outputs:
+      findings:
+        description: Security findings, limited to 6000 characters.
+        value: ${{ jobs.security-gatekeeper.outputs.findings }}
+      codeql_result:
+        description: Native CodeQL job result for status display.
+        value: ${{ jobs.security-gatekeeper.outputs.codeql_result }}
+      dependency_result:
+        description: Native dependency-review job result for status display.
+        value: ${{ jobs.security-gatekeeper.outputs.dependency_result }}
+      secret_result:
+        description: Native secret-scanning job result for status display.
+        value: ${{ jobs.security-gatekeeper.outputs.secret_result }}
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
-  actions: write
-  security-events: write
-
-env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
-  # Fail the gate on CodeQL findings at or above this CVSS security-severity (medium = 4.0)
-  CODEQL_MIN_SECURITY_SEVERITY: ${{ vars.CODEQL_MIN_SECURITY_SEVERITY || '4.0' }}
 
 jobs:
-  detect-environment:
-    name: Detect Languages & Manifests
-    runs-on: ubuntu-latest
-    outputs:
-      codeql_matrix: ${{ steps.check.outputs.codeql_matrix }}
-      has_codeql_languages: ${{ steps.check.outputs.has_codeql_languages }}
-      has_dependencies: ${{ steps.check.outputs.has_dependencies }}
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Check Supported Files
-        id: check
-        run: |
-          FILES=$(git ls-files | grep -vE '^(node_modules|dist|coverage)/' || true)
-          MATRIX='[]'
-          add_lang() {
-            MATRIX=$(echo "$MATRIX" | jq -c --arg l "$1" --arg m "$2" '. + [{"language": $l, "build-mode": $m}]')
-          }
-          # Interpreted languages are analysed without a build; compiled ones use autobuild.
-          echo "$FILES" | grep -qE '\.(js|jsx|ts|tsx|mjs|cjs)$' && add_lang javascript-typescript none
-          echo "$FILES" | grep -qE '\.py$' && add_lang python none
-          echo "$FILES" | grep -qE '\.rb$' && add_lang ruby none
-          echo "$FILES" | grep -qE '\.(java|kt)$' && add_lang java-kotlin none
-          echo "$FILES" | grep -qE '\.cs$' && add_lang csharp none
-          echo "$FILES" | grep -qE '\.go$' && add_lang go autobuild
-          echo "$FILES" | grep -qE '\.(c|cpp|cc|cxx|h|hpp)$' && add_lang c-cpp none
-          echo "$FILES" | grep -qE '\.swift$' && add_lang swift autobuild
-
-          echo "codeql_matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          if [ "$MATRIX" = "[]" ]; then
-            echo "has_codeql_languages=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_codeql_languages=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "CodeQL matrix: $MATRIX"
-
-          # Check for dependency manifests across package ecosystems
-          if echo "$FILES" | grep -qE '(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|requirements\.txt|Pipfile\.lock|poetry\.lock|go\.mod|pom\.xml|build\.gradle|Cargo\.lock|Gemfile\.lock|composer\.lock)'; then
-            echo "has_dependencies=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_dependencies=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  dependency-review:
-    name: GitHub Dependency Review
-    needs: detect-environment
-    if: needs.detect-environment.outputs.has_dependencies == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Dependency Review
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high
-          # Explicit refs so the review also works for dispatched (non pull_request) runs
-          base-ref: ${{ inputs.base_ref }}
-          head-ref: ${{ inputs.head_sha }}
-
   codeql-analysis:
-    name: GitHub CodeQL SAST (${{ matrix.language }})
-    needs: detect-environment
-    if: needs.detect-environment.outputs.has_codeql_languages == 'true'
+    name: JavaScript & TypeScript CodeQL
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # CodeQL reads workflow metadata even when SARIF uploads are disabled.
       actions: read
-      security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.detect-environment.outputs.codeql_matrix) }}
+      security-events: read
+    outputs:
+      findings: ${{ steps.policy.outputs.findings }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          languages: javascript-typescript
+          build-mode: none
           queries: security-extended
           config: |
             paths-ignore:
@@ -121,143 +56,173 @@ jobs:
               - dist
               - coverage
 
-      - name: Autobuild
-        if: matrix.build-mode == 'autobuild'
-        uses: github/codeql-action/autobuild@v3
-
-      - name: Perform CodeQL Analysis
+      - name: Analyze CodeQL
+        id: analyze
         uses: github/codeql-action/analyze@v3
         with:
-          category: '/language:${{ matrix.language }}'
+          category: /language:javascript-typescript
           output: sarif-results
-          # Results are evaluated from the SARIF below. Uploading is skipped because
-          # repositories using CodeQL "default setup" reject advanced-configuration uploads.
           upload: never
 
-      - name: Evaluate CodeQL Findings
-        id: findings
-        run: |
-          MIN="$CODEQL_MIN_SECURITY_SEVERITY"
-          FINDINGS_FILE="codeql-findings-${{ matrix.language }}.txt"
-          : > "$FINDINGS_FILE"
-          for SARIF in sarif-results/*.sarif; do
-            jq -r --argjson min "$MIN" '
-              .runs[] as $run
-              | ([$run.tool.driver.rules[]?, $run.tool.extensions[]?.rules[]?]
-                  | map({key: .id, value: .}) | from_entries) as $rules
-              | $run.results[]?
-              | . as $r
-              | (($rules[$r.ruleId].properties["security-severity"] // "0") | tonumber) as $sev
-              | select($sev >= $min)
-              | "- [\($r.ruleId)] severity \($sev): \($r.message.text | gsub("\n"; " ")) (\($r.locations[0].physicalLocation.artifactLocation.uri):\($r.locations[0].physicalLocation.region.startLine))"
-            ' "$SARIF" >> "$FINDINGS_FILE"
-          done
-          COUNT=$(grep -c '^- ' "$FINDINGS_FILE" || true)
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-          echo "### CodeQL (${{ matrix.language }}): $COUNT finding(s) with security-severity >= $MIN" >> "$GITHUB_STEP_SUMMARY"
-          cat "$FINDINGS_FILE" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload Findings
+      - name: Check CodeQL Security Severity
+        id: policy
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: codeql-findings-${{ matrix.language }}
-          path: |
-            codeql-findings-${{ matrix.language }}.txt
-            sarif-results/*.sarif
-          if-no-files-found: ignore
-
-      - name: Fail on CodeQL Findings
-        if: steps.findings.outputs.count != '0'
-        run: |
-          echo "::error::CodeQL found ${{ steps.findings.outputs.count }} security issue(s) at or above severity $CODEQL_MIN_SECURITY_SEVERITY."
-          exit 1
-
-  security-gatekeeper:
-    name: Security Gatekeeper Status
-    needs: [detect-environment, dependency-review, codeql-analysis]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout shared scripts
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-
-      - name: Download CodeQL Findings
-        if: needs.codeql-analysis.result == 'failure'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: codeql-findings-*
-          path: codeql-findings
-          merge-multiple: true
-
-      - name: Evaluate Security Results & Label PR
         uses: actions/github-script@v7
         env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_REF: ${{ inputs.head_ref }}
-          DEP_REVIEW_RESULT: ${{ needs.dependency-review.result }}
-          CODEQL_RESULT: ${{ needs.codeql-analysis.result }}
+          ANALYSIS_RESULT: ${{ steps.analyze.outcome }}
+          MIN_SECURITY_SEVERITY: ${{ vars.CODEQL_MIN_SECURITY_SEVERITY || '4.0' }}
         with:
           script: |
             const fs = require('fs');
-            const path = require('path');
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/remediation.cjs`);
-            const prNumber = Number(process.env.PR_NUMBER);
-            const headRef = process.env.HEAD_REF;
-            const depReviewResult = process.env.DEP_REVIEW_RESULT;
-            const codeqlResult = process.env.CODEQL_RESULT;
-            const dispatches = [];
-
-            // Evaluate Dependency Review
-            if (depReviewResult === 'failure') {
-              await helpers.addLabel({ github, context, core, prNumber, label: 'dependency-alert' });
-              const status = await helpers.dispatchRemediation({
-                github, context, core, prNumber, headRef,
-                workflow: 'pr-dependency-fixer.lock.yml',
-                stackedLabel: 'security-remediation',
-                findings: `Dependency Review failed (fail-on-severity: high) in run ${context.runId}.`
-              });
-              dispatches.push(`PR Dependency Fixer: **${status}**`);
-            } else {
-              await helpers.removeLabel({ github, context, core, prNumber, label: 'dependency-alert' });
-            }
-
-            // Evaluate CodeQL SAST
-            if (codeqlResult === 'failure') {
-              await helpers.addLabel({ github, context, core, prNumber, label: 'codeql-alert' });
-              let findings = '';
-              const dir = path.join(process.env.GITHUB_WORKSPACE, 'codeql-findings');
-              if (fs.existsSync(dir)) {
-                for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.txt'))) {
-                  findings += fs.readFileSync(path.join(dir, f), 'utf8');
+            const messages = [];
+            try {
+              if (process.env.ANALYSIS_RESULT !== 'success') throw new Error('CodeQL analysis did not complete successfully.');
+              const minimum = Number(process.env.MIN_SECURITY_SEVERITY);
+              if (!process.env.MIN_SECURITY_SEVERITY.trim() || !Number.isFinite(minimum) || minimum < 0 || minimum > 10) {
+                throw new Error('Security severity threshold must be a number between 0 and 10.');
+              }
+              const files = fs.readdirSync('sarif-results').filter(name => name.endsWith('.sarif')).sort();
+              if (!files.length) throw new Error('CodeQL produced no SARIF files.');
+              for (const file of files) {
+                const sarif = JSON.parse(fs.readFileSync(`sarif-results/${file}`, 'utf8'));
+                if (sarif.version !== '2.1.0' || !Array.isArray(sarif.runs) || !sarif.runs.length) {
+                  throw new Error(`${file}: invalid SARIF document.`);
+                }
+                for (const run of sarif.runs) {
+                  const driver = run.tool?.driver;
+                  if (driver?.name !== 'CodeQL' || !Array.isArray(driver.rules) || !Array.isArray(run.results)) {
+                    throw new Error(`${file}: missing CodeQL rules or results.`);
+                  }
+                  if (run.invocations !== undefined && (!Array.isArray(run.invocations) || run.invocations.some(invocation =>
+                    invocation?.executionSuccessful !== true ||
+                    (invocation.toolExecutionNotifications ?? []).some(note => note.level === 'error')))) {
+                    throw new Error(`${file}: failed or invalid CodeQL invocation.`);
+                  }
+                  const rules = new Map();
+                  for (const rule of driver.rules) {
+                    if (typeof rule.id !== 'string' || !rule.id || rules.has(rule.id)) throw new Error(`${file}: invalid or duplicate rule ID.`);
+                    rules.set(rule.id, rule);
+                  }
+                  for (const result of run.results) {
+                    const rule = result.ruleId !== undefined ? rules.get(result.ruleId) :
+                      (Number.isInteger(result.ruleIndex) && result.ruleIndex >= 0 ? driver.rules[result.ruleIndex] : undefined);
+                    if (result.ruleIndex !== undefined && (!Number.isInteger(result.ruleIndex) || result.ruleIndex < 0 ||
+                        driver.rules[result.ruleIndex] !== rule)) throw new Error(`${file}: invalid result rule index.`);
+                    const raw = rule?.properties?.['security-severity'];
+                    const severity = Number(raw);
+                    if (!rule || !['string', 'number'].includes(typeof raw) || String(raw).trim() === '' ||
+                        !Number.isFinite(severity) || severity < 0 || severity > 10) {
+                      throw new Error(`${file}: missing or invalid security-severity for ${result.ruleId ?? result.ruleIndex}.`);
+                    }
+                    const message = result.message?.text || result.message?.markdown;
+                    if (typeof message !== 'string' || !message.trim()) throw new Error(`${file}: missing result message.`);
+                    if (severity >= minimum) {
+                      const location = result.locations?.[0]?.physicalLocation;
+                      messages.push(`[${rule.id}] severity ${severity}: ${message.replace(/\s+/g, ' ')} ` +
+                        `(${location?.artifactLocation?.uri ?? 'location unavailable'}:${location?.region?.startLine ?? '?'})`);
+                    }
+                  }
                 }
               }
-              const status = await helpers.dispatchRemediation({
-                github, context, core, prNumber, headRef,
-                workflow: 'pr-codeql-fixer.lock.yml',
-                stackedLabel: 'security-remediation',
-                findings: `CodeQL SAST findings (run ${context.runId}):\n${findings || '(see run artifacts codeql-findings-*)'}`
-              });
-              dispatches.push(`PR CodeQL Fixer: **${status}**`);
-            } else {
-              await helpers.removeLabel({ github, context, core, prNumber, label: 'codeql-alert' });
+            } catch (error) {
+              messages.push(`CodeQL validation failed: ${error.message}`);
             }
+            core.setOutput('findings', (messages.join('\n') || 'CodeQL: valid SARIF; no findings at or above the configured severity.').slice(0, 3500));
+            if (messages.length) core.setFailed('CodeQL security policy failed; see findings.');
 
-            // GitHub Secret Scanning alerts are repository-wide and require a token with
-            // secret-scanning read access (not available to GITHUB_TOKEN); secrets inside the
-            // PR diff are caught by the GITLEAKS linter in the lint stage.
-            await helpers.removeLabel({ github, context, core, prNumber, label: 'security-alert' });
+  dependency-review:
+    name: Dependency Vulnerability Review
+    runs-on: ubuntu-latest
+    outputs:
+      findings: ${{ steps.findings.outputs.findings }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
 
-            const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure';
-            if (hasFailure) {
-              const summary = '### ❌ Security Gatekeeper Failed\n\n' +
-                `- **Dependency Review**: ${depReviewResult}\n` +
-                `- **CodeQL SAST**: ${codeqlResult}\n\n` +
-                '> 🛡️ **Autonomous Remediation**: ' + dispatches.join(', ') + '. Fixes arrive as stacked PRs that are auto-merged into your branch.\n';
-              await core.summary.addRaw(summary).write();
-              core.setFailed('Security vulnerabilities or insecure dependencies detected.');
-            } else {
-              await core.summary.addRaw('### ✅ Security Gatekeeper Passed\n\nAll GitHub Code Security checks passed successfully.\n').write();
+      - name: Review Dependency Changes
+        id: review
+        uses: actions/dependency-review-action@v4
+        with:
+          base-ref: ${{ inputs.base_sha }}
+          head-ref: ${{ inputs.head_sha }}
+          fail-on-severity: high
+          vulnerability-check: true
+          license-check: false
+          comment-summary-in-pr: never
+
+      - name: Publish Dependency Findings
+        id: findings
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          REVIEW_RESULT: ${{ steps.review.outcome }}
+          DETAILS: ${{ steps.review.outputs.comment-content }}
+        with:
+          script: |
+            core.setOutput('findings', (`Dependency review: ${process.env.REVIEW_RESULT} (high severity threshold).\n` +
+              (process.env.DETAILS || 'See dependency-review logs for advisory or dependency-graph errors.')).slice(0, 1500));
+
+  secret-scan:
+    name: Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
+
+      - name: Scan Checked-Out Files for Secrets
+        uses: super-linter/super-linter/slim@v7
+        env:
+          RUN_LOCAL: true
+          VALIDATE_ALL_CODEBASE: true
+          VALIDATE_GITLEAKS: true
+
+  security-gatekeeper:
+    name: Security Gatekeeper Status
+    needs: [codeql-analysis, dependency-review, secret-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      findings: ${{ steps.summary.outputs.findings }}
+      codeql_result: ${{ steps.summary.outputs.codeql_result }}
+      dependency_result: ${{ steps.summary.outputs.dependency_result }}
+      secret_result: ${{ steps.summary.outputs.secret_result }}
+    steps:
+      - name: Summarize Native Security Results
+        id: summary
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ inputs.head_sha }}
+          CODEQL_RESULT: ${{ needs.codeql-analysis.result }}
+          DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
+          SECRET_RESULT: ${{ needs.secret-scan.result }}
+          CODEQL_FINDINGS: ${{ needs.codeql-analysis.outputs.findings }}
+          DEPENDENCY_FINDINGS: ${{ needs.dependency-review.outputs.findings }}
+        with:
+          script: |
+            const results = {
+              codeql_result: process.env.CODEQL_RESULT,
+              dependency_result: process.env.DEPENDENCY_RESULT,
+              secret_result: process.env.SECRET_RESULT
+            };
+            for (const [name, result] of Object.entries(results)) core.setOutput(name, result);
+            const text = [
+              `Security at ${process.env.HEAD_SHA}`,
+              ...Object.entries(results).map(([name, result]) => `${name}: ${result}`),
+              process.env.CODEQL_FINDINGS || 'CodeQL diagnostics unavailable; inspect the native job logs.',
+              process.env.DEPENDENCY_FINDINGS || 'Dependency diagnostics unavailable; inspect the native job logs.',
+              process.env.SECRET_RESULT === 'success' ? 'Gitleaks: checked-out files passed secret detection.' :
+                'Gitleaks did not pass; inspect its logs for affected paths. Do not copy secret values into repair findings.',
+              'Secret detection covers this checkout, not historical exposure or GitHub secret-scanning alerts; exposed credentials still require revocation.'
+            ].join('\n').slice(0, 6000);
+            core.setOutput('findings', text);
+            await core.summary.addRaw(text + '\n').write();
+            if (Object.values(results).some(result => result !== 'success')) {
+              core.setFailed('Every required security job must succeed.');
             }

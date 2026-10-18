@@ -3,135 +3,47 @@ name: PR Lint & Format Gatekeeper
 on:
   workflow_call:
     inputs:
-      pr_number:
-        required: true
-        type: string
-      head_ref:
-        required: true
-        type: string
       head_sha:
         required: true
         type: string
-      base_ref:
-        required: true
-        type: string
+    outputs:
+      findings:
+        value: ${{ jobs.lint.outputs.findings }}
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
-  actions: write
-
-env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
 
 jobs:
   lint:
-    name: Lint & Format Codebase
+    name: npm run lint
     runs-on: ubuntu-latest
-
+    outputs:
+      findings: ${{ steps.findings.outputs.findings }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          # Full git history is required for super-linter to compute diff
-          fetch-depth: 0
-
-      - name: Prepare diff base for Super-Linter
-        id: diff-base
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install and lint
+        id: check
+        shell: bash
         run: |
-          # Super-Linter only knows how to diff pull_request/push events. For dispatched
-          # re-runs, give it the merge-base so only the PR's changes are linted.
-          MERGE_BASE=$(git merge-base "origin/${{ inputs.base_ref }}" HEAD)
-          echo "merge_base=$MERGE_BASE" >> "$GITHUB_OUTPUT"
-          echo "Linting changes between $MERGE_BASE and $(git rev-parse HEAD)"
-
-      - name: Run Super-Linter
-        id: super-linter
-        uses: super-linter/super-linter/slim@v7
-        env:
-          DEFAULT_BRANCH: ${{ inputs.base_ref }}
-          GITHUB_BEFORE_SHA: ${{ github.event_name != 'pull_request' && steps.diff-base.outputs.merge_base || '' }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VALIDATE_ALL_CODEBASE: false
-          MULTI_STATUS: false
-          # Persist per-linter stdout/stderr so failures can be handed to the PR Lint Fixer agent
-          SAVE_SUPER_LINTER_OUTPUT: true
-          # Use the repository's own lint configs (.eslintrc.json, .prettierrc, ...) so
-          # contributors and the PR Lint Fixer agent can reproduce results with `npm run lint`.
-          LINTER_RULES_PATH: .
-          JAVASCRIPT_ES_CONFIG_FILE: .eslintrc.json
-          # Ignore auto-generated lockfiles, docs, diagrams, and temp logs
-          FILTER_REGEX_EXCLUDE: '(\.lock\.yml|wf-log\.md|docs/|\.github/|package-lock\.json)'
-          # Disable noisy or non-code linters to focus on source code & logic
-          VALIDATE_CHECKOV: false
-          VALIDATE_NATURAL_LANGUAGE: false
-          VALIDATE_MARKDOWN: false
-          VALIDATE_MARKDOWN_PRETTIER: false
-          VALIDATE_JSCPD: false
-          VALIDATE_GIT_COMMITLINT: false
-          # StandardJS enforces "no semicolons", which contradicts the repository's
-          # Prettier config (semi: true) and would make the lint gate impossible to pass.
-          VALIDATE_JAVASCRIPT_STANDARD: false
-          VALIDATE_TYPESCRIPT_STANDARD: false
-
-      - name: Checkout shared scripts
+          set -euo pipefail
+          exec > >(tee lint.log) 2>&1
+          npm ci
+          npm run lint
+      - name: Provide diagnostics to the repair agent
+        id: findings
         if: always()
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-          path: .gate-scripts
-
-      - name: Handle Lint Failure (Trigger Autonomous Remediation)
-        if: failure() && steps.super-linter.outcome == 'failure'
         uses: actions/github-script@v7
         env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_REF: ${{ inputs.head_ref }}
+          RESULT: ${{ steps.check.outcome }}
         with:
           script: |
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/remediation.cjs`);
-            const prNumber = Number(process.env.PR_NUMBER);
-            await helpers.addLabel({ github, context, core, prNumber, label: 'lint-failed' });
-
-            const fs = require('fs');
-            const path = require('path');
-            const outDir = path.join(process.env.GITHUB_WORKSPACE, 'super-linter-output', 'super-linter');
-            let details = '';
-            try {
-              for (const name of fs.readdirSync(outDir).filter(n => n.startsWith('super-linter-parallel-std')).sort()) {
-                const text = fs.readFileSync(path.join(outDir, name), 'utf8')
-                  .replace(/\x1b\[[0-9;]*m/g, '')
-                  .replace(/\/github\/workspace\//g, '')
-                  .trim();
-                if (text && /error|✖|\[warn\]|problem/i.test(text) && !/no errors found/i.test(text)) {
-                  const linter = name.replace(/^super-linter-parallel-std(out|err)-/, '');
-                  details += `\n### ${linter}\n${text.slice(0, 1500)}\n`;
-                }
-              }
-            } catch (e) {
-              core.warning(`Could not read Super-Linter output: ${e.message}`);
-            }
-
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const status = await helpers.dispatchRemediation({
-              github, context, core, prNumber,
-              headRef: process.env.HEAD_REF,
-              workflow: 'pr-lint-fixer.lock.yml',
-              findings: `Super-Linter failed in run ${context.runId} (${runUrl}). Fix EVERY issue below.\n${details || '(no linter output captured)'}`
-            });
-
-            const summary = '### ❌ Lint & Format Gatekeeper Failed\n\n' +
-              `> 🤖 **Autonomous Remediation**: Added \`lint-failed\` label. PR Lint Fixer dispatch status: **${status}**. ` +
-              'The agent applies formatting/style fixes, pushes them to the PR branch, and the pipeline re-runs automatically.\n';
-            await core.summary.addRaw(summary).write();
-
-      - name: Handle Lint Success (Clear Remediation Label)
-        if: success()
-        uses: actions/github-script@v7
-        env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-        with:
-          script: |
-            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/remediation.cjs`);
-            await helpers.removeLabel({ github, context, core, prNumber: Number(process.env.PR_NUMBER), label: 'lint-failed' });
+            const fs = require('node:fs');
+            const detail = fs.existsSync('lint.log') ? fs.readFileSync('lint.log', 'utf8').slice(-5500) : 'Checkout or Node setup failed; see the job log.';
+            core.setOutput('findings', `npm run lint: ${process.env.RESULT}\n${detail}`);

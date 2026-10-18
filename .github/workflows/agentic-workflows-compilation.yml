@@ -2,100 +2,66 @@ name: Agentic Workflows Compilation
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/*.md'
+    branches: [main]
+    paths: ['.github/workflows/**']
   pull_request:
-    paths:
-      - '.github/workflows/*.md'
+    paths: ['.github/workflows/**']
+  workflow_call:
+    inputs:
+      head_sha:
+        type: string
+        default: ''
+      base_sha:
+        type: string
+        default: ''
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: write
+  contents: read
 
 jobs:
   validate-compilation:
-    name: Verify & Remediate Lockfiles
+    name: Verify compiled workflows
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.head_sha || github.sha }}
           fetch-depth: 0
-
-      - name: Install gh-aw extension
+          persist-credentials: false
+      - name: Detect workflow changes
+        id: changes
+        env:
+          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        shell: bash
+        run: |
+          if [ -z "$BASE_SHA" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$BASE_SHA...$HEAD_SHA" -- .github/workflows; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            STATUS=$?
+            if [ "$STATUS" -ne 1 ]; then exit "$STATUS"; fi
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install the pinned compiler
+        if: steps.changes.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh extension install github/gh-aw || curl -sL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
-          echo "$HOME/.local/share/gh/extensions/gh-aw" >> $GITHUB_PATH
-
-      - name: Recompile and validate workflows
-        run: gh aw compile --validate
-
-      - name: Check lockfile drift & create remediation PR
+        run: gh extension install github/gh-aw --pin v0.89.21
+      - name: Compile and validate
+        if: steps.changes.outputs.needed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh aw compile --validate --purge
+      - name: Reject compilation drift
+        if: steps.changes.outputs.needed == 'true'
+        shell: bash
         run: |
-          if git diff --ignore-space-at-eol -I '^# gh-aw-metadata: ' --quiet .github/workflows/*.lock.yml; then
-            echo "✅ All agentic workflow lockfiles are up to date."
-            exit 0
+          git diff --exit-code -- .github/workflows
+          UNTRACKED=$(git ls-files --others --exclude-standard -- '.github/workflows/*.lock.yml')
+          if [ -n "$UNTRACKED" ]; then
+            echo "::error::Untracked compiled workflows: $UNTRACKED. Compile with gh-aw v0.89.21 and commit the lockfiles."
+            exit 1
           fi
-
-          echo "⚠️ Agentic workflow lockfiles are out of date with their markdown source."
-
-          # Determine target base branch
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TARGET_BRANCH="${{ github.head_ref }}"
-          else
-            TARGET_BRANCH="${{ github.ref_name }}"
-          fi
-
-          FIX_BRANCH="chore/recompile-agentic-workflows-${TARGET_BRANCH//\//-}"
-
-          # Configure git author
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Switch to new remediation branch and commit updated lockfiles
-          git checkout -B "$FIX_BRANCH"
-          git add .github/workflows/*.lock.yml
-          git commit -m "chore(ci): update compiled agentic workflow lockfiles"
-
-          if ! git push -u origin "$FIX_BRANCH" --force; then
-            echo "::warning::Automated push was blocked by GitHub workflow push permissions. Please recompile locally with 'gh aw compile' and push."
-            exit 0
-          fi
-
-          # Check if an open PR already exists for this branch
-          EXISTING_PR=$(gh pr list --head "$FIX_BRANCH" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number')
-
-          if [ -n "$EXISTING_PR" ]; then
-            echo "Updated existing remediation PR #$EXISTING_PR"
-            gh pr edit "$EXISTING_PR" --add-reviewer "sitoader" --add-label "human-review-needed"
-            PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq '.url')
-          else
-            PR_URL=$(gh pr create \
-              --base "$TARGET_BRANCH" \
-              --head "$FIX_BRANCH" \
-              --title "chore(ci): update compiled agentic workflow lockfiles" \
-              --body "This PR was automatically generated because \`.github/workflows/*.lock.yml\` was out of date with its markdown source.\n\n⚠️ **Human review required before merging.**" \
-              --label "human-review-needed" \
-              --reviewer "sitoader")
-            echo "Created remediation PR: $PR_URL"
-          fi
-
-          # Write to Actions Job Summary
-          echo "### ⚠️ Workflow Compilation Drift Detected" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Agentic workflow lockfiles were out of date. An automated remediation PR has been created and assigned to **@sitoader** with the \`human-review-needed\` label:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Remediation PR**: $PR_URL" >> $GITHUB_STEP_SUMMARY
-          echo "- **Reviewer**: @sitoader" >> $GITHUB_STEP_SUMMARY
-          echo "- **Label**: \`human-review-needed\`" >> $GITHUB_STEP_SUMMARY
-
-          exit 1

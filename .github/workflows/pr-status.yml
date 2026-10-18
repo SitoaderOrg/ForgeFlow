@@ -1,0 +1,91 @@
+name: PR Status Labels
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      gates:
+        required: true
+        type: string
+      allow_clear:
+        description: Only actual feature-head checks may clear failure labels
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  labels:
+    name: Reflect native check results in PR labels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update visibility without using labels as workflow state
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          GATES: ${{ inputs.gates }}
+          ALLOW_CLEAR: ${{ inputs.allow_clear }}
+        with:
+          script: |
+            const number = Number(process.env.PR_NUMBER);
+            if (!Number.isSafeInteger(number) || number <= 0) throw new Error('Invalid PR number.');
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
+            if (pr.state !== 'open' || pr.head.sha !== process.env.HEAD_SHA) {
+              core.notice('Not updating labels from a superseded validation.');
+              return;
+            }
+            const gates = JSON.parse(process.env.GATES);
+            const states = {
+              'workflow-compilation-failed': gates.compile?.result,
+              'needs-metadata': gates.metadata?.result,
+              'lint-failed': gates.lint?.result,
+              'build-failed': gates.build?.result,
+              'test-required': gates.test?.result,
+              'docs-required': gates.docs?.result,
+              'security-failed': gates.security?.result,
+              'codeql-alert': gates.security?.outputs?.codeql_result,
+              'dependency-alert': gates.security?.outputs?.dependency_result,
+              'secret-alert': gates.security?.outputs?.secret_result
+            };
+            const current = new Set(pr.labels.map(label => label.name));
+            const add = [];
+            for (const [name, result] of Object.entries(states)) {
+              if (result === 'failure' && !current.has(name)) {
+                try {
+                  await github.rest.issues.getLabel({ ...context.repo, name });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  try {
+                    await github.rest.issues.createLabel({
+                      ...context.repo, name, color: 'd73a4a',
+                      description: 'Unresolved quality check; cleared only after successful current-revision validation.'
+                    });
+                  } catch (creationError) {
+                    if (creationError.status !== 422 ||
+                        !creationError.response?.data?.errors?.some(item => item.code === 'already_exists')) throw creationError;
+                    core.info(`${name} was created by another run.`);
+                  }
+                }
+                add.push(name);
+              } else if (result === 'success' && process.env.ALLOW_CLEAR === 'true' && current.has(name)) {
+                try {
+                  await github.rest.issues.removeLabel({ ...context.repo, issue_number: number, name });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  core.info(`${name} was already removed.`);
+                }
+              }
+            }
+            if (add.length) await github.rest.issues.addLabels({
+              ...context.repo, issue_number: number, labels: add
+            });
+            await core.summary.addRaw('Failure labels reflect native results. Candidate success, skipped, cancelled, and unexecuted checks do not clear feature labels. Only current feature-head success clears them. Labels never authorize repairs or merges.').write();

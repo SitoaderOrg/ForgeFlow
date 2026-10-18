@@ -1,0 +1,266 @@
+name: Validate a Scoped Repair Layer
+
+on:
+  workflow_call:
+    inputs:
+      parent_pr_number:
+        required: true
+        type: string
+      parent_head_ref:
+        required: true
+        type: string
+      parent_head_sha:
+        required: true
+        type: string
+      parent_base_sha:
+        required: true
+        type: string
+      parent_base_ref:
+        required: true
+        type: string
+      repair_pr_number:
+        required: true
+        type: string
+      repair_kind:
+        required: true
+        type: string
+      baseline:
+        required: true
+        type: string
+      state:
+        required: true
+        type: string
+    outputs:
+      head_sha:
+        value: ${{ jobs.inspect.outputs.head_sha }}
+      head_ref:
+        value: ${{ jobs.inspect.outputs.head_ref }}
+      check_id:
+        value: ${{ jobs.verdict.outputs.check_id }}
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Verify repair identity and allowed scope
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      head_sha: ${{ steps.inspect.outputs.head_sha }}
+      head_ref: ${{ steps.inspect.outputs.head_ref }}
+      lint: ${{ steps.inspect.outputs.lint }}
+      build: ${{ steps.inspect.outputs.build }}
+      test: ${{ steps.inspect.outputs.test }}
+      security: ${{ steps.inspect.outputs.security }}
+      docs: ${{ steps.inspect.outputs.docs }}
+    steps:
+      - name: Inspect the PR returned by the native publisher
+        id: inspect
+        uses: actions/github-script@v7
+        env:
+          PARENT_PR: ${{ inputs.parent_pr_number }}
+          PARENT_REF: ${{ inputs.parent_head_ref }}
+          PARENT_SHA: ${{ inputs.parent_head_sha }}
+          BASE_SHA: ${{ inputs.parent_base_sha }}
+          BASE_REF: ${{ inputs.parent_base_ref }}
+          REPAIR_PR: ${{ inputs.repair_pr_number }}
+          KIND: ${{ inputs.repair_kind }}
+          BASELINE: ${{ inputs.baseline }}
+          STATE: ${{ inputs.state }}
+        with:
+          script: |
+            const { isDeepStrictEqual } = require('node:util');
+            const { createHash } = require('node:crypto');
+            const state = JSON.parse(process.env.STATE);
+            const feature = state?.feature;
+            const parentNumber = Number(process.env.PARENT_PR);
+            const repairNumber = Number(process.env.REPAIR_PR);
+            const kinds = ['lint', 'build', 'test', 'security', 'docs'];
+            if (!Number.isSafeInteger(parentNumber) || parentNumber <= 0 ||
+                !Number.isSafeInteger(repairNumber) || repairNumber <= 0 ||
+                parentNumber === repairNumber || !kinds.includes(process.env.KIND)) {
+              throw new Error('Missing or invalid native repair PR identity.');
+            }
+            if (state?.version !== 1 || state.repository !== context.payload.repository.full_name ||
+                !Number.isSafeInteger(feature?.number) || feature.number <= 0 ||
+                !Array.isArray(state.repairs) || state.repairs.length > 6) {
+              throw new Error('Invalid feature/repair-chain state.');
+            }
+            const candidate = state.repairs.at(-1) || feature;
+            if (candidate.number !== parentNumber || candidate.head_ref !== process.env.PARENT_REF ||
+                candidate.head_sha !== process.env.PARENT_SHA || candidate.base_ref !== process.env.BASE_REF ||
+                candidate.base_sha !== process.env.BASE_SHA || repairNumber === feature.number ||
+                state.repairs.some(entry => entry.number === repairNumber)) {
+              throw new Error('The new repair must extend the exact recorded candidate, not replace an existing layer.');
+            }
+            const { data: root } = await github.rest.pulls.get({ ...context.repo, pull_number: feature.number });
+            const rootHash = createHash('sha256').update(JSON.stringify([root.title, root.body || ''])).digest('hex');
+            if (root.state !== 'open' || root.head.repo?.full_name !== state.repository ||
+                root.head.ref !== feature.head_ref || root.head.sha !== feature.head_sha ||
+                root.base.ref !== feature.base_ref || root.base.sha !== feature.base_sha ||
+                rootHash !== feature.metadata_hash) throw new Error('Feature snapshot changed during repair publication.');
+            const baseline = JSON.parse(process.env.BASELINE);
+            if (!baseline || kinds.some(kind => !['success', 'failure', 'skipped'].includes(baseline[kind]))) {
+              throw new Error('Incomplete or cancelled baseline checks cannot authorize a repair merge.');
+            }
+            const { data: parent } = await github.rest.pulls.get({ ...context.repo, pull_number: parentNumber });
+            const { data: repair } = await github.rest.pulls.get({ ...context.repo, pull_number: repairNumber });
+            const repository = context.payload.repository.full_name;
+            if (parent.state !== 'open' || parent.head.ref !== process.env.PARENT_REF ||
+                parent.head.sha !== process.env.PARENT_SHA || parent.base.sha !== process.env.BASE_SHA ||
+                parent.base.ref !== process.env.BASE_REF ||
+                parent.head.repo?.full_name !== repository || parent.head.ref === context.payload.repository.default_branch ||
+                repair.state !== 'open' || repair.draft || repair.auto_merge ||
+                repair.user.login !== 'github-actions[bot]' || repair.user.type !== 'Bot' ||
+                repair.base.repo?.full_name !== repository || repair.head.repo?.full_name !== repository ||
+                repair.base.ref !== parent.head.ref || repair.base.sha !== parent.head.sha ||
+                repair.head.ref === parent.head.ref || repair.head.ref === context.payload.repository.default_branch ||
+                !/^[0-9a-f]{40}$/.test(repair.head.sha)) {
+              throw new Error('Repair provenance, parent revision, or feature-branch target does not match.');
+            }
+            const { data: membership } = await github.request('GET /repos/{owner}/{repo}/stacks', {
+              ...context.repo, pull_request: repairNumber
+            });
+            const stacks = Array.isArray(membership) ? membership : membership?.stacks;
+            if (!Array.isArray(stacks) || stacks.length) {
+              throw new Error('A newly published layer must be standalone until the controller registers it.');
+            }
+            const { data: comparison } = await github.request('GET /repos/{owner}/{repo}/compare/{basehead}', {
+              ...context.repo, basehead: `${parent.head.sha}...${repair.head.sha}`
+            });
+            if (comparison.status !== 'ahead' || comparison.merge_base_commit.sha !== parent.head.sha) {
+              throw new Error('Repair is not a descendant of the validated parent revision.');
+            }
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo, pull_number: repairNumber, per_page: 100
+            });
+            if (!Array.isArray(files) || !files.length || files.length > 20 ||
+                files.some(file => !Number.isSafeInteger(file.changes) || file.changes < 0) ||
+                files.reduce((sum, file) => sum + file.changes, 0) > 256) {
+              throw new Error('Repair must be a nonempty, bounded change (20 files / 256 changed lines).');
+            }
+            const allowed = file => {
+              if (/(^|\/)(AGENTS|CLAUDE|SKILL)\.md$/i.test(file) ||
+                  /(^|\/)(vitest|vite|eslint|prettier|jest|playwright|webpack|rollup)\.config\./i.test(file) ||
+                  /\/(package(-lock)?|npm-shrinkwrap)\.json$/.test(file) ||
+                  file.split('/').some(part => part.startsWith('.'))) return false;
+              const documentation = /^(docs\/.*\.md|apps\/.*\.md|readme\.md|README\.md|prereqs\.md)$/.test(file);
+              if (process.env.KIND === 'docs') return documentation;
+              return documentation || /^apps\/.*\.(js|css|html|json)$/.test(file) ||
+                /^tests\/.*\.js$/.test(file) ||
+                (['build', 'security'].includes(process.env.KIND) && /^package(-lock)?\.json$/.test(file));
+            };
+            const testFile = file => /(^|\/)(tests|__tests__)\//.test(file) || /\.(test|spec)\.js$/.test(file);
+            for (const file of files) {
+              if (!allowed(file.filename) || (file.previous_filename && !allowed(file.previous_filename)) ||
+                  (file.status === 'removed' && testFile(file.filename)) ||
+                  (file.previous_filename && testFile(file.previous_filename))) {
+                throw new Error(`Repair cannot change protected/out-of-scope path: ${file.filename}`);
+              }
+            }
+            if (files.some(file => file.filename === 'package.json')) {
+              const readPackage = async ref => {
+                const { data } = await github.rest.repos.getContent({ ...context.repo, path: 'package.json', ref });
+                if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 100000) throw new Error('Invalid package manifest.');
+                const manifest = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+                for (const key of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'overrides']) delete manifest[key];
+                return manifest;
+              };
+              if (!isDeepStrictEqual(await readPackage(parent.head.sha), await readPackage(repair.head.sha))) {
+                throw new Error('Repairs may change dependencies, not package scripts, engines, or quality policy.');
+              }
+            }
+            const required = new Set([process.env.KIND, ...kinds.filter(kind => baseline[kind] === 'success')]);
+            if (files.some(file => /^package(-lock)?\.json$/.test(file.filename))) required.add('security');
+            for (const kind of kinds) core.setOutput(kind, String(required.has(kind)));
+            core.setOutput('head_sha', repair.head.sha);
+            core.setOutput('head_ref', repair.head.ref);
+
+  lint:
+    needs: inspect
+    if: needs.inspect.outputs.lint == 'true'
+    uses: ./.github/workflows/pr-lint.yml
+    with:
+      head_sha: ${{ needs.inspect.outputs.head_sha }}
+
+  build:
+    needs: inspect
+    if: needs.inspect.outputs.build == 'true'
+    uses: ./.github/workflows/pr-build.yml
+    with:
+      head_sha: ${{ needs.inspect.outputs.head_sha }}
+
+  test:
+    needs: inspect
+    if: needs.inspect.outputs.test == 'true'
+    uses: ./.github/workflows/pr-test.yml
+    with:
+      head_sha: ${{ needs.inspect.outputs.head_sha }}
+
+  security:
+    needs: inspect
+    if: needs.inspect.outputs.security == 'true'
+    uses: ./.github/workflows/pr-security.yml
+    with:
+      head_sha: ${{ needs.inspect.outputs.head_sha }}
+      base_sha: ${{ fromJSON(inputs.state).feature.base_sha }}
+    permissions:
+      actions: read
+      contents: read
+      security-events: read
+
+  docs:
+    needs: inspect
+    if: needs.inspect.outputs.docs == 'true'
+    uses: ./.github/workflows/pr-docs.yml
+    with:
+      pr_number: ${{ inputs.repair_pr_number }}
+      head_ref: ${{ needs.inspect.outputs.head_ref }}
+      head_sha: ${{ needs.inspect.outputs.head_sha }}
+      base_ref: ${{ inputs.parent_head_ref }}
+      base_sha: ${{ inputs.parent_head_sha }}
+      comparison_base_sha: ${{ fromJSON(inputs.state).feature.base_sha }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      copilot-requests: write
+
+  verdict:
+    name: Publish scoped repair validation
+    needs: [inspect, lint, build, test, security, docs]
+    if: ${{ always() && needs.inspect.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    outputs:
+      check_id: ${{ steps.verdict.outputs.check_id }}
+    steps:
+      - name: Require the selected and previously passing checks
+        id: verdict
+        uses: actions/github-script@v7
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          HEAD_SHA: ${{ needs.inspect.outputs.head_sha }}
+          KIND: ${{ inputs.repair_kind }}
+        with:
+          script: |
+            const results = JSON.parse(process.env.RESULTS);
+            const kinds = ['lint', 'build', 'test', 'security', 'docs'];
+            const required = kinds.filter(kind => results.inspect.outputs[kind] === 'true');
+            const failed = required.filter(kind => results[kind]?.result !== 'success');
+            if (!required.includes(process.env.KIND)) throw new Error('The selected repair check is missing.');
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const summary = required.map(kind => `- ${kind}: ${results[kind]?.result || 'missing'}`).join('\n') +
+              '\n\nThis checks the repaired gate and previously passing gates. Other parent failures remain unresolved; the full parent pipeline must run again.';
+            const { data: check } = await github.rest.checks.create({
+              ...context.repo, name: 'Scoped repair validation', head_sha: process.env.HEAD_SHA,
+              status: 'completed', conclusion: failed.length ? 'failure' : 'success', details_url: run,
+              output: { title: failed.length ? 'Repair validation failed' : 'Scoped repair validation passed', summary }
+            });
+            if (failed.length) throw new Error(`Repair blocked by: ${failed.join(', ')}.`);
+            if (!Number.isSafeInteger(check.id) || check.id <= 0) throw new Error('Native scoped check ID is missing.');
+            core.setOutput('check_id', String(check.id));
