@@ -16,6 +16,8 @@
         </p>
       </header>
 
+      <div id="player-banner" class="player-banner"></div>
+
       <div class="canvas-wrapper">
         <canvas id="game-canvas" width="800" height="600"></canvas>
       </div>
@@ -54,6 +56,11 @@
           </button>
         </div>
       </div>
+
+      <section class="leaderboard-panel" aria-label="Leaderboard">
+        <h2 class="leaderboard-title">🏆 Top Heists</h2>
+        <ol id="leaderboard" class="leaderboard-list"></ol>
+      </section>
     </div>
 
     <script type="module" src="./src/main.js"></script>

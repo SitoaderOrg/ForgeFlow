@@ -162,3 +162,22 @@ canvas {
 .btn-secondary:active {
   background: #4f4568;
 }
+
+.player-banner {
+  margin: 0.5rem 0;
+  text-align: center;
+  font-weight: 600;
+}
+
+.leaderboard-panel {
+  margin-top: 1rem;
+}
+
+.leaderboard-list {
+  list-style: none;
+  padding: 0;
+}
+
+.leaderboard-row.is-me {
+  font-weight: 700;
+}

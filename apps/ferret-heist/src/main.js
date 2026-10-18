@@ -2,10 +2,24 @@ import { GameEngine } from './game/engine.js';
 import { GameRenderer } from './game/render.js';
 import { SoundEffects } from './game/audio.js';
 import { GAME_STATES } from './game/constants.js';
+import {
+  Leaderboard,
+  renderLeaderboard,
+  renderPlayerBanner
+} from './game/leaderboard.js';
 
 window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('game-canvas');
   const sfx = new SoundEffects();
+
+  // Player nickname comes from the share link, e.g. ?player=Bandit
+  const nickname =
+    new URLSearchParams(window.location.search).get('player') ||
+    'Anonymous Ferret';
+  const leaderboard = new Leaderboard();
+  const leaderboardEl = document.getElementById('leaderboard');
+  renderPlayerBanner(document.getElementById('player-banner'), nickname);
+  renderLeaderboard(leaderboardEl, leaderboard.getTop(), nickname);
 
   const engine = new GameEngine({
     onEvent: (event) => {
@@ -30,6 +44,12 @@ window.addEventListener('DOMContentLoaded', () => {
           break;
         case 'victory':
           sfx.victory();
+          leaderboard.addScore(
+            nickname,
+            engine.stash.totalScore,
+            engine.stash.stashedItems.length
+          );
+          renderLeaderboard(leaderboardEl, leaderboard.getTop(), nickname);
           break;
         default:
           break;
