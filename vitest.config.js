@@ -4,8 +4,11 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.js'],
+    passWithNoTests: false,
     coverage: {
       provider: 'v8',
+      thresholds: { lines: 80 },
+      reportOnFailure: true,
       reporter: ['text', 'json', 'html'],
       include: ['apps/ferret-heist/src/game/**/*.js'],
       exclude: [
