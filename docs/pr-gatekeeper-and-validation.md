@@ -1,8 +1,7 @@
 # PR Metadata Gate and Native Repair
 
 [`pr-gatekeeper.yml`](../.github/workflows/pr-gatekeeper.yml) is the metadata quality
-gate after the pipeline resolves the immutable PR revision and verifies workflow
-compilation. It runs through
+gate after the pipeline resolves the immutable PR revision. It runs through
 `workflow_call`; it does not listen for labels, dispatch agents, or edit the PR.
 
 ## Entry and execution order
@@ -15,16 +14,15 @@ feature snapshot. The dispatch ref and `github.sha` must match the captured
 validation target. Metadata policy always applies to the root feature PR,
 including its branch identity and title/body hash.
 
-Workflow compilation must pass before metadata, followed by lint, build, and
-parallel deep checks. Compilation failure blocks agents and requires human
-correction. The feature PR targets `main` outside the repair-only native stack;
+Metadata precedes lint, build, and parallel deep checks. Framework compilation
+and regression checks run independently for framework changes; their failures
+require maintainer correction and block merging through a separate required
+check, not through application scheduling. The feature PR targets `main` outside the repair-only native stack;
 feature is the stack trunk, not `main`.
 
 ```mermaid
 flowchart TD
-    Context["Verify immutable root and current candidate snapshots"] --> Compile["Workflow compilation"]
-    Compile -->|Pass| Gate["pr-gatekeeper.yml"]
-    Compile -->|Fail| PolicyStop["Human correction; agents blocked"]
+    Context["Verify immutable root and current candidate snapshots"] --> Gate["pr-gatekeeper.yml"]
     Gate -->|Pass| Lint["Lint, then build, then tests/security/docs"]
     Gate -->|"Native needs gate result is failure"| Findings["Pipeline selects metadata with run/candidate identity<br/>Labels do not trigger repair"]
     Findings -->|"Repair budget remains"| Agent["pr-repair.lock.yml via workflow_call"]
@@ -79,7 +77,7 @@ and recording that the code head is unchanged, no files changed, and revalidatio
 is pending. This is the only no-file-PR case: **all automated file changes,
 including lint, still require separate repair PRs**.
 
-The new run uses the verified new metadata hash and reruns compilation, metadata,
+The new run uses the verified new metadata hash and reruns metadata,
 and all subsequent gates against the full current target. With pending repairs,
 this is the top candidate, not the unchanged feature head. Metadata calls count
 toward the **same six-call total** as code/docs repairs, including failed/no-op
@@ -108,7 +106,7 @@ See [the trigger rationale](remediation-chaining.md#what-triggers-a-repair-and-w
 ## Readiness
 
 The required check **`PR Quality / Ready for review`** requires successful
-actual-parent context, compilation, and all mandatory gate conclusions, with
+actual-parent context and all six application gate conclusions, with
 live head/base/metadata matching the snapshot and no pending unmerged repairs.
 Candidate checks cannot certify the unmerged feature PR. A metadata edit during
 validation makes the snapshot stale even if no commit changed.

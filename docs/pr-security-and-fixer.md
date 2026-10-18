@@ -115,7 +115,7 @@ Six repair calls total include metadata; landing does not reset the budget.
 Bounded explicit dispatch validates each next exact candidate or feature head.
 After landing, all parent gates rerun at the actual updated feature head.
 Candidate results cannot certify the unmerged parent as
-**`PR Quality / Ready for review`**; compilation, all six quality gates, and live
+**`PR Quality / Ready for review`**; all six application quality gates and live
 head/base/metadata must pass there. `pr-status.yml` adds `security-failed` and
 source/dependency/secret labels from candidate failures, clearing each only from
 passing actual current-parent component checks. Missing or skipped/cancelled

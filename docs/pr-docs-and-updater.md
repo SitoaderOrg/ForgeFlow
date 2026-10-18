@@ -217,7 +217,7 @@ Preserve branches and budget after landing.
 
 ## Readiness and limits
 
-**`PR Quality / Ready for review`** requires actual-parent compilation, all six
+**`PR Quality / Ready for review`** requires all six actual-parent application
 quality gates, and the live head/base/title-body hash, with no unmerged repairs.
 Missing, skipped, cancelled, failed, or stale evidence fails readiness even if
 the documentation agent reported success elsewhere.

@@ -4,7 +4,8 @@
 
 Compile with **gh-aw v0.89.21** and review the Markdown, generated lockfiles and YAML
 together. Deploy the entry workflow and reusable workflows to the default branch,
-then incorporate that revision into feature branches. GitHub requires a dispatched
+including the independently dispatchable framework CI workflow, then incorporate
+that revision into feature branches. GitHub requires a dispatched
 workflow to exist on the default branch, even when it runs on a feature ref.
 
 ```bash
@@ -29,17 +30,33 @@ branch) in Settings > Rules > Rulesets:
 
 - Require a pull request before merging.
 - Require at least **one approving review**.
+- Require review from code owners for owned paths.
 - Dismiss stale approvals when new commits are pushed.
 - Require approval of the most recent reviewable push.
-- Require status checks, including the exact check **`PR Quality / Ready for review`**.
+- Require both exact checks **`PR Quality / Ready for review`** and **`Framework CI / Required`**.
 - Require the branch to be up to date before merging.
 - Leave the bypass list empty, including for administrators and automation.
 
-Select the GitHub Actions integration as the expected source of the readiness
-check when configuring it. Add organization-specific checks where needed.
-The readiness job itself requires compilation, metadata, lint, build, tests,
+Select the GitHub Actions integration as the expected source of both
+checks when configuring them. Add organization-specific checks where needed.
+Application readiness requires metadata, lint, build, tests,
 security and documentation; skipped, cancelled, failed, missing or stale results
 do not pass it. Open automated repair PRs also block readiness.
+
+Framework CI runs independently on all PRs and always reports its required
+result, avoiding missing checks from workflow-level path filters. It skips
+compiler and framework-test execution for app-only changes. Framework changes
+require their own successful compilation/regression evidence; app readiness
+does not waive that requirement.
+
+`.github/CODEOWNERS` assigns `.github`, framework tests, shared root tooling and
+framework documentation to `@sitoader`, including CODEOWNERS itself. Shared
+root-lock updates also require this owner's review. CODEOWNERS is a merge-review
+mechanism, not a restriction on who can propose edits or execute PR checks.
+Ensure eligible reviewers are available; PR authors cannot approve themselves.
+The effective owner file comes from the PR's base branch, so deploy it before
+relying on it for subsequent feature PRs. Repository settings are not changed
+by committing these files.
 
 Allow squash merging for repair PRs targeting feature branches. The controller
 respects applicable branch rules; if those branches require human approval, the
@@ -115,10 +132,11 @@ Only same-repository feature PRs are automated. Do not switch to a privileged
 
 ### App command contract
 
-The npm adapters install from the root `package-lock.json` and call the root
-`lint`, `build`, and `test:ci` scripts. Those scripts delegate required checks
-to packages discovered by `workspaces: ["apps/*"]`; `test:ci` first checks the
-framework independently. Each app must provide its own explicit commands,
+The application adapters install from the root `package-lock.json` and call
+`lint:apps`, `build`, and `test:ci:apps`. Those scripts delegate required checks
+to packages discovered by `workspaces: ["apps/*"]`. Independent framework CI runs
+`lint:framework` and `test:framework` when its inputs change. Root `lint` and
+`test:ci` remain aggregate developer commands. Each app must provide explicit commands,
 dependencies, test-discovery configuration and coverage/no-tests policy.
 
 Keep a single root lockfile. Put app source, tests, build/test configuration,
@@ -186,6 +204,11 @@ with bad metadata, lint, tests, security findings and missing documentation. Ver
 - Documentation decisions are revision-scoped and cannot be waived by labels.
 - Failure labels clear only after successful validation of the current parent head.
 - All gates pass before readiness, and fresh human approval remains necessary.
+- App-only PRs do not invoke the compiler or framework tests in CI, but still
+  receive `Framework CI / Required`. Framework edits run compiler/regression
+  checks once, outside the application pipeline, and require code-owner review.
+- After token-authenticated repair landing, independent framework CI is dispatched
+  on the actual feature head alongside application revalidation.
 - With auto-merge enabled, GitHub merges only after both checks and approval pass.
 
 Local compilation and regression tests do not replace this live acceptance run.

@@ -45,8 +45,8 @@ See [why labels do not trigger repairs](remediation-chaining.md#what-triggers-a-
 
 ### 2. Full candidate checks and guarded landing
 
-The next run evaluates the complete current top candidate, including compilation
-and all six gates through normal dependencies. Root metadata stays bound to its
+The next run evaluates all six application gates on the complete current top
+candidate through normal dependencies. Root metadata stays bound to its
 snapshot; project checks evaluate the full feature plus repairs. A candidate
 pass cannot make an **unmerged** feature PR ready.
 
@@ -75,8 +75,9 @@ Keep the stack/branch evidence; do not delete repair branches.
 ### 3. Full validation of the updated parent
 
 After confirmed landing, the controller advances the recorded root snapshot to
-the verified actual feature head and dispatches a full parent run. Compilation
-and **all six parent gates rerun**. The consumed repair round survives landing;
+the verified actual feature head and dispatches a full parent run plus independent
+framework CI. **All six application gates rerun**; framework CI classifies the
+full feature diff and runs only its applicable checks. The consumed repair round survives landing;
 it is not reset by the bot. A metadata-only repair likewise requires new full
 validation of the current target after its controlled metadata transition.
 That metadata-only update gets its own explicit audit comment describing the
@@ -86,16 +87,16 @@ revalidation. It does not create a fake file-change PR.
 The native check named exactly **`PR Quality / Ready for review`** requires:
 
 1. Successful immutable root PR context validation.
-2. Successful workflow compilation and all six quality gates: metadata, lint,
+2. All six application quality gates: metadata, lint,
    build, test, security, and documentation, on the actual current feature.
 3. A still-open feature PR whose live head/base SHAs and title/body hash match
    the validated snapshot, with no pending unmerged repairs.
 
 Failed, skipped, cancelled, missing, or stale mandatory evidence fails readiness.
 An agent assertion, label, comment, scoped check, old check, or all-green unmerged
-candidate cannot replace this evidence. A successful compilation job may skip
-compiler installation after proving there are no workflow changes; that is not
-a skipped mandatory job.
+candidate cannot replace this evidence. Independent `Framework CI / Required`
+must also succeed before merging. On app-only changes it reports a not-needed
+success without installing a compiler or running framework tests.
 
 ```mermaid
 flowchart TD
@@ -111,12 +112,12 @@ flowchart TD
     Candidate -->|All green with repairs| Guard["Pin top; verify all root/member snapshots, order, trunk<br/>Enforce rules; block merge queues"]
     Guard --> Land["Native asynchronous squash landing into feature only<br/>Poll and verify every member and actual feature head"]
     Land --> Audit["Feature comment links initial_head_sha, baseline-to-final compare, EACH PR and squash SHA<br/>Preserve initial baseline, branches, and round"]
-    Audit --> Full["Rerun compilation and ALL parent gates at actual updated feature head"]
+    Audit --> Full["Rerun ALL app gates and dispatch independent framework CI at the actual feature head"]
     Full --> Ready["PR Quality / Ready for review<br/>No candidate certification of unmerged parent"]
     Candidate -->|"All green; no unmerged repairs; actual feature checked"| Ready
     Ready -->|Fail or stale| Blocked["Not ready; remaining budget or manual handling"]
     Ready -->|Pass| Handoff["Human review handoff; keep drafts as drafts"]
-    Handoff --> Policy["Fresh human approval and required readiness for main<br/>Optional policy-checked native auto-merge; queues blocked"]
+    Handoff --> Policy["Fresh human/code-owner approval and both required checks for main<br/>Optional policy-checked native auto-merge; queues blocked"]
     Scoped & Register & Guard & Land & Audit -->|"Changed snapshot, scope, conflict, API/poll, or missing state"| Stop["Stop explicitly; preserve stacks and branches<br/>No unstack, recreate, rebase, force-push, or automatic recovery"]
 ```
 
@@ -174,9 +175,10 @@ Before enabling it on the feature PR targeting `main`, the handoff must verify:
 
 - Repository settings allow auto-merge.
 - Active target-branch rules require **at least one human approval**, dismissal
-  of stale reviews after pushes, approval of the most recent push, and the exact
-  required check **`PR Quality / Ready for review`** with strict up-to-date status
-  checking.
+  of stale reviews after pushes, approval of the most recent push, code-owner
+  review for owned paths, and both exact required checks
+  **`PR Quality / Ready for review`** and **`Framework CI / Required`** with
+  strict up-to-date status checking.
 - Applicable rulesets have **no bypass actors**, and no merge queue is required.
 - Root context and required checks are still current after policy inspection.
 
@@ -184,7 +186,7 @@ Missing/unreadable policy, inactive rules, bypass actors, queue requirements, or
 snapshot changes stop the handoff. It never creates or weakens rules, approves,
 force-merges, or bypasses checks. GitHub still enforces configured conditions
 after auto-merge is enabled. Human merge also requires fresh human approval and
-the required readiness check; repair landing never authorizes a `main` merge.
+both required checks; repair landing never authorizes a `main` merge.
 
 ## Administration and sources
 

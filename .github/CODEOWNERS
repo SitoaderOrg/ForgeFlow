@@ -1,0 +1,19 @@
+# Framework policy and its shared tooling require framework-owner review.
+/.github/ @sitoader
+/tests/framework/ @sitoader
+/package.json @sitoader
+/package-lock.json @sitoader
+/vitest.config.js @sitoader
+/.eslintrc.json @sitoader
+/.eslintignore @sitoader
+/.prettierrc @sitoader
+/.prettierignore @sitoader
+/.gitattributes @sitoader
+/.gitignore @sitoader
+/.npmrc @sitoader
+/.nvmrc @sitoader
+/.node-version @sitoader
+/.editorconfig @sitoader
+/docs/ @sitoader
+/readme.md @sitoader
+/prereqs.md @sitoader

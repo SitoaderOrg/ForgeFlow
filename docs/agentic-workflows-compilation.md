@@ -1,140 +1,132 @@
-# Pinned Agentic Workflow Compilation
-
-GitHub Agentic Workflows stores human-authored source in
-`.github/workflows/*.md` and generated Actions workflows in corresponding
-`*.lock.yml` files. GitHub runs the generated workflow, so a Markdown-only change
-does not update runtime behavior until the matching lockfile is compiled and
-committed.
-
-This repository pins the compiler to **gh-aw `v0.89.21`**.
-
-## Read-only CI verification
+# Independent Framework CI
 
 [`agentic-workflows-compilation.yml`](../.github/workflows/agentic-workflows-compilation.yml)
-runs on pull requests and pushes to `main` that change paths under
-`.github/workflows/**`, and is also callable through `workflow_call`.
-The path filter includes lockfiles and ordinary workflow YAML, not just
-agent source Markdown.
+is the maintainer-owned **Framework CI** workflow. It is not called as an
+application pipeline stage. Its single native job is named exactly
+**`Framework CI / Required`**.
 
-The native PR pipeline calls this workflow **before metadata**, supplying the
-immutable `head_sha` and comparison `base_sha`. Candidate runs inspect the full
-feature-plus-repairs change against the captured root base, not only the newest
-layer. Compilation is required both for an all-green candidate and for fresh
-actual-parent readiness after landing; candidate results cannot certify an
-unmerged feature PR.
+GitHub Agentic Workflows stores authored instructions in
+`.github/workflows/*.md` and executable generated workflows in corresponding
+`*.lock.yml` files. CI verifies their consistency; it never publishes a
+replacement workflow, pushes a fix, or invokes an inference agent.
 
-The workflow:
+## Independent merge requirements
 
-1. Checks out the supplied immutable head (or `github.sha` for standalone
-   execution), with full history and without persisting checkout credentials.
-2. Inspects `base_sha...head_sha` for changes under `.github/workflows`. If none
-   exist, the job succeeds without installing or running the compiler. A diff
-   error fails; it is not treated as "no changes." Without a supplied base SHA,
-   compilation is required.
-3. When workflow changes require it, installs the exact compiler with
-   `gh extension install github/gh-aw --pin v0.89.21`.
-4. Runs `gh aw compile --validate --purge`.
-5. Fails on tracked drift under `.github/workflows` or untracked generated
-   `*.lock.yml` files.
+Require both checks on `main`, with GitHub Actions as their expected source:
 
-The native **`PR Quality / Ready for review`** aggregate requires compilation
-plus all six quality gates to succeed. A compilation failure blocks both
-downstream metadata validation and automatic repair agents, because workflow
-policy changes require human correction. Skipping unnecessary compiler steps
-after a successful diff check is not the same as skipping this required job.
+- `PR Quality / Ready for review`: all six application gates, the current
+  feature snapshot, and no pending repair chain.
+- `Framework CI / Required`: applicable framework compilation and regression
+  checks, or an explicit not-needed result for an app-only change.
 
-It uses **`contents: read`**, not branch-writing permissions. Compilation may
-write generated files in the runner checkout for comparison, but CI does not
-push them, create a repair branch/PR, assign a reviewer, or add labels.
-There is no curl-based installer or automatic compiler upgrade.
+Also require fresh human approval, code-owner review for owned paths, strict
+up-to-date checks, and no bypass actors. The optional native auto-merge handoff
+verifies these requirements; it does not create or weaken repository rules.
 
-`--validate` requests compiler validation; `--purge` removes obsolete compiled
-outputs for removed workflow sources. This matters when migrating from the seven
-specialized remediation agents to the callable
-[`pr-repair.md`](../.github/workflows/pr-repair.md) workflow and its lockfile.
-Generated files should be regenerated rather than manually patched.
+A framework failure does not stop independent application checks or select an
+app repair agent. It still blocks merging through its own required check.
+App readiness is therefore not a claim that every repository merge requirement
+has passed.
 
-In `v0.89.21`, gh-aw frontmatter does not support arbitrary
-`on.workflow_call.outputs`. The lifecycle consumes the compiler-provided native
-PR-creation output as the authoritative identity of a code/docs repair PR.
-It does not infer that identity from labels or free-form agent text, nor use
-direct parent-branch push outputs to authorize repair merges. Metadata-only
-updates are verified against live parent metadata without creating an empty PR.
-Do not hand-edit the lockfile to invent a custom interface. This compiler
-limitation is distinct from the
-ordinary reusable Actions gates' supported `findings`/`repair_kind` outputs.
+The workflow intentionally has **no PR-level path filter**. Every PR gets a
+result, so app-only changes are not stuck waiting for an absent required check.
+Only the expensive steps are conditional. There is no second compilation call
+inside `pr-pipeline.yml`.
 
-The intended repair-only stack controller keeps the feature PR targeting `main`
-outside the stack and uses feature as trunk. The first repair targets feature;
-later repairs target the preceding repair branch. After scoped identity,
-protected-path, and selected-plus-previously-green gate validation, planned
-`pr-register-repair-stack.yml` registers native metadata at two PRs or appends
-later layers. It does not merge; one repair remains ordinary. The agent publishes
-the next PR only, never native stack metadata or landing operations. All
-automated file repairs, including lint and formatting, require a separate PR.
-Compilation remains a read-only verifier, not a direct-push exception.
+## Revision-bound execution
 
-The controller selects a repairable native `needs.<gate>.result == 'failure'`
-and calls the repair workflow through `workflow_call`; failure labels are only
-a view. Bounded explicit dispatch starts the next candidate or feature
-validation, retaining native run/attempt and candidate identity.
+Framework CI runs on PR events, pushes to `main`, and explicit dispatches.
+For a PR, it captures the head and base SHAs and checks out the head, not the
+synthetic merge commit. A dispatched run must use the current same-repository
+PR head branch and SHA. Stale events, malformed inputs and API errors fail.
+After successful checks it rechecks live PR head/base identities.
 
-Continuation uses a small typed artifact from a verified prior attempt of the
-same workflow: root snapshot, ordered repair entries/check IDs, native stack
-number, round, and the cycle-start **`initial_head_sha`**, which never changes
-when landing advances the current root head. This is controller state, not logs or the documentation
-agent's decision artifact. Missing or unverified state stops rather than
-reconstructing ownership from PR lists.
+PR change classification uses the full `base...head` diff. Pushes compare their
+before/after snapshots; an initial push inspects its complete tree. Git errors
+fail rather than being interpreted as no changes. NUL-delimited paths and
+disabled rename detection ensure renamed/deleted inputs are not missed.
 
-Only a new all-green full-candidate run permits planned
-`pr-land-repair-stack.yml` to pin the top, verify every root/member snapshot,
-order, and feature target, and use guarded asynchronous squash landing. This
-also applies to a single ordinary repair. Confirm every repair's squash SHA,
-link each PR and per-layer SHA on feature alongside the initial baseline and
-baseline-to-final comparison, and rerun compilation and all parent gates on
-the actual updated feature head. Six repair calls total include metadata;
-landing does not reset the budget. Branch rules stay enforced, merge queues are
-blocked, and changed snapshots/errors require manual handling without deleting,
-unstacking, recreating, rebasing, or force-pushing existing repairs.
+| Changed inputs | Compiler | Framework lint/tests |
+| --- | --- | --- |
+| `.github/**` or `.gitattributes` | Yes | Yes |
+| `tests/framework/**`, root package/lockfile, root test/lint/format/tooling configuration | No | Yes |
+| App source/tests/configuration or ordinary documentation only | No | No |
 
-The installed compiler also lacks a standalone native `set-output` capability.
-The read-only `pr-doc-review.md` evaluator therefore uses a typed custom safe-output
-job and a validated version-2 artifact as minimal integration glue. The consuming `pr-docs.yml` gate
-validates the response schema, fresh identity SHAs, and effective comparison
-base, then maps the agent's decision
-(`not_needed`/`sufficient` pass; `missing`/`uncertain` fail). It does not expect a custom
-`outputs.assessment` field. See the
-[assessment contract](pr-docs-and-updater.md#implemented-evaluator-and-artifact-contract).
+Keep compiler inputs and shared workflow imports under `.github` so source,
+generated lockfiles, `.github/aw/actions-lock.json`, compiler pins, and shared
+instructions share the protected/classified boundary. An import outside that
+boundary requires extending both classification and ownership in the same
+maintainer-reviewed change.
+
+Root lockfile changes can affect framework tooling even when motivated by an
+app dependency update, so they run framework regression checks. Root aggregate
+developer commands still check both framework and apps locally. CI separates
+them: application adapters use `lint:apps` and `test:ci:apps`, whereas framework
+CI uses `lint:framework` and `test:framework`.
+
+## Compilation and regression checks
+
+When compilation inputs change, CI installs **gh-aw `v0.89.21`**, runs
+`gh aw compile --validate --purge`, and rejects tracked drift under `.github`
+or untracked generated outputs. `--purge` also detects obsolete lockfiles left
+behind after deleting an agent source.
+
+Commit verified action resolutions in `.github/aw/actions-lock.json` alongside
+the generated workflows. Different GitHub API access locally and in CI can
+otherwise leave a version tag in one environment but resolve it to a commit
+SHA in the other. The setup-action release is pinned in this cache to keep
+generation consistent; drift verification remains enabled.
+
+Framework regression checks install the shared root lockfile with
+`npm ci --ignore-scripts`, then run framework lint and tests. All jobs use
+read-only repository permissions and disable persisted checkout credentials.
+App-only changes do not install the compiler or framework dependencies.
+
+Code owners must correct framework failures. Automatic app repairs remain
+prohibited from changing workflow policy, framework tests, or quality settings.
+The old `workflow-compilation-failed` app label is retired; framework status is
+its native check. Remove an old label during rollout only after confirming the
+independent framework result.
+
+## Ownership and deployment
+
+`.github/CODEOWNERS` assigns framework inputs, shared tooling, and framework
+documentation to `@sitoader`. It protects the owner file itself as well.
+Code owners need repository write access, and branch rules must require their
+review. CODEOWNERS does not prevent developers from proposing file edits and
+does not by itself make unreviewed PR code trusted.
+
+Deploy the reviewed framework workflow and owner file to `main` before relying
+on them for new feature PRs. GitHub uses the base branch's CODEOWNERS file.
+Wait for the new check to appear before adding its exact name to required
+checks. Ensure eligible reviewers are available; authors cannot approve their
+own PRs. See [Prerequisites](../prereqs.md) for the complete rollout policy.
+
+After token-authenticated repair-stack landing, PR events may not fire. The
+existing continuation controller therefore dispatches independent framework CI
+on the actual updated feature head alongside application revalidation.
+Candidate-only and metadata-only continuations do not duplicate framework
+checks on the unchanged feature revision. A dispatch failure is explicit, not
+a fallback to a successful or skipped framework verdict.
 
 ## Compile locally
-
-Install the pinned version if the extension is not already installed:
 
 ```shell
 gh extension install github/gh-aw --pin v0.89.21
 gh aw version
 gh aw compile --validate --purge
-git diff -- .github/workflows
-git ls-files --others --exclude-standard -- ".github/workflows/*.lock.yml"
+git diff -- .github
+npm run lint:framework
+npm run test:framework
 ```
 
-If a different compiler version is installed, switch to the pinned version
-before generating lockfiles. Review both additions and deletions, then include
-the source changes and generated outputs in the same reviewed change.
+Review generated additions and deletions and commit them with their source
+changes. Use the pinned compiler; do not hand-edit lockfiles or suppress drift.
+Compilation validates generated workflow consistency, not production permissions,
+security-service availability, agent execution or branch-rule enforcement.
 
-The commands operate from the repository root. Compilation failure or drift is
-resolved locally by the contributor; CI deliberately fails rather than applying
-an unreviewed fix. Re-running the pinned compiler should leave no tracked drift
-or unexpected untracked lockfiles.
-
-## Runtime and deployment boundaries
-
-Successful compilation checks the compiler's supported schema and generated
-output. It does not prove that repository permissions, agent access, security
-features, branch rules, or auto-merge have been configured in production.
-Nor is a compiled agent's successful execution a substitute for native gate
-results at the current PR revision.
-
-See [native validation and repair](remediation-chaining.md),
-[documentation assessment](pr-docs-and-updater.md), and
-[review policy and administrative boundaries](pr-review-and-consolidation.md).
+The installed compiler's reusable-workflow interface remains unchanged:
+native PR creation outputs identify repairs, and the documentation reviewer
+uses its typed revision-bound assessment artifact. Separating framework CI does
+not alter repair ownership, native-stack ordering, agent budgets, or the human
+approval boundary. Live lifecycle acceptance is still required after deployment.

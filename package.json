@@ -14,10 +14,12 @@
     "test:framework": "vitest run",
     "test:apps": "npm run test --workspaces --",
     "test": "npm run test:framework && npm run test:apps --",
-    "test:ci": "npm run test:framework && npm run test:ci --workspaces --",
+    "test:ci:apps": "npm run test:ci --workspaces --",
+    "test:ci": "npm run test:framework && npm run test:ci:apps --",
     "test:cov": "npm run test:ci --",
     "lint:framework": "eslint tests/framework vitest.config.js && prettier --check tests/framework package.json vitest.config.js .eslintrc.json .prettierrc",
-    "lint": "npm run lint:framework && npm run lint --workspaces --",
+    "lint:apps": "npm run lint --workspaces --",
+    "lint": "npm run lint:framework && npm run lint:apps --",
     "lint:fix": "npm run lint:fix --workspaces --"
   },
   "keywords": [

@@ -78,11 +78,11 @@ flowchart TD
 
 ## Repository-owned checks
 
-Workflow compilation precedes metadata, lint, and build. After build succeeds,
-tests, security, and documentation run in parallel. Compilation inspects the
-immutable workflow diff and skips compiler work only when no workflow files
-changed; the job still completes. Compilation/policy failures require human
-correction and block repair agents.
+Metadata precedes app lint and build. After build succeeds, app tests, security,
+and documentation run in parallel. Framework CI runs independently: it compiles
+only framework input changes and runs framework regressions when needed.
+Its separate `Framework CI / Required` result blocks merging when unsuccessful,
+but is not a prerequisite for app checks or an automatic repair target.
 
 Lint, build, and test are thin adapters to fixed repository checks. Security
 uses explicit source, dependency, and separate secret checks. Repository
@@ -100,7 +100,6 @@ Its version-2 decision artifact maps `not_needed` or `sufficient` to pass and
 
 | Gate                 | Workflow                            | Repair responsibility                                               |
 | :------------------- | :---------------------------------- | :------------------------------------------------------------------ |
-| Workflow compilation | `agentic-workflows-compilation.yml` | Human-only policy correction.                                       |
 | Metadata             | `pr-gatekeeper.yml`                 | Root title/body; invalid branch naming may require its author.      |
 | Lint                 | `pr-lint.yml`                       | One scoped lint repair PR.                                          |
 | Build                | `pr-build.yml`                      | One scoped build repair PR.                                         |
@@ -108,7 +107,7 @@ Its version-2 decision artifact maps `not_needed` or `sufficient` to pass and
 | Security             | `pr-security.yml`                   | One scoped repair for configured security findings.                 |
 | Documentation        | `pr-docs.yml`                       | One scoped documentation repair PR.                                 |
 
-Full candidate validation runs compilation and all six gates through their normal
+Full candidate validation runs all six application gates through their normal
 dependencies. Metadata is the root feature PR's metadata; code checks use the
 complete current candidate head, not just the new layer's patch. Skipped,
 cancelled, missing, or failed required evidence cannot establish an all-green
@@ -119,7 +118,7 @@ candidate. Candidate success authorizes consideration of landing only: it
 
 The controller inspects native **`needs.<gate>.result`** values in
 `pr-pipeline.yml`. A repairable gate with result **`failure`** selects a repair;
-after compilation, identity, state, and budget guards pass, the pipeline calls
+after identity, state, and budget guards pass, the pipeline calls
 `pr-repair.lock.yml` through **`workflow_call`** in that run. For example,
 `needs.lint.result == 'failure'` makes lint eligible for selection. With several
 failures, the controller selects one gate, not one agent per label.
@@ -300,9 +299,10 @@ origin. Later landings retain that original baseline and add their audit links;
 they do not relabel earlier repairs as original feature work.
 
 The comment states that full parent revalidation and human review are still
-pending. Preserve all branches. A new full pipeline must then rerun
-compilation and all parent gates against the **actual updated feature head**;
-candidate checks and landing success do not replace this run.
+pending. Preserve all branches. A new full pipeline must rerun all application
+gates against the **actual updated feature head**. The controller also dispatches
+independent framework CI on that head because token-generated events do not
+reliably start it. Candidate checks and landing success do not replace these runs.
 
 ## Six-call budget and explicit stops
 
@@ -316,7 +316,7 @@ candidate checks and landing success do not replace this run.
   do not reset the round. Bot events cannot start a fresh budget.
 - An owned pending stack is continued only from verified state. Unknown existing
   bot repairs block duplicate publication; arbitrary PR-list adoption is forbidden.
-- Changed snapshots, conflicts, scope failures, compilation/policy failures,
+- Changed snapshots, conflicts, scope/policy failures,
   cancelled or missing evidence, registration/merge API errors, polling failures,
   and missing continuation state stop explicitly.
 - Preserve existing stacks and branches on every error, including a human edit
@@ -333,17 +333,16 @@ another route.
 ## Actual-parent readiness and visible labels
 
 **`PR Quality / Ready for review`** requires successful immutable root context,
-compilation, and all six quality gates on the actual current feature revision,
+and all six application quality gates on the actual current feature revision,
 with matching live head/base/metadata and no pending unmerged repairs. Only this
 fresh parent result proceeds to [human review](pr-review-and-consolidation.md).
 Merging the feature PR into `main` remains outside repair landing and requires
-fresh human approval and the required readiness check.
+fresh human/code-owner approval and both required application and framework checks.
 
 [`pr-status.yml`](../.github/workflows/pr-status.yml) mirrors native results:
 
 | Result category    | Visible label                 |
 | :----------------- | :---------------------------- |
-| Compilation        | `workflow-compilation-failed` |
 | Metadata           | `needs-metadata`              |
 | Lint               | `lint-failed`                 |
 | Build              | `build-failed`                |
@@ -360,6 +359,10 @@ candidate/scoped success or a landing result. Skipped, cancelled, unexecuted,
 missing component output, or stale evidence retains unresolved status.
 Labels never trigger or authorize repair, merging, or check waivers; manual
 removal changes visibility only.
+
+Framework status is shown by its native required check, not by app labels.
+The legacy `workflow-compilation-failed` label is retired; remove an existing
+instance during rollout after independently verifying framework CI.
 
 ## Operational boundaries and sources
 

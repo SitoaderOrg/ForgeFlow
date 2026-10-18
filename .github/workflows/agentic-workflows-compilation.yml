@@ -1,67 +1,177 @@
-name: Agentic Workflows Compilation
+name: Framework CI
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
-    paths: ['.github/workflows/**']
-  pull_request:
-    paths: ['.github/workflows/**']
-  workflow_call:
+  workflow_dispatch:
     inputs:
-      head_sha:
+      pr_number:
+        description: Pull request to check; dispatch on its current head branch
+        required: true
+        type: string
+      expected_head_sha:
+        description: Expected feature revision after automated repair landing
         type: string
         default: ''
-      base_sha:
-        type: string
-        default: ''
+
+concurrency:
+  group: framework-ci-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   validate-compilation:
-    name: Verify compiled workflows
+    name: Framework CI / Required
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout repository
+      - name: Resolve the revision independently of application checks
+        id: revision
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        with:
+          script: |
+            const sha = value => typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+            let head = context.sha;
+            let base = context.payload.before || '';
+            let number = '';
+            let comparison = 'push';
+            let headRef = context.ref;
+            let baseRef = '';
+            if (context.eventName === 'pull_request' || context.eventName === 'workflow_dispatch') {
+              number = context.eventName === 'pull_request'
+                ? context.payload.pull_request.number : Number(process.env.PR_NUMBER);
+              if (!Number.isSafeInteger(number) || number <= 0) throw new Error('Invalid framework PR number.');
+              const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
+              if (pr.state !== 'open' || pr.base.repo?.full_name !== context.payload.repository.full_name) {
+                throw new Error('Framework CI requires an open PR targeting this repository.');
+              }
+              if (context.eventName === 'pull_request') {
+                const event = context.payload.pull_request;
+                if (pr.head.sha !== event.head.sha || pr.base.sha !== event.base.sha) {
+                  throw new Error('Superseded framework PR event.');
+                }
+              } else if (pr.head.repo?.full_name !== context.payload.repository.full_name ||
+                  context.ref !== `refs/heads/${pr.head.ref}` || context.sha !== pr.head.sha ||
+                  (process.env.EXPECTED_HEAD_SHA && process.env.EXPECTED_HEAD_SHA !== pr.head.sha)) {
+                throw new Error('Stale framework dispatch; use the current PR head branch and SHA.');
+              }
+              head = pr.head.sha;
+              base = pr.base.sha;
+              headRef = pr.head.ref;
+              baseRef = pr.base.ref;
+              comparison = 'pr';
+            } else if (context.eventName !== 'push') {
+              throw new Error('Unsupported framework CI event.');
+            }
+            if (!sha(head) || !sha(base)) throw new Error('Missing or invalid framework comparison revisions.');
+            core.setOutput('head_sha', head);
+            core.setOutput('base_sha', base);
+            core.setOutput('pr_number', String(number));
+            core.setOutput('comparison', comparison);
+            core.setOutput('head_ref', headRef);
+            core.setOutput('base_ref', baseRef);
+      - name: Checkout the captured revision
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.head_sha || github.sha }}
+          ref: ${{ steps.revision.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Detect workflow changes
+      - name: Classify framework inputs
         id: changes
+        uses: actions/github-script@v7
         env:
-          HEAD_SHA: ${{ inputs.head_sha }}
-          BASE_SHA: ${{ inputs.base_sha }}
-        shell: bash
-        run: |
-          if [ -z "$BASE_SHA" ]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "$BASE_SHA...$HEAD_SHA" -- .github/workflows; then
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-          else
-            STATUS=$?
-            if [ "$STATUS" -ne 1 ]; then exit "$STATUS"; fi
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-          fi
+          HEAD_SHA: ${{ steps.revision.outputs.head_sha }}
+          BASE_SHA: ${{ steps.revision.outputs.base_sha }}
+          COMPARISON: ${{ steps.revision.outputs.comparison }}
+        with:
+          script: |
+            const { execFileSync } = require('node:child_process');
+            const head = process.env.HEAD_SHA;
+            const base = process.env.BASE_SHA;
+            const sha = value => typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+            if (!sha(head) || !sha(base) || !['pr', 'push'].includes(process.env.COMPARISON)) {
+              throw new Error('Invalid framework diff inputs.');
+            }
+            const initialPush = process.env.COMPARISON === 'push' && /^0+$/.test(base);
+            const args = initialPush ? ['ls-tree', '-r', '--name-only', '-z', head] :
+              ['diff', '--name-only', '--no-renames', '-z',
+                ...(process.env.COMPARISON === 'pr' ? [`${base}...${head}`] : [base, head]), '--'];
+            const files = execFileSync('git', args, { encoding: 'utf8' }).split('\0').filter(Boolean);
+            const compile = files.some(path => path.startsWith('.github/') || path === '.gitattributes');
+            const tooling = new Set(['package.json', 'package-lock.json', 'vitest.config.js',
+              '.eslintrc.json', '.eslintignore', '.prettierrc', '.prettierignore',
+              '.gitignore', '.npmrc', '.nvmrc', '.node-version', '.editorconfig']);
+            const tests = compile || files.some(path => path.startsWith('tests/framework/') || tooling.has(path));
+            core.setOutput('compile', String(compile));
+            core.setOutput('tests', String(tests));
+            core.info(`Framework input changes: compilation=${compile}, regression checks=${tests}.`);
       - name: Install the pinned compiler
-        if: steps.changes.outputs.needed == 'true'
+        if: steps.changes.outputs.compile == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-aw --pin v0.89.21
       - name: Compile and validate
-        if: steps.changes.outputs.needed == 'true'
+        if: steps.changes.outputs.compile == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh aw compile --validate --purge
       - name: Reject compilation drift
-        if: steps.changes.outputs.needed == 'true'
+        if: steps.changes.outputs.compile == 'true'
         shell: bash
         run: |
-          git diff --exit-code -- .github/workflows
-          UNTRACKED=$(git ls-files --others --exclude-standard -- '.github/workflows/*.lock.yml')
+          git diff --exit-code -- .github
+          UNTRACKED=$(git ls-files --others --exclude-standard -- '.github/workflows/*.lock.yml' '.github/aw/**')
           if [ -n "$UNTRACKED" ]; then
-            echo "::error::Untracked compiled workflows: $UNTRACKED. Compile with gh-aw v0.89.21 and commit the lockfiles."
+            echo "::error::Untracked compiler outputs: $UNTRACKED. Compile with gh-aw v0.89.21 and commit the generated files."
             exit 1
           fi
+      - name: Set up framework tooling
+        if: steps.changes.outputs.tests == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check framework lint and regression tests
+        if: steps.changes.outputs.tests == 'true'
+        run: |
+          npm ci --ignore-scripts
+          npm run lint:framework
+          npm run test:framework
+      - name: Confirm the checked revision
+        id: freshness
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.revision.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.revision.outputs.head_sha }}
+          BASE_SHA: ${{ steps.revision.outputs.base_sha }}
+          HEAD_REF: ${{ steps.revision.outputs.head_ref }}
+          BASE_REF: ${{ steps.revision.outputs.base_ref }}
+          COMPILE: ${{ steps.changes.outputs.compile }}
+          TESTS: ${{ steps.changes.outputs.tests }}
+        with:
+          script: |
+            if (![process.env.COMPILE, process.env.TESTS].every(value => ['true', 'false'].includes(value))) {
+              throw new Error('Missing framework classification evidence.');
+            }
+            if (process.env.PR_NUMBER) {
+              const { data: pr } = await github.rest.pulls.get({
+                ...context.repo, pull_number: Number(process.env.PR_NUMBER)
+              });
+              if (pr.state !== 'open' || pr.head.sha !== process.env.HEAD_SHA ||
+                  pr.head.ref !== process.env.HEAD_REF || pr.base.sha !== process.env.BASE_SHA ||
+                  pr.base.ref !== process.env.BASE_REF || pr.base.repo?.full_name !== context.payload.repository.full_name) {
+                throw new Error('PR changed during framework CI; these results are stale.');
+              }
+            }
+            const detail = process.env.TESTS === 'true'
+              ? `Framework regression checks passed; compilation ${process.env.COMPILE === 'true' ? 'verified' : 'not needed'}.`
+              : 'No framework inputs changed. Compiler installation, compilation and framework tests were not needed.';
+            await core.summary.addRaw(`${detail}\n\nChecked revision: ${process.env.HEAD_SHA}. Application checks and required human/code-owner approval remain separate.`).write();
