@@ -1,0 +1,367 @@
+name: Land a Validated Repair Stack
+
+on:
+  workflow_call:
+    inputs:
+      state:
+        description: Immutable v1 repair state including cycle initial_head_sha, authorized by successful candidate gates
+        required: true
+        type: string
+    outputs:
+      merge_sha:
+        description: Verified final squash commit on the still-open feature branch
+        value: ${{ jobs.land.outputs.merge_sha }}
+
+# Callers must grant these permissions; a reusable workflow cannot elevate them.
+# No checkout: neither repair code nor repository JavaScript executes with this token.
+permissions:
+  contents: read
+
+jobs:
+  land:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+    outputs:
+      merge_sha: ${{ steps.land.outputs.merge_sha }}
+    steps:
+      - name: Revalidate, land natively, and verify every squash commit
+        id: land
+        uses: actions/github-script@v7
+        env:
+          REPAIR_STATE: ${{ inputs.state }}
+        with:
+          retries: 0
+          script: |
+            // REST 2026-03-10: pending.details has uuid, expected_head_sha,
+            // merge_action and merge_method; merged.details has sha (not those fields).
+            // Stack detail has base.ref and ordered pull_requests, not trunk or members.
+            // https://docs.github.com/en/rest/pulls/pulls?apiVersion=2026-03-10
+            // https://docs.github.com/en/pull-requests/reference/stacked-pull-requests-apis-and-webhooks
+            const { createHash } = require('node:crypto');
+            const assert = (ok, message) => { if (!ok) throw new Error(message); };
+            const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+            const positive = value => Number.isSafeInteger(value) && value > 0;
+            const sha = value => typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+            const ref = value => typeof value === 'string' &&
+              /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/.test(value) && !value.endsWith('.') &&
+              value.split('/').every(part => part && !part.startsWith('.') && !part.endsWith('.lock')) &&
+              !value.includes('..');
+            const uuid = value => typeof value === 'string' &&
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+            const metadata = pr => createHash('sha256').update(JSON.stringify([pr.title, pr.body || ''])).digest('hex');
+            const deadline = Date.now() + 10 * 60 * 1000;
+            let operation;
+            let submitted = false;
+            const api = (route, parameters = {}) => github.request(route, {
+              ...context.repo, ...parameters,
+              headers: { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' },
+              request: { timeout: 10000 }
+            });
+            const budget = () => assert(Date.now() < deadline, 'Native landing timed out; do not resubmit or rebuild the stack.');
+            async function land() {
+              const state = JSON.parse(process.env.REPAIR_STATE);
+              assert(object(state) && state.version === 1 &&
+                state.repository === `${context.repo.owner}/${context.repo.repo}` &&
+                /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(state.repository) &&
+                Number.isInteger(state.round) && state.round >= 0 && state.round <= 6 &&
+                Array.isArray(state.repairs) && state.repairs.length >= 1 && state.repairs.length <= 100,
+                'Invalid v1 repair state, repository, round, or repair count.');
+              assert(sha(state.initial_head_sha), 'Invalid or missing cycle initial_head_sha.');
+              const feature = state.feature;
+              const repairs = state.repairs;
+              const top = repairs[repairs.length - 1];
+              assert((repairs.length === 1 && state.stack_number === null) ||
+                (repairs.length >= 2 && positive(state.stack_number)), 'Native stacks require at least two repairs; one repair must be standalone.');
+              const numbers = new Set();
+              const refs = new Set();
+              for (const snapshot of [feature, ...repairs]) {
+                assert(object(snapshot) && positive(snapshot.number) && ref(snapshot.head_ref) &&
+                  ref(snapshot.base_ref) && sha(snapshot.head_sha) && sha(snapshot.base_sha) &&
+                  snapshot.head_ref !== snapshot.base_ref && !numbers.has(snapshot.number) &&
+                  !refs.has(snapshot.head_ref), 'Invalid or duplicate PR/ref/SHA snapshot; feature PR must be excluded.');
+                numbers.add(snapshot.number);
+                refs.add(snapshot.head_ref);
+              }
+              assert(typeof feature.metadata_hash === 'string' && /^[0-9a-f]{64}$/.test(feature.metadata_hash),
+                'Invalid feature metadata hash.');
+              for (let i = 0; i < repairs.length; i++) {
+                const repair = repairs[i];
+                const previous = i ? repairs[i - 1] : feature;
+                assert(repair.base_ref === previous.head_ref && repair.base_sha === previous.head_sha &&
+                  repair.head_ref !== feature.base_ref &&
+                  ['lint', 'build', 'test', 'security', 'docs'].includes(repair.kind) &&
+                  positive(repair.check_id) && positive(repair.validation_run_id),
+                  'Invalid ordered repair chain or validation identity.');
+              }
+              const runUrl = repair => `${context.serverUrl}/${state.repository}/actions/runs/${repair.validation_run_id}`;
+              const pull = async snapshot => (await api('GET /repos/{owner}/{repo}/pulls/{pull_number}',
+                { pull_number: snapshot.number })).data;
+              async function liveRef(branch, expected) {
+                const { data } = await api('GET /repos/{owner}/{repo}/git/ref/{ref}', { ref: `heads/${branch}` });
+                assert(data?.ref === `refs/heads/${branch}` && data.object?.type === 'commit' &&
+                  data.object.sha === expected, `Stale or missing live branch ref: ${branch}.`);
+              }
+              function identity(pr, snapshot, merged = false) {
+                assert(pr?.number === snapshot.number && pr.head?.repo?.full_name === state.repository &&
+                  pr.base?.repo?.full_name === state.repository && pr.head.ref === snapshot.head_ref &&
+                  pr.head.sha === snapshot.head_sha && pr.draft === false && pr.locked === false &&
+                  pr.auto_merge === null, `Stale, draft, locked, auto-merge, or foreign PR #${snapshot.number}.`);
+                if (snapshot.number !== feature.number) {
+                  assert(pr.user?.login === 'github-actions[bot]' && pr.user.type === 'Bot',
+                    `Repair #${snapshot.number} is not authored by github-actions[bot]/Bot.`);
+                }
+                if (merged) {
+                  assert(pr.state === 'closed' && pr.merged === true && typeof pr.merged_at === 'string' &&
+                    sha(pr.merge_commit_sha), `Postcondition: repair #${snapshot.number} is not verifiably merged.`);
+                } else {
+                  assert(pr.state === 'open' && pr.merged === false && pr.merged_at === null &&
+                    pr.base.ref === snapshot.base_ref && pr.base.sha === snapshot.base_sha,
+                    `Stale base or non-open PR #${snapshot.number}.`);
+                }
+              }
+              function stackShape(stack, merged, detail) {
+                assert(object(stack) && positive(stack.id) && stack.number === state.stack_number &&
+                  stack.base?.ref === feature.head_ref && stack.open === !merged &&
+                  Array.isArray(stack.pull_requests) && stack.pull_requests.length === repairs.length,
+                  'Native stack membership/trunk/open-state mismatch; preserve existing metadata.');
+                stack.pull_requests.forEach((member, i) => {
+                  const expected = repairs[i];
+                  assert(member.number === expected.number && member.number !== feature.number &&
+                    member.head?.ref === expected.head_ref && member.head.sha === expected.head_sha &&
+                    member.draft === false && member.state === (merged ? 'closed' : 'open') &&
+                    (merged ? typeof member.merged_at === 'string' : member.merged_at === null),
+                    'Native stack member/order/root exclusion mismatch.');
+                  if (detail && !merged) {
+                    assert(member.base?.ref === expected.base_ref && member.base.sha === expected.base_sha &&
+                      member.user?.login === 'github-actions[bot]' && member.user.type === 'Bot',
+                      'Native stack detail base/provenance mismatch.');
+                  }
+                });
+              }
+              let stackId;
+              async function membership(merged = false) {
+                for (const snapshot of [feature, ...repairs]) {
+                  const response = await api('GET /repos/{owner}/{repo}/stacks',
+                    { pull_request: snapshot.number, per_page: 100, page: 1 });
+                  assert(Array.isArray(response.data) && !/\brel="next"/.test(response.headers?.link || ''),
+                    'Unknown or incomplete native membership response.');
+                  if (snapshot === feature || state.stack_number === null) {
+                    assert(response.data.length === 0, 'Feature PR must be excluded; single repair must be standalone.');
+                  } else {
+                    assert(response.data.length === 1, 'Native stack membership missing or ambiguous.');
+                    stackShape(response.data[0], merged, false);
+                    if (stackId === undefined) stackId = response.data[0].id;
+                    assert(response.data[0].id === stackId, 'Native stack identity changed.');
+                  }
+                }
+                if (state.stack_number !== null) {
+                  const { data } = await api('GET /repos/{owner}/{repo}/stacks/{stack_number}',
+                    { stack_number: state.stack_number });
+                  stackShape(data, merged, true);
+                  assert(data.id === stackId, 'Native stack identity changed.');
+                }
+              }
+              async function queueAndLocks(snapshot, merged = false) {
+                // isMergeQueueEnabled also detects a classic branch-protection merge queue.
+                const result = await github.graphql(`query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                      headRefOid baseRefOid locked isInMergeQueue isMergeQueueEnabled mergeStateStatus
+                      mergeQueueEntry { id }
+                      baseRef { branchProtectionRule { lockBranch } }
+                    }
+                  }
+                }`, { ...context.repo, number: snapshot.number, request: { timeout: 10000 } });
+                const pr = result?.repository?.pullRequest;
+                assert(pr && pr.headRefOid === snapshot.head_sha &&
+                  (merged || pr.baseRefOid === snapshot.base_sha) && pr.locked === false &&
+                  pr.isInMergeQueue === false && pr.mergeQueueEntry === null &&
+                  typeof pr.isMergeQueueEnabled === 'boolean' &&
+                  (merged || ['BEHIND', 'BLOCKED', 'CLEAN', 'HAS_HOOKS', 'UNSTABLE'].includes(pr.mergeStateStatus)),
+                  `Unknown, stale, locked, or queued PR #${snapshot.number}, or conflicting merge state.`);
+                if (snapshot !== feature && !merged) {
+                  assert(!pr.isMergeQueueEnabled, 'merge_queue is unsupported: queue validation is not implemented.');
+                  assert(object(pr.baseRef) && (pr.baseRef.branchProtectionRule === null ||
+                    pr.baseRef.branchProtectionRule?.lockBranch === false), 'Unknown or locked repair target branch.');
+                }
+              }
+              async function rules() {
+                const { data: repository } = await api('GET /repos/{owner}/{repo}');
+                assert(repository?.full_name === state.repository && repository.allow_squash_merge === true &&
+                  repository.archived === false && repository.disabled === false &&
+                  ref(repository.default_branch) && feature.head_ref !== repository.default_branch &&
+                  repairs.every(repair => repair.head_ref !== repository.default_branch),
+                  'Squash must be allowed in an active repository; repairs must target a feature branch.');
+                for (let page = 1; page <= 100; page++) {
+                  const response = await api('GET /repos/{owner}/{repo}/rules/branches/{branch}',
+                    { branch: feature.head_ref, per_page: 100, page });
+                  assert(Array.isArray(response.data), 'Unknown effective branch rules response.');
+                  for (const rule of response.data) {
+                    assert(object(rule) && typeof rule.type === 'string', 'Unknown effective branch rule.');
+                    assert(rule.type !== 'merge_queue', 'merge_queue is unsupported: queue validation is not implemented.');
+                    assert(rule.type !== 'update', 'Feature branch is locked by an update restriction.');
+                    if (rule.type === 'pull_request' && rule.parameters?.allowed_merge_methods !== undefined) {
+                      assert(Array.isArray(rule.parameters.allowed_merge_methods) &&
+                        rule.parameters.allowed_merge_methods.includes('squash'), 'Effective branch rules disallow squash.');
+                    }
+                  }
+                  if (!/\brel="next"/.test(response.headers?.link || '')) return;
+                }
+                throw new Error('Effective branch rule pagination exceeded the safety bound.');
+              }
+              async function preflight() {
+                budget();
+                await rules();
+                for (const snapshot of [feature, ...repairs]) {
+                  const pr = await pull(snapshot);
+                  identity(pr, snapshot);
+                  if (snapshot === feature) assert(metadata(pr) === feature.metadata_hash, 'Stale feature title/body metadata.');
+                  await queueAndLocks(snapshot);
+                  await liveRef(snapshot.head_ref, snapshot.head_sha);
+                  await liveRef(snapshot.base_ref, snapshot.base_sha);
+                  if (snapshot !== feature) {
+                    const { data: check } = await api('GET /repos/{owner}/{repo}/check-runs/{check_run_id}',
+                      { check_run_id: snapshot.check_id });
+                    assert(check?.id === snapshot.check_id && check.name === 'Scoped repair validation' &&
+                      check.head_sha === snapshot.head_sha && check.status === 'completed' &&
+                      check.conclusion === 'success' && check.app?.slug === 'github-actions' &&
+                      check.details_url === runUrl(snapshot), `Scoped repair validation mismatch for #${snapshot.number}.`);
+                  }
+                }
+                await membership();
+              }
+              await preflight();
+              const { data: validatedTop } = await api('GET /repos/{owner}/{repo}/git/commits/{commit_sha}',
+                { commit_sha: top.head_sha });
+              assert(validatedTop?.sha === top.head_sha && sha(validatedTop.tree?.sha), 'Unknown validated top commit/tree.');
+              // No API can pin the trunk SHA in merge-async. Recheck immediately before
+              // submission and prove the entire squash-parent chain after completion.
+              await preflight();
+              budget();
+              let response;
+              submitted = true;
+              try {
+                response = await api('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge-async', {
+                  pull_number: top.number, sha: top.head_sha,
+                  merge_action: 'direct_merge', merge_method: 'squash', bypass_rules: false
+                });
+              } catch (error) {
+                if (![400, 409].includes(error.status)) throw error;
+                response = error.response;
+              }
+              function result(response, initial = false) {
+                const data = response?.data;
+                assert(object(data) && Object.keys(data).every(key => ['status', 'details'].includes(key)) &&
+                  object(data.details) && typeof data.details.message === 'string', 'Unknown async merge response shape.');
+                const detail = data.details;
+                const allowed = data.status === 'pending'
+                  ? ['message', 'uuid', 'expected_head_sha', 'merge_action', 'merge_method', 'bypass_rules']
+                  : data.status === 'merged' ? ['message', 'sha'] : ['message'];
+                assert(Object.keys(detail).every(key => allowed.includes(key)), 'Unknown async merge details shape.');
+                assert(initial ? (
+                  ([202, 409].includes(response.status) && data.status === 'pending') ||
+                  (response.status === 200 && ['merged', 'enqueued'].includes(data.status)) ||
+                  (response.status === 400 && data.status === 'failed')
+                ) : response.status === 200, 'Unexpected async merge HTTP status/result.');
+                if (data.status === 'pending') {
+                  assert(uuid(detail.uuid) && detail.expected_head_sha === top.head_sha &&
+                    detail.merge_action === 'direct_merge' && detail.merge_method === 'squash' &&
+                    (detail.bypass_rules === undefined || detail.bypass_rules === false) &&
+                    (operation === undefined || operation === detail.uuid),
+                    'Pending/409 operation does not match the pinned SHA, action, method, UUID, or rule enforcement.');
+                  operation = detail.uuid;
+                } else if (data.status === 'merged') {
+                  assert(sha(detail.sha), 'Merged async response is missing a valid details.sha.');
+                } else if (data.status === 'failed') {
+                  throw new Error(`Native merge failed: ${detail.message}`);
+                } else if (data.status === 'enqueued') {
+                  throw new Error(`merge_queue is unsupported; enqueued is not merged: ${detail.message}`);
+                } else {
+                  throw new Error(`Unknown async merge status: ${data.status}`);
+                }
+                return data;
+              }
+              let current = result(response, true);
+              let lastMessage = current.details.message;
+              const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+              for (let attempt = 0; current.status === 'pending' && attempt < 12; attempt++) {
+                let retryAfter = 0;
+                const header = response.headers?.['retry-after'];
+                if (header !== undefined) {
+                  const seconds = /^\d+$/.test(String(header)) ? Number(header) : NaN;
+                  retryAfter = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+                  assert(Number.isFinite(retryAfter), 'Invalid Retry-After on native merge operation.');
+                }
+                const wait = Math.max(Math.min(1000 * 2 ** attempt, 60000), retryAfter);
+                assert(Date.now() + wait < deadline, `Native landing timed out before Retry-After: ${lastMessage}`);
+                await sleep(wait);
+                budget();
+                try {
+                  response = await api('GET /repos/{owner}/{repo}/pulls/{pull_number}/merge-async/{uuid}',
+                    { pull_number: top.number, uuid: operation });
+                } catch (error) {
+                  // Retrying this read cannot submit another merge. Never retry PUT.
+                  if (![502, 503, 504].includes(error.status) &&
+                    !([403, 429].includes(error.status) && error.response?.headers?.['retry-after'] !== undefined)) throw error;
+                  response = error.response || { headers: {} };
+                  lastMessage = error.response?.data?.message || error.message;
+                  continue;
+                }
+                current = result(response);
+                lastMessage = current.details.message;
+              }
+              assert(current.status === 'merged', `Native landing timed out: ${lastMessage}`);
+              await membership(true);
+              let parent = feature.head_sha;
+              const landed = [];
+              for (const repair of repairs) {
+                const pr = await pull(repair);
+                identity(pr, repair, true);
+                await queueAndLocks(repair, true);
+                const { data: commit } = await api('GET /repos/{owner}/{repo}/git/commits/{commit_sha}',
+                  { commit_sha: pr.merge_commit_sha });
+                assert(commit?.sha === pr.merge_commit_sha && Array.isArray(commit.parents) &&
+                  commit.parents.length === 1 && commit.parents[0].sha === parent,
+                  `Postcondition: squash-parent chain mismatch at #${repair.number}.`);
+                parent = commit.sha;
+                landed.push({ repair, sha: parent });
+                if (repair === top) assert(commit.tree?.sha === validatedTop.tree.sha,
+                  'Postcondition: final tree differs from the validated top tree.');
+              }
+              assert(parent === current.details.sha, 'Postcondition: async result SHA differs from the final repair squash.');
+              const featureAfter = await pull(feature);
+              identity(featureAfter, { ...feature, head_sha: parent });
+              assert(metadata(featureAfter) === feature.metadata_hash, 'Postcondition: feature metadata changed.');
+              await queueAndLocks({ ...feature, head_sha: parent }, true);
+              await liveRef(feature.head_ref, parent);
+              await liveRef(feature.base_ref, feature.base_sha);
+              const repositoryUrl = `${context.serverUrl}/${state.repository}`;
+              const body = [
+                `Landed validated repair${repairs.length === 1 ? '' : ' stack'} into this feature branch (round ${state.round}).`,
+                '',
+                `Feature snapshot before any automation in this bounded cycle: [\`${state.initial_head_sha}\`](${repositoryUrl}/commit/${state.initial_head_sha}).`,
+                `This repair stack's trunk snapshot: [\`${feature.head_sha}\`](${repositoryUrl}/commit/${feature.head_sha}).`,
+                `[Compare the initial snapshot with the final landed result](${repositoryUrl}/compare/${state.initial_head_sha}...${parent}).`,
+                '',
+                '| Repair PR | Kind | Focused diff (pinned revisions) | Squash SHA | Scoped validation run |',
+                '| --- | --- | --- | --- | --- |',
+                ...landed.map(({ repair, sha }) => `| #${repair.number} | ${repair.kind} | [Focused diff](${repositoryUrl}/compare/${repair.base_sha}...${repair.head_sha}) | [\`${sha}\`](${repositoryUrl}/commit/${sha}) | [${repair.validation_run_id}](${runUrl(repair)}) |`),
+                '',
+                `Final feature head: \`${parent}\`. The feature PR was not merged.`,
+                'Fresh parent checks and human approval are still required before the feature PR can merge.'
+              ].join('\n');
+              const comment = await api('POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
+                { issue_number: feature.number, body });
+              assert(comment.status === 201 && positive(comment.data?.id), 'Feature comment was not confirmed; no merge_sha output.');
+              core.setOutput('merge_sha', parent);
+            }
+            try {
+              await land();
+            } catch (error) {
+              core.error(`Repair landing stopped. Existing native stack metadata is preserved; never recreate a subset.${submitted ? ` Merge may have started${operation ? ` (operation ${operation})` : ''}; inspect its result and every PR before recovery.` : ''}`);
+              throw error;
+            }
