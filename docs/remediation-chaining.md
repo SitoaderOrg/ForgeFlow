@@ -111,3 +111,22 @@ gh workflow run pr-test-generator.lock.yml --ref feat/my-change -f pr_number=42 
 # Consolidate stacked PRs and re-run the pipeline
 gh workflow run pr-stacked-merge.yml -f branch=feat/my-change
 ```
+
+## Testing the workflows
+
+`tests/workflows/` exercises the orchestration logic offline with Vitest (`npm run test:workflows`;
+also part of `npm test`). The inline `actions/github-script` blocks are extracted from the workflow
+YAML and executed against an in-memory fake of the GitHub API (`tests/workflows/helpers/harness.js`),
+so the tests run the exact code that runs in Actions.
+
+| Suite | Covers |
+|---|---|
+| `remediation.test.js` | Label helpers, `commentOnce`, `dispatchRemediation` (dispatch, already running, pending stacked PR, budget exhaustion, cancelled runs not counted, truncation, API errors) |
+| `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection |
+| `pipeline.test.js` | Triggers/concurrency/job graph, context job (new revision, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref), verdict job |
+| `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), waiting for agents and the pipeline, timeout, recheck vs. stalled comment |
+| `gates.test.js` | Every gate's handlers: metadata, lint, build, tests, docs, security, review dispatcher |
+| `agents.test.js` | gh-aw agent contracts: dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, relay hand-off |
+
+Run `gh aw compile` after editing an agent `.md` file; `agents.test.js` fails when a lock file's
+safe outputs or relay hand-off no longer match the source.

@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
+    "test:workflows": "vitest run tests/workflows",
     "lint": "eslint . && prettier --check . && htmlhint \"apps/**/*.html\"",
     "lint:fix": "eslint . --fix && prettier --write ."
   },
@@ -27,6 +28,7 @@
     "htmlhint": "^1.9.2",
     "prettier": "^3.9.10",
     "vite": "^6.2.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "yaml": "^2.9.1"
   }
 }

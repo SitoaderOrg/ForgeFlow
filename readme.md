@@ -73,6 +73,7 @@ A standalone, zero-deployment 2D stealth action browser game built for testing t
 - **Run Directly**: Open `dist/index.html` or `apps/ferret-heist/index.html` in any browser, or run `npm run dev` / `npm run preview`.
 - **Verify Build**: `npm run build` (builds bundled assets into `dist/`).
 - **Execute Tests & Coverage**: `npm test` or `npm run test:cov` (runs Vitest with diff-scoped coverage verification >= 80%).
+- **Test the CI/CD workflows**: `npm run test:workflows` (offline scenario tests for the pipeline, gates, relay and agents; see [Testing the workflows](docs/remediation-chaining.md#testing-the-workflows)).
 - **Lint**: `npm run lint` (ESLint, Prettier, HTMLHint — the same configs Super-Linter uses in CI); `npm run lint:fix` to auto-fix.
 - **Chaos Testing**:
   - Break a test in `tests/ferret.test.js` to trigger the **PR Test Generator** loop.
