@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   test:
-    name: npm run test:ci
+    name: npm run test:ci:apps
     runs-on: ubuntu-latest
     outputs:
       findings: ${{ steps.findings.outputs.findings }}
@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           exec > >(tee test.log) 2>&1
           npm ci
-          npm run test:ci
+          npm run test:ci:apps
       - name: Provide diagnostics to the repair agent
         id: findings
         if: always()
@@ -46,4 +46,4 @@ jobs:
           script: |
             const fs = require('node:fs');
             const detail = fs.existsSync('test.log') ? fs.readFileSync('test.log', 'utf8').slice(-5500) : 'Checkout or Node setup failed; see the job log.';
-            core.setOutput('findings', `npm run test:ci: ${process.env.RESULT}\n${detail}`);
+            core.setOutput('findings', `npm run test:ci:apps: ${process.env.RESULT}\n${detail}`);

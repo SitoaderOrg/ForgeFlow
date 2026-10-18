@@ -246,17 +246,9 @@ jobs:
             if (competingStacks.length) core.notice('An existing native repair stack needs attention; it will not be replaced or adopted by a fresh cycle.');
             core.info(`Validating candidate #${candidate.number} at ${candidate.head_sha} for feature #${number}; round ${round}/6.`);
 
-  compile:
-    name: Workflow compilation
-    needs: context
-    uses: ./.github/workflows/agentic-workflows-compilation.yml
-    with:
-      head_sha: ${{ needs.context.outputs.candidate_head_sha }}
-      base_sha: ${{ needs.context.outputs.base_sha }}
-
   metadata:
     name: Pre-Flight Gatekeeper
-    needs: [context, compile]
+    needs: context
     uses: ./.github/workflows/pr-gatekeeper.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -321,7 +313,7 @@ jobs:
 
   status:
     name: Update visible PR status
-    needs: [context, compile, metadata, lint, build, test, security, docs]
+    needs: [context, metadata, lint, build, test, security, docs]
     if: ${{ always() && needs.context.result == 'success' }}
     uses: ./.github/workflows/pr-status.yml
     with:
@@ -336,7 +328,7 @@ jobs:
 
   repair-plan:
     name: Collect failed gate findings
-    needs: [context, compile, metadata, lint, build, test, security, docs]
+    needs: [context, metadata, lint, build, test, security, docs]
     if: ${{ always() && !cancelled() && needs.context.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -359,7 +351,7 @@ jobs:
               .filter(name => gates[name].result === 'failure');
             const cancelled = Object.values(gates).some(gate => gate.result === 'cancelled');
             const needed = failures.length > 0 && !cancelled &&
-              gates.compile.result === 'success' && gates.context.outputs.pending_repairs !== 'true' &&
+              gates.context.outputs.pending_repairs !== 'true' &&
               !(failures[0] === 'metadata' && gates.context.outputs.has_repairs === 'true') &&
               Number(process.env.REPAIR_ROUND) < 6;
             core.setOutput('needed', String(needed));
@@ -372,7 +364,7 @@ jobs:
               ? `Repair only the ${kind} gate.\n${(gates[kind].outputs.findings || 'Inspect the failed gate log; no diagnostics were published.').slice(0, 6000)}\nOther unresolved gates, not part of this repair: ${failures.slice(1).join(', ') || 'none'}.`
               : '');
             if (failures.length && !needed) {
-              core.error('Automatic repairs stopped: pending repair, cancelled gate, compilation failure, or six-round budget exhausted.');
+              core.error('Automatic repairs stopped: pending repair, cancelled gate, metadata change during a repair chain, or six-round budget exhausted.');
             }
 
   repair:
@@ -480,7 +472,7 @@ jobs:
 
   candidate-check:
     name: Publish complete candidate quality
-    needs: [context, compile, metadata, lint, build, test, security, docs]
+    needs: [context, metadata, lint, build, test, security, docs]
     if: ${{ always() && needs.context.result == 'success' && needs.context.outputs.has_repairs == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -495,7 +487,7 @@ jobs:
         with:
           script: |
             const gates = JSON.parse(process.env.GATES);
-            const names = ['compile', 'metadata', 'lint', 'build', 'test', 'security', 'docs'];
+            const names = ['metadata', 'lint', 'build', 'test', 'security', 'docs'];
             const failed = names.filter(name => gates[name]?.result !== 'success');
             await github.rest.checks.create({
               ...context.repo, name: 'Repair candidate quality', head_sha: process.env.HEAD_SHA,
@@ -636,6 +628,12 @@ jobs:
                 pr.base.sha !== state.feature.base_sha || metadata !== state.feature.metadata_hash) {
               throw new Error('Feature changed after state publication; no stale continuation was dispatched.');
             }
+            if (state.transition === 'landed') {
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo, workflow_id: 'agentic-workflows-compilation.yml', ref: pr.head.ref,
+                inputs: { pr_number: String(pr.number), expected_head_sha: pr.head.sha }
+              });
+            }
             await github.rest.actions.createWorkflowDispatch({
               ...context.repo, workflow_id: 'pr-pipeline.yml', ref: pr.head.ref,
               inputs: {
@@ -648,7 +646,7 @@ jobs:
 
   ready:
     name: PR Quality / Ready for review
-    needs: [context, compile, metadata, lint, build, test, security, docs]
+    needs: [context, metadata, lint, build, test, security, docs]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -671,7 +669,7 @@ jobs:
           script: |
             const { createHash } = require('node:crypto');
             const gates = JSON.parse(process.env.GATES);
-            const blocked = ['context', 'compile', 'metadata', 'lint', 'build', 'test', 'security', 'docs']
+            const blocked = ['context', 'metadata', 'lint', 'build', 'test', 'security', 'docs']
               .filter(name => gates[name]?.result !== 'success');
             if (blocked.length) {
               throw new Error(`Not ready: ${blocked.map(name => `${name}=${gates[name]?.result || 'missing'}`).join(', ')}.`);
@@ -699,7 +697,7 @@ jobs:
                 repair.head.repo?.full_name === context.payload.repository.full_name)) {
               throw new Error('An open automated repair PR still needs to be merged or closed.');
             }
-            await core.summary.addRaw(`Compilation and all six quality gates passed for ${pr.head.sha}. Human approval is still required; this job does not merge or approve the PR.`).write();
+            await core.summary.addRaw(`All six application quality gates passed for ${pr.head.sha}. Independent framework CI and required human/code-owner approval still govern merging; this job does not merge or approve the PR.`).write();
 
   review:
     name: Human review handoff

@@ -11,7 +11,7 @@ that stack. There is no shared remediation script or label-driven dispatch relay
 
 1. A PR event starts validation on the **exact PR head commit**, rather than
    certifying the event's synthetic merge commit.
-2. Reusable workflows verify compiled workflow consistency, metadata, lint, build,
+2. Reusable application workflows verify metadata, lint, build,
    tests/coverage, security findings, dependency changes, secrets, and documentation.
 3. One bounded repair agent handles **one failing gate per round**. Native gh-aw
    safe outputs create the first repair PR against the feature branch and each
@@ -85,6 +85,19 @@ build, testing/coverage and security commands and policies. A failing command
 fails its check natively; bounded log excerpts provide repair context, not the
 source of truth for scheduling.
 
+Framework maintenance is separate from the application lifecycle.
+`Framework CI / Required` runs independently on every PR, but installs the
+compiler only when framework compilation inputs change. It runs framework lint
+and regression tests for framework/tooling changes, and reports not-needed
+success for app-only changes. It is not an application pipeline stage or an
+automatic repair target. Both this check and `PR Quality / Ready for review`
+must be required for merging into `main`.
+
+`.github/CODEOWNERS` assigns framework inputs and shared tooling to `@sitoader`.
+Enable required code-owner review in the branch ruleset; CODEOWNERS alone does
+not prevent edits or enforce approval. Framework failures require maintainer
+correction and do not stop independent app checks from running.
+
 ## Application workspaces
 
 Applications live under `apps/<app>` and own their package metadata, dependencies,
@@ -103,6 +116,10 @@ Run these commands from the repository root:
 | `npm run test:framework` | Lifecycle and guard regression tests only |
 | `npm test` | Framework tests, then every app's tests |
 | `npm run test:ci` | Framework tests, then every app's CI/coverage command |
+
+The application CI adapters use `npm run lint:apps` and
+`npm run test:ci:apps`; framework CI uses `lint:framework` and `test:framework`.
+Root aggregate commands remain available for checking both locally.
 
 To add another compatible app, create `apps/<app>/package.json` with a unique
 name and explicit `lint`, `build`, `test`, and `test:ci` scripts, add its source,
@@ -138,7 +155,7 @@ membership, package scripts or gate policy.
 | `pr-status.yml`                                    | Current-revision native check results projected into failure labels                   |
 | `pr-doc-review.md` / `.lock.yml`                   | Read-only semantic assessment with a typed, revision-bound artifact                   |
 | `pr-review-dispatcher.yml`                         | Human-review handoff and opt-in native auto-merge                                     |
-| `agentic-workflows-compilation.yml`                | Pinned, read-only compilation/drift verification                                      |
+| `agentic-workflows-compilation.yml`                | Independent required framework CI; conditional compilation and framework regressions |
 
 Workflow paths are relative to `.github/workflows/`. Markdown agent sources are
 compiled using **gh-aw v0.89.21**; commit their generated lockfiles alongside them.
@@ -148,7 +165,8 @@ The compiler check never pushes workflow edits or opens another repair PR.
 
 See [Prerequisites](prereqs.md) before deployment. In particular, a green check is
 not a substitute for configuring an active branch ruleset requiring fresh human
-approval and the exact `PR Quality / Ready for review` check, without bypass actors.
+approval, required code-owner review, and both `PR Quality / Ready for review`
+and `Framework CI / Required`, without bypass actors.
 
 Manual validation starts a new bounded cycle:
 

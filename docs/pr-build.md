@@ -7,7 +7,7 @@ then exposes the native job result and brief diagnostics to the pipeline.
 
 ```mermaid
 flowchart TD
-    Lint["Workflow compilation, metadata, and repository lint passed"] --> Build["Run repository build check at exact head SHA"]
+    Lint["Metadata and app lint passed"] --> Build["Run repository build check at exact head SHA"]
     Build -->|Native success| Tests["Repository test and coverage check"]
     Build -->|Native success| Security["Repository security checks"]
     Build -->|Native success| Docs["Agent documentation judgment"]
@@ -43,7 +43,7 @@ cannot satisfy readiness.
 
 Application build validation is distinct from
 [agentic workflow compilation](agentic-workflows-compilation.md), which verifies
-the pinned generated workflow files before metadata and all repository checks.
+the pinned generated workflow files independently when framework inputs change.
 
 ## Bounded repair
 
@@ -86,7 +86,7 @@ The budget is six repair calls total, including metadata; landing never resets
 it. Bounded explicit dispatch starts the next exact revision's validation.
 After landing, all gates rerun on the actual updated feature head, and build
 must pass again before downstream stages. **`PR Quality / Ready for review`**
-requires this actual-parent evidence, compilation, all mandatory gates, and live
+requires this actual-parent evidence, all six application gates, and live
 head/base/metadata freshness; an unmerged candidate cannot certify feature.
 `pr-status.yml` adds `build-failed` from candidate failures and clears it only
 from passing actual current-parent checks. Skipped/cancelled or missing results

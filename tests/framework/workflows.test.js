@@ -179,16 +179,9 @@ async function execute(job, sandbox, definition = pipeline, stepId) {
 
 const passingGates = () =>
   Object.fromEntries(
-    [
-      'context',
-      'compile',
-      'metadata',
-      'lint',
-      'build',
-      'test',
-      'security',
-      'docs'
-    ].map((name) => [name, { result: 'success', outputs: {} }])
+    ['context', 'metadata', 'lint', 'build', 'test', 'security', 'docs'].map(
+      (name) => [name, { result: 'success', outputs: {} }]
+    )
   );
 
 describe('artifact-bound native repair continuation', () => {
@@ -769,6 +762,17 @@ describe('bounded repair planning and revalidation', () => {
     await execute('advance', sandbox, pipeline, 'dispatch');
     expect(
       sandbox.github.rest.actions.createWorkflowDispatch
+    ).toHaveBeenNthCalledWith(1, {
+      ...repo,
+      workflow_id: 'agentic-workflows-compilation.yml',
+      ref: 'feature',
+      inputs: { pr_number: '11', expected_head_sha: merged }
+    });
+    expect(
+      sandbox.github.rest.actions.createWorkflowDispatch
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      sandbox.github.rest.actions.createWorkflowDispatch
     ).toHaveBeenCalledWith({
       ...repo,
       workflow_id: 'pr-pipeline.yml',
@@ -797,6 +801,23 @@ describe('bounded repair planning and revalidation', () => {
     );
     sandbox.process.env.STATE_ARTIFACT_ID = '501';
     await execute('advance', sandbox, pipeline, 'dispatch');
+    expect(
+      sandbox.github.rest.actions.createWorkflowDispatch
+    ).toHaveBeenCalledOnce();
+  });
+
+  it('reports a failed post-landing framework dispatch instead of losing the required check', async () => {
+    const sandbox = harness(undefined, { STATE_ARTIFACT_ID: '501' });
+    sandbox.files.set(
+      join('state-output', 'state.json'),
+      JSON.stringify(cycleState({ transition: 'landed' }))
+    );
+    sandbox.github.rest.actions.createWorkflowDispatch.mockRejectedValueOnce(
+      new Error('framework dispatch unavailable')
+    );
+    await expect(
+      execute('advance', sandbox, pipeline, 'dispatch')
+    ).rejects.toThrow('framework dispatch unavailable');
     expect(
       sandbox.github.rest.actions.createWorkflowDispatch
     ).toHaveBeenCalledOnce();
@@ -883,6 +904,7 @@ describe('human approval and native auto-merge', () => {
       parameters: {
         required_approving_review_count: 1,
         dismiss_stale_reviews_on_push: true,
+        require_code_owner_review: true,
         require_last_push_approval: true
       }
     },
@@ -891,7 +913,10 @@ describe('human approval and native auto-merge', () => {
       ruleset_id: 1,
       parameters: {
         strict_required_status_checks_policy: true,
-        required_status_checks: [{ context: 'PR Quality / Ready for review' }]
+        required_status_checks: [
+          { context: 'PR Quality / Ready for review' },
+          { context: 'Framework CI / Required' }
+        ]
       }
     }
   ];
@@ -946,6 +971,57 @@ describe('human approval and native auto-merge', () => {
     );
   });
 
+  it.each(['code-owner review', 'framework check', 'application check'])(
+    'rejects auto-merge without %s',
+    async (missing) => {
+      const rules = requiredRules();
+      if (missing === 'code-owner review') {
+        rules[0].parameters.require_code_owner_review = false;
+      } else {
+        const name =
+          missing === 'framework check'
+            ? 'Framework CI / Required'
+            : 'PR Quality / Ready for review';
+        rules[1].parameters.required_status_checks =
+          rules[1].parameters.required_status_checks.filter(
+            (check) => check.context !== name
+          );
+      }
+      const sandbox = harness(undefined, { ENABLE_AUTO_MERGE: 'true' });
+      sandbox.github.paginate.mockResolvedValue(rules);
+      await expect(execute('review', sandbox, review)).rejects.toThrow(
+        'Auto-merge requires'
+      );
+      expect(sandbox.github.graphql).not.toHaveBeenCalled();
+    }
+  );
+
+  it('checks enforcement when required checks come from separate rulesets', async () => {
+    const rules = requiredRules();
+    rules.push({
+      ...rules[1],
+      ruleset_id: 2,
+      parameters: {
+        strict_required_status_checks_policy: true,
+        required_status_checks: [{ context: 'Framework CI / Required' }]
+      }
+    });
+    rules[1].parameters.required_status_checks.pop();
+    const sandbox = harness(undefined, { ENABLE_AUTO_MERGE: 'true' });
+    sandbox.github.paginate.mockResolvedValue(rules);
+    sandbox.github.request.mockImplementation(
+      async (_route, { ruleset_id }) => ({
+        data: {
+          enforcement: ruleset_id === 2 ? 'evaluate' : 'active',
+          bypass_actors: []
+        }
+      })
+    );
+    await expect(execute('review', sandbox, review)).rejects.toThrow(
+      'no bypass actors'
+    );
+    expect(sandbox.github.graphql).not.toHaveBeenCalled();
+  });
   it.each([
     { enforcement: 'disabled', bypass_actors: [] },
     { enforcement: 'evaluate', bypass_actors: [] },
@@ -996,6 +1072,19 @@ describe('human approval and native auto-merge', () => {
 });
 
 describe('native workflow structure', () => {
+  it('keeps framework CI outside application scheduling and readiness', () => {
+    expect(pipeline.jobs.compile).toBeUndefined();
+    expect(pipeline.jobs.metadata.needs).toBe('context');
+    for (const job of Object.values(pipeline.jobs)) {
+      expect([job.needs].flat()).not.toContain('compile');
+      expect(job.uses || '').not.toContain('agentic-workflows-compilation');
+    }
+    const status = workflow('pr-status');
+    expect(status.jobs.labels.steps[0].with.script).not.toContain(
+      'workflow-compilation-failed'
+    );
+  });
+
   it('uses the same separate PR path for lint and every other file repair', () => {
     expect(pipeline.jobs.repair.if).toContain(
       "needs.repair-plan.outputs.needed == 'true'"
@@ -1120,13 +1209,20 @@ describe('native workflow structure', () => {
     expect(manifest.private).toBe(true);
     expect(manifest.workspaces).toEqual(['apps/*']);
     expect(manifest.scripts['test:ci']).toBe(
-      'npm run test:framework && npm run test:ci --workspaces --'
+      'npm run test:framework && npm run test:ci:apps --'
     );
     expect(manifest.scripts.build).toBe('npm run build --workspaces --');
     expect(manifest.scripts.lint).toBe(
-      'npm run lint:framework && npm run lint --workspaces --'
+      'npm run lint:framework && npm run lint:apps --'
     );
-    for (const command of ['dev', 'preview', 'test:apps', 'lint:fix']) {
+    for (const command of [
+      'dev',
+      'preview',
+      'test:apps',
+      'test:ci:apps',
+      'lint:apps',
+      'lint:fix'
+    ]) {
       expect(manifest.scripts[command]).toMatch(/--workspaces --$/);
     }
     expect(Object.values(manifest.scripts).join('\n')).not.toMatch(
@@ -1136,9 +1232,9 @@ describe('native workflow structure', () => {
     expect(testConfig.test.include).toEqual(['tests/framework/**/*.test.js']);
     expect(testConfig.test.coverage).toBeUndefined();
     for (const [name, command] of [
-      ['pr-lint', 'lint'],
+      ['pr-lint', 'lint:apps'],
       ['pr-build', 'build'],
-      ['pr-test', 'test:ci']
+      ['pr-test', 'test:ci:apps']
     ]) {
       const source = readFileSync(`.github/workflows/${name}.yml`, 'utf8');
       expect(source).toContain(`npm run ${command}`);

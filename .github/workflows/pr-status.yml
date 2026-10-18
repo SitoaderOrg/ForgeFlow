@@ -45,7 +45,6 @@ jobs:
             }
             const gates = JSON.parse(process.env.GATES);
             const states = {
-              'workflow-compilation-failed': gates.compile?.result,
               'needs-metadata': gates.metadata?.result,
               'lint-failed': gates.lint?.result,
               'build-failed': gates.build?.result,

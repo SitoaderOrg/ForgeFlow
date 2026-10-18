@@ -114,9 +114,11 @@ tools:
     - 'npm ci *'
     - 'npm install *'
     - 'npm run lint *'
+    - 'npm run lint:apps *'
     - 'npm run lint:fix *'
     - 'npm run build *'
     - 'npm run test:ci *'
+    - 'npm run test:ci:apps *'
     - 'npm test *'
     - 'npm audit *'
     - 'npx --no-install *'
@@ -682,8 +684,14 @@ Use project-owned npm workspace contracts, not assumed root Vite/Vitest commands
 or language autodetection. The private root package aggregates `apps/*`; each app
 owns its scripts, dependencies, configuration, and tests:
 
-- `npm run lint`, `npm run build`, and `npm run test:ci` at the root are mandatory
-  aggregate contracts. Do not bypass an app or the root framework governance tests.
+- Use `npm run lint:apps` and `npm run test:ci:apps` at the root for the actual
+  application lint and test gates. `npm run build` remains the application build
+  contract. Do not omit an app from these gates.
+- Root `npm run lint` and `npm run test:ci` remain aggregate developer commands,
+  not the app-only gate contracts. Independent framework CI runs `lint:framework`
+  and `test:framework`; its governance checks are not part of app repair validation.
+  Do not repair framework tests or configuration, or claim framework CI passed
+  based on an app check. Report framework findings as manual blockers instead.
 - Discover the app package name from its existing `apps/<app>/package.json`.
   Use `npm run test:ci --workspace <name> -- <selectors>` for focused app tests,
   using selectors relative to that app's test contract, not assumed root `tests/`.
@@ -692,7 +700,7 @@ owns its scripts, dependencies, configuration, and tests:
 - Read the relevant package's scripts before running optional commands such as
   `lint:fix`; a broad formatter is allowed only if its entire diff stays in scope.
   Preserve the project's coverage thresholds and supported command arguments.
-  Focused checks do not certify aggregate coverage or excuse unrelated failures.
+  Focused checks do not certify the full app gates or excuse unrelated failures.
 - `npm audit` is supplemental dependency evidence, not a replacement for the
   parent's selected security checks.
 
@@ -709,8 +717,9 @@ Install dependencies only when required for a code validation, using
 install. Keep any subsequent dependency installation bounded and use
 `--ignore-scripts --no-audit --no-fund`.
 Do not install tools just to explore. Review `git diff --stat` and the actual patch.
-Run focused tests for changed behavior; use the repository lint/build/test commands
-only as relevant and report their real outcomes. Local checks do not replace gates.
+Run focused tests for changed behavior; use the app-only lint/test and existing
+build contracts above as relevant and report their real outcomes. Local checks
+do not replace gates or independent framework CI.
 
 All GitHub writes must use the mode-appropriate native safe-output tool. Never use
 `gh`, HTTP, git push, alternate tokens, or credentials for writes. Never switch

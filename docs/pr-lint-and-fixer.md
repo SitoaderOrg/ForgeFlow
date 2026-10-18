@@ -1,14 +1,14 @@
 # Repository Lint Checks and Native Repair
 
 [`pr-lint.yml`](../.github/workflows/pr-lint.yml) is a reusable `workflow_call`
-gate after workflow compilation and metadata, and before build. It invokes the
+gate after metadata and before build. It invokes the
 repository's explicitly configured lint script at the immutable PR head.
 [`pr-pipeline.yml`](../.github/workflows/pr-pipeline.yml) owns ordering and repair;
 the lint gate does not dispatch workflows or manage labels.
 
 ```mermaid
 flowchart TD
-    Metadata["Workflow compilation and metadata passed"] --> Lint["Run repository lint check at exact head SHA"]
+    Metadata["Metadata passed"] --> Lint["Run app lint checks at exact head SHA"]
     Lint -->|Native success| Build["Repository build check"]
     Lint -->|"needs.lint.result is failure"| Findings["Select from native run/candidate result and diagnostics<br/>Labels are visibility only"]
     Findings -->|"Lint selected; workflow_call; fewer than 6 calls"| Repair["ALL lint file fixes in separate repair PR<br/>Base feature first, preceding repair later; never direct feature push"]
