@@ -31,7 +31,7 @@ permissions:
   security-events: write
 
 env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '2' }}
   # Fail the gate on CodeQL findings at or above this CVSS security-severity (medium = 4.0)
   CODEQL_MIN_SECURITY_SEVERITY: ${{ vars.CODEQL_MIN_SECURITY_SEVERITY || '4.0' }}
 

@@ -104,10 +104,7 @@ safe-outputs:
     draft: false
     fallback-as-issue: false
   add-labels:
-    allowed: ["docs-required", "docs-not-required"]
-    target: "*"
-  remove-labels:
-    allowed: ["docs-required"]
+    allowed: ["docs-not-required"]
     target: "*"
   add-comment:
     max: 1
@@ -130,7 +127,7 @@ Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `ite
 - Only read the source files listed in the gate findings. Finish in fewer than 15 tool calls.
 
 ## Objective
-Semantically evaluate the pull request diff to determine if documentation updates are required. If documentation is needed and missing, autonomously draft accurate, clear documentation in a stacked pull request and apply the `docs-required` label. If documentation is already present or not required, clear the label cleanly.
+Semantically evaluate the pull request diff to determine if documentation updates are required. If documentation is needed and missing, autonomously draft accurate, clear documentation in a stacked pull request. If documentation is not required, record that decision with the `docs-not-required` label. The `docs-required` label is owned by the Documentation Drift gate — never add or remove it.
 
 ## 📋 Documentation Decision Criteria
 
@@ -161,9 +158,9 @@ Semantically evaluate the pull request diff to determine if documentation update
    - `gh pr view --json number,title,body,headRefName,files`
    - `gh pr diff`
 2. Check if the PR already includes documentation changes (`.md` files or `docs/` updates):
-   - If appropriate documentation is already included in the PR, call `remove-labels` with `docs-required` (if present) and conclude gracefully.
+   - If appropriate documentation is already included in the PR, call `noop` explaining which files document the change and conclude gracefully.
 3. Compare source changes against the **Documentation Decision Criteria**:
-   - If the PR contains only changes in the **❌ Skip** list, call `remove-labels` with `docs-required`, call `add-labels` with `docs-not-required` (this records your decision for the Documentation Drift gate), post a one-line `add-comment` explaining why, and exit. No documentation needed.
+   - If the PR contains only changes in the **❌ Skip** list, call `add-labels` with `docs-not-required` (this records your decision for the Documentation Drift gate), post a one-line `add-comment` explaining why, and exit. No documentation needed.
    - If the PR introduces changes matching the **✅ Document** list without documentation, proceed to Step 2.
 
 ## Step 2: Discover Existing Documentation Conventions
@@ -183,17 +180,16 @@ Semantically evaluate the pull request diff to determine if documentation update
 1. Ensure all new markdown files have valid headers, code fences, and relative links that resolve properly.
 2. Verify formatting matches the rest of the repository.
 
-## Step 5: Propose Stacked Pull Request & Update Labels
+## Step 5: Propose Stacked Pull Request
 Apply safe outputs:
-1. Call `add-labels` to apply `docs-required` to the parent PR to track needed documentation.
-2. Call `create-pull-request` to open a stacked pull request:
+1. Call `create-pull-request` to open a stacked pull request:
    - Set `base` to the parent PR branch (`headRefName`).
    - Set `title`: `docs: update documentation for PR changes`
    - Set `body`: Provide a clear breakdown of:
      - **Updated Documents**: List of files updated or added.
      - **Summary of Documentation Added**: Overview of new APIs/features documented.
      - **Lifecycle**: "This stacked PR was automatically opened by the **PR Documentation Updater** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
-3. Call `add-comment` on the parent PR notifying the author that a stacked PR containing the documentation updates has been created and will be automatically merged into their branch. Include the direct link to the stacked PR.
+2. Call `add-comment` on the parent PR notifying the author that a stacked PR containing the documentation updates has been created and will be automatically merged into their branch. Include the direct link to the stacked PR.
 
 ## Safe Output Rules
 - When calling `create_pull_request`, provide `title`, `body` and (if needed) `base`/`branch` only — do **not** pass a `temporary_id`.

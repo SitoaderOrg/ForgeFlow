@@ -20,17 +20,17 @@ flowchart TD
         ParallelStage --> DocEval[6. Semantic Doc Evaluation\n.github/workflows/pr-doc-updater.md\ngh-aw agentic evaluator]
     end
 
-    %% Direct fix loops (no stacked PR)
+    %% Direct fix loop (no stacked PR)
     GateFail --> AgentMeta[🤖 PR Validation Agent\nUpdates title & description via API] --> Start
-    LintFail --> AgentLint[🤖 PR Lint Fixer\nPushes formatting fix directly to branch] --> Start
 
     %% Stacked PR remediation loops (auto-merged)
+    LintFail --> AgentLint[🤖 PR Lint Fixer\nOpens Stacked PR]
     Test -->|< 80% Coverage| CovFail[Apply 'test-required'] --> AgentTest[🤖 PR Test Generator\nOpens Stacked PR]
     Sec -->|Vulnerabilities| SecFail[Apply 'codeql-alert' / 'dependency-alert'] --> AgentSec[🤖 PR Security Fixers\nOpens Stacked PR]
     DocEval -->|Docs Missing for APIs| DocFail[Apply 'docs-required'] --> AgentDoc[🤖 PR Documentation Updater\nOpens Stacked PR]
 
-    AgentTest & AgentSec & AgentDoc --> StackedPR[Stacked PR on Feature Branch\nTagged: test/doc/security-remediation]
-    StackedPR --> AutoMerge[Auto-Merge Stacked PR into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquash, delete branch, clear labels, post audit link]
+    AgentLint & AgentTest & AgentSec & AgentDoc --> StackedPR[Stacked PR on Feature Branch\nTagged: lint/test/doc/security-remediation]
+    StackedPR --> AutoMerge[Auto-Merge Stacked PR into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquash, delete branch, post audit link,\nrecheck once per repair round]
     AutoMerge --> Start
 
     %% Review Stage

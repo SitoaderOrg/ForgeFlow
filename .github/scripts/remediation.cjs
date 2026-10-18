@@ -83,7 +83,7 @@ async function dispatchRemediation({
   maxAttempts
 }) {
   const { owner, repo } = context.repo;
-  const max = Number(maxAttempts || process.env.MAX_REMEDIATION_ATTEMPTS || 4);
+  const max = Number(maxAttempts || process.env.MAX_REMEDIATION_ATTEMPTS || 2);
 
   try {
     const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {

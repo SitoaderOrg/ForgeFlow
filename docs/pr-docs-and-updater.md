@@ -21,7 +21,7 @@ flowchart TD
     ApplyLabel --> AuthorDocs[Draft Idiomatic Markdown & API Usage]
     AuthorDocs --> StackedPR[Open Stacked PR on Feature Branch\nTagged: doc-remediation]
 
-    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit, clears docs-required & posts audit link]
+    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit & posts audit link\nGate clears docs-required on recheck]
     AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
     Recheck --> DoneNoAction
 ```

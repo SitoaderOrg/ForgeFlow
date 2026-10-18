@@ -6,9 +6,9 @@
 4. **Automated Testing & Coverage**: Executes test runner with diff-scoped coverage (configurable threshold, defaulting to 80%).
 5. **GitHub Security & Quality**: Native CodeQL static analysis (SARIF findings gated by security severity), Dependency Review, and secret detection (GITLEAKS in the lint stage).
 6. **Documentation Drift Verification**: Detects when application code changes without documentation and hands the semantic decision to the documentation agent.
-7. **Autonomous `gh-aw` Remediation Loops**: Failing gates dispatch the matching agent with the concrete findings; agents push fixes or propose stacked PRs (see [Remediation Chaining](docs/remediation-chaining.md)).
-8. **Automated Consolidation & Auto-Merge**: The remediation relay squashes stacked PRs into the feature branch with full audit trails and re-runs the pipeline.
-9. **Semantic Review & Merge**: GitHub Copilot performs review before human approval and final merge.
+7. **Autonomous `gh-aw` Remediation Loops**: Failing gates dispatch the matching agent with the concrete findings (bounded attempts); agents propose stacked PRs or metadata fixes but never mark a gate as passed (see [Remediation Chaining](docs/remediation-chaining.md)).
+8. **Automated Consolidation & Recheck**: The remediation relay squashes stacked PRs into the feature branch with full audit trails and re-checks the PR once per repair round, only when the revision changed.
+9. **Semantic Review & Human Merge**: Once the `pr-quality` status is green, GitHub Copilot reviews the PR and a human gives the final approval and merges it. Only stacked remediation PRs are merged automatically (into the feature branch).
 
 ### 💡 Why This Framework is Relevant: Solving Review Fatigue
 
@@ -29,7 +29,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 - **Regular GitHub Actions:** Deterministic, binary (pass/fail), fast, reproducible tasks (compiling, running test runners, linting, scanning). -> (fast, zero token cost, reproducible).
 - **`gh-aw` (English Agentic Workflows):** Tasks requiring **reasoning, semantic understanding, synthesis, or code generation**. -> (using English in Markdown).
-- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group with `cancel-in-progress: true`, so a newer push or remediation re-run cancels the obsolete pipeline. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
+- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group: a newer push cancels the obsolete check, while relay re-dispatches queue behind it and are de-duplicated per revision via the `pr-quality` status. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
 - **No PAT required:** Events created with `GITHUB_TOKEN` never trigger workflows, so every hop is chained with `workflow_dispatch` — see [Remediation Chaining Without PATs](docs/remediation-chaining.md).
 
 ### Documentation & Implemented Modules
@@ -55,13 +55,13 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 - **Security Scanning (`pr-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable; also `workflow_dispatch`).
 - **Documentation Drift Gate (`pr-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
 - **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
-- **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs the pipeline.
+- **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and, once the repair round is over, re-runs the pipeline if the PR revision changed.
 - **Shared gate helper (`.github/scripts/remediation.cjs`)**: Label management and deduplicated, budgeted agent dispatch.
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)
 
 - **PR Validation (`pr-validation.md`)**: Dispatched by the Pre-Flight Gatekeeper (`needs-metadata`). Summarizes broad diffs into clean, template-compliant PR descriptions and Conventional Commit titles when missing.
-- **PR Lint Fixer (`pr-lint-fixer.md`)**: Dispatched by the lint gate (`lint-failed`) with the per-linter Super-Linter output. Automatically formats and resolves linter errors on the PR branch.
+- **PR Lint Fixer (`pr-lint-fixer.md`)**: Dispatched by the lint gate (`lint-failed`) with the per-linter Super-Linter output. Automatically formats and resolves linter errors and opens a stacked PR (`lint-remediation`) that is auto-merged into the PR branch.
 - **PR Test Generator (`pr-test-generator.md`)**: Dispatched by the test gate (`test-required`) with failing tests and coverage. Drafts missing unit tests and boundary cases in a stacked PR.
 - [Security Fixers (`pr-codeql-fixer.md`, `pr-dependency-fixer.md`, `pr-secret-fixer.md`)](.github/workflows/pr-codeql-fixer.md): Remediates vulnerabilities and alerts via stacked PRs.
 - [Documentation Evaluator & Updater (`pr-doc-updater.md`)](.github/workflows/pr-doc-updater.md): Semantically evaluates PR diffs against documentation criteria (public APIs, schemas, architecture) and authors missing guides via stacked PRs.

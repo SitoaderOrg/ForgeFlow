@@ -30,7 +30,7 @@ permissions:
   actions: write
 
 env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '2' }}
 
 jobs:
   lint:
@@ -147,12 +147,13 @@ jobs:
               github, context, core, prNumber,
               headRef: process.env.HEAD_REF,
               workflow: 'pr-lint-fixer.lock.yml',
+              stackedLabel: 'lint-remediation',
               findings: `Super-Linter failed in run ${context.runId} (${runUrl}). Fix EVERY issue below.\n${details || '(no linter output captured)'}`
             });
 
             const summary = '### ❌ Lint & Format Gatekeeper Failed\n\n' +
               `> 🤖 **Autonomous Remediation**: Added \`lint-failed\` label. PR Lint Fixer dispatch status: **${status}**. ` +
-              'The agent applies formatting/style fixes, pushes them to the PR branch, and the pipeline re-runs automatically.\n';
+              'The agent opens a **Stacked Pull Request** with formatting/style fixes, which is auto-merged into your branch before the pipeline re-runs.\n';
             await core.summary.addRaw(summary).write();
 
       - name: Handle Lint Success (Clear Remediation Label)

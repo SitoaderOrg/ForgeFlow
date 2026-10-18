@@ -1,21 +1,37 @@
 name: PR Quality Pipeline
 
+# Check -> Repair -> Recheck -> Review & merge
+#   Check:   every gate runs once per PR revision (head SHA + PR metadata + decision labels).
+#   Repair:  failing gates dispatch their gh-aw agent (bounded by MAX_REMEDIATION_ATTEMPTS).
+#   Recheck: the remediation relay re-dispatches this pipeline only once the repair round
+#            is over and only if the revision changed. Agents never mark a gate as passed.
+#   Review:  the `pr-quality` commit status set by the verdict job gates human review; only
+#            stacked remediation PRs are merged automatically. A human approves and merges
+#            the feature PR into main.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  # Re-entry point used by the remediation relay (pr-stacked-merge.yml) after an agent
-  # pushes or auto-merges a fix. Commits made with GITHUB_TOKEN do not raise
-  # `synchronize` events, so the pipeline is re-dispatched on the PR head branch instead.
+  # Re-entry point used by the remediation relay (pr-stacked-merge.yml) after a repair
+  # round. Commits made with GITHUB_TOKEN do not raise `synchronize` events, so the
+  # pipeline is re-dispatched on the PR head branch instead.
   workflow_dispatch:
     inputs:
       pr_number:
         description: 'Pull request number to validate (run the workflow on the PR head branch)'
         required: true
         type: string
+      force:
+        description: 'Re-check even if this revision already has a pr-quality verdict'
+        required: false
+        type: boolean
+        default: false
 
+# New pushes cancel a running check; relay re-dispatches queue behind it and are
+# de-duplicated by revision instead.
 concurrency:
   group: pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -23,6 +39,7 @@ permissions:
   issues: write
   security-events: write
   actions: write
+  statuses: write
 
 jobs:
   # Stage 0: Resolve PR context (works for both pull_request and workflow_dispatch)
@@ -32,20 +49,29 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      statuses: write
     outputs:
       pr_number: ${{ steps.pr.outputs.pr_number }}
       head_ref: ${{ steps.pr.outputs.head_ref }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       base_ref: ${{ steps.pr.outputs.base_ref }}
+      revision: ${{ steps.pr.outputs.revision }}
       skip: ${{ steps.pr.outputs.skip }}
     steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
       - name: Resolve pull request
         id: pr
         uses: actions/github-script@v7
         env:
           PR_INPUT: ${{ inputs.pr_number }}
+          FORCE: ${{ inputs.force }}
         with:
           script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
             const prNumber = context.eventName === 'pull_request'
               ? context.payload.pull_request.number
               : Number(process.env.PR_INPUT);
@@ -61,7 +87,7 @@ jobs:
             });
 
             const labels = pr.labels.map(l => l.name);
-            const remediationLabels = ['test-remediation', 'security-remediation', 'doc-remediation'];
+            const remediationLabels = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
             let skip = false;
             if (pr.state !== 'open') {
               core.notice(`PR #${prNumber} is ${pr.state}; skipping pipeline.`);
@@ -74,12 +100,35 @@ jobs:
               return;
             }
 
+            // Check each revision once: skip when it already has a final verdict
+            // (e.g. a relay re-dispatch racing a `pull_request` run for the same commit).
+            const rev = quality.revision(pr);
+            if (!skip) {
+              const forced = process.env.FORCE === 'true' || Number(process.env.GITHUB_RUN_ATTEMPT) > 1;
+              const existing = await quality.getQualityStatus({ github, context, sha: pr.head.sha });
+              if (!forced && existing && existing.final && existing.revision === rev) {
+                core.notice(`Revision ${rev} already has a '${existing.state}' verdict (${existing.targetUrl}). Skipping duplicate check; dispatch with force=true to re-check.`);
+                skip = true;
+              }
+            }
+            if (!skip) {
+              await quality.setQualityStatus({
+                github, context,
+                sha: pr.head.sha,
+                state: 'pending',
+                summary: 'Checking metadata, lint, build, tests, security and docs',
+                rev,
+                targetUrl: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              });
+            }
+
             core.setOutput('pr_number', String(prNumber));
             core.setOutput('head_ref', pr.head.ref);
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('base_ref', pr.base.ref);
+            core.setOutput('revision', rev);
             core.setOutput('skip', String(skip));
-            core.info(`PR #${prNumber}: ${pr.head.ref} (${pr.head.sha}) -> ${pr.base.ref}`);
+            core.info(`PR #${prNumber}: ${pr.head.ref} (${pr.head.sha}) -> ${pr.base.ref}, revision ${rev}`);
 
   # Stage 1: Pre-flight & Lint (~30s, fail fast)
   gatekeeper:
@@ -182,3 +231,59 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+
+  # Verdict: the only thing that marks a revision as passing. Required on main.
+  verdict:
+    name: 'PR Quality Verdict'
+    needs: [context, gatekeeper, lint, build, test, security, docs]
+    if: always() && !cancelled() && needs.context.result == 'success' && needs.context.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Publish pr-quality status
+        uses: actions/github-script@v7
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          REVISION: ${{ needs.context.outputs.revision }}
+        with:
+          script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
+            const needs = JSON.parse(process.env.NEEDS);
+            const gates = { gatekeeper: 'Metadata', lint: 'Lint', build: 'Build', test: 'Tests', security: 'Security', docs: 'Docs' };
+            const failed = [];
+            const notRun = [];
+            for (const [job, label] of Object.entries(gates)) {
+              const result = needs[job] ? needs[job].result : 'skipped';
+              if (result === 'success') continue;
+              (result === 'failure' ? failed : notRun).push(label);
+            }
+
+            const passed = failed.length === 0 && notRun.length === 0;
+            const parts = [];
+            if (failed.length) parts.push(`Failed: ${failed.join(', ')}`);
+            if (notRun.length) parts.push(`not run: ${notRun.join(', ')}`);
+            const summary = passed ? 'All gates passed' : parts.join('; ');
+
+            await quality.setQualityStatus({
+              github, context,
+              sha: process.env.HEAD_SHA,
+              state: passed ? 'success' : 'failure',
+              summary,
+              rev: process.env.REVISION,
+              targetUrl: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+            await core.summary.addRaw(
+              `### ${passed ? '✅' : '❌'} pr-quality: ${summary}\n\n` +
+              `Revision \`${process.env.REVISION}\` on \`${process.env.HEAD_SHA}\`. ` +
+              (passed
+                ? 'Ready for human review.'
+                : 'Remediation agents were dispatched for the failing gates; the relay re-checks the PR once they finish.') + '\n'
+            ).write();

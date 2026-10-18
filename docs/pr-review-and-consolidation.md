@@ -29,26 +29,26 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 flowchart TD
     PR[Contributor Opens PR] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml\nStages 1-3: Lint, Build, Test, Sec, Docs]
     
-    Pipeline -->|Fails / Alerts| Agents[Remediation Agents Open Stacked PRs\n- Unit Tests: test-remediation\n- Security Patches: security-remediation\n- Markdown Docs: doc-remediation]
+    Pipeline -->|Fails / Alerts| Agents[Remediation Agents Open Stacked PRs\n- Lint Fixes: lint-remediation\n- Unit Tests: test-remediation\n- Security Patches: security-remediation\n- Markdown Docs: doc-remediation]
     
     subgraph Auto_Consolidation [Review & Auto-Consolidation Stage]
-        Agents --> AutoMerge[Auto-Merge Validated Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash commit & clear remediation labels]
+        Agents --> AutoMerge[Auto-Merge Stacked PRs\n.github/workflows/pr-stacked-merge.yml\nSquash commit, wait for the repair round to end]
         AutoMerge --> CommentParent[Post Audit Trail Comment on Parent PR\nDirect links to merged PR & commit SHA]
     end
 
-    AutoMerge --> SyncBranch[Feature Branch Synchronized & Updated]
+    AutoMerge --> SyncBranch[Recheck once, only if the revision changed]
     SyncBranch --> Pipeline
 
-    Pipeline -->|✅ All Gates Pass & Labels Cleared| Dispatcher[Stage 4: Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
+    Pipeline -->|✅ pr-quality status: success| Dispatcher[Stage 4: Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
 
     Dispatcher --> RequestCopilot[Request GitHub Copilot Code Review\nDeep semantic & architectural analysis]
     Dispatcher --> PostSummary[Post Consolidated Summary on Parent PR\nItemized links to all auto-merged PRs]
 
     RequestCopilot --> InlineFeedback[Copilot leaves actionable inline comments\nwith 1-click 'Commit suggestion' buttons]
 
-    InlineFeedback & PostSummary --> DeveloperReview[Developer Final Review & Sign-Off\nSingle review session for all changes]
+    InlineFeedback & PostSummary --> DeveloperReview[Developer Final Review & Approval]
 
-    DeveloperReview --> MergeMain([🚀 Merge PR into Main])
+    DeveloperReview --> MergeMain([🚀 Human approves & merges into Main])
 ```
 
 ---
@@ -56,9 +56,9 @@ flowchart TD
 ## 1. Stacked PR Auto-Merger (`.github/workflows/pr-stacked-merge.yml`)
 
 Instead of pinging the developer to manually review and merge 3–4 separate stacked PRs (the relay is dispatched by each agent's `conclusion` job, because PRs created with `GITHUB_TOKEN` never raise `pull_request` events — see [Remediation Chaining](remediation-chaining.md)):
-- **Automatic Ingestion**: Automatically merges valid remediation PRs with labels (`test-remediation`, `security-remediation`, `doc-remediation`) targeting the feature branch.
+- **Automatic Ingestion**: Automatically merges valid remediation PRs with labels (`lint-remediation`, `test-remediation`, `security-remediation`, `doc-remediation`) targeting the feature branch.
 - **Ready & Squash & Delete**: Marks draft stacked PRs ready, squashes the remediation commit into the developer's feature branch and deletes the temporary agent branch.
-- **Re-run**: Re-dispatches `pr-pipeline.yml` on the feature branch so every gate is re-evaluated on the consolidated code.
+- **Recheck, once**: Waits until no remediation agent is still working on the branch and no pipeline is running, then re-dispatches `pr-pipeline.yml` only if the PR revision changed. Gate labels are never cleared here — merging a fix is not evidence that it works.
 - **Transparent Audit Trail**: Posts a comment directly to the parent PR:
   > **🤖 Autonomous Remediation Auto-Merged**:
   > - **Stacked PR**: [#12 - test: add unit test coverage for PR changes](url)
@@ -73,4 +73,12 @@ Once all automated checks pass and all stacked PRs are settled:
 - **Requests GitHub Copilot Code Review**: Automatically dispatches `@copilot` to perform deep architectural and semantic review.
 - **Posts Consolidated Summary**:
   - Itemizes every auto-merged remediation PR and commit with direct links.
-  - Instructs the developer to review Copilot's inline suggestions and give final approval to merge.
+  - Instructs the developer to review Copilot's inline suggestions and approve.
+
+---
+
+## 3. Human Final Approval
+
+Only stacked remediation PRs are merged automatically, and only into the feature branch. The feature PR is never merged by automation:
+- **`pr-quality` commit status**: the pipeline's verdict job is the only thing that marks a revision as passing (see [Remediation Chaining](remediation-chaining.md#check--repair--recheck--review--merge)).
+- **Human merge**: once `pr-quality` is green and Copilot has reviewed, a maintainer approves and merges the PR into `main`.

@@ -23,7 +23,7 @@ permissions:
   issues: write
   actions: write
 env:
-  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '4' }}
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '2' }}
 
 jobs:
   gatekeeper:

@@ -16,8 +16,9 @@ flowchart TD
     AddLabel --> Fixer[Autonomous gh-aw Workflow\n.github/workflows/pr-lint-fixer.md]
     Fixer --> Inspect[Inspect PR Diff & Failed Linter Logs]
     Fixer --> Remediate[Format Code & Correct Lint Violations]
-    Fixer --> SafeOutputs[Safe Outputs Execution:\n- Push fix directly to PR branch\n- Post explanatory comment\n- Remove 'lint-failed' label]
-    SafeOutputs --> Recheck([PR Updated & Pipeline Re-triggered])
+    Fixer --> SafeOutputs[Safe Outputs Execution:\n- Open stacked PR 'lint-remediation'\n- Comment on parent PR]
+    SafeOutputs --> Relay[pr-stacked-merge.yml\nSquash-merge stacked PR\nRecheck once the repair round ends]
+    Relay --> Recheck([Pipeline re-checks the new revision\nLint gate clears 'lint-failed' only if it passes])
 ```
 
 ---
@@ -46,6 +47,6 @@ When formatting or style issues break the build, this GitHub Agentic Workflow au
   - Inspects `gh pr diff` and recent linter failure logs from `pr-lint.yml`.
   - Pinpoints exact syntax, whitespace, import ordering, or style discrepancies reported by the linter.
 - **Safe Outputs Execution**:
-  - `push-to-pull-request-branch`: Commits and pushes the clean formatting and lint fixes directly to the author's PR branch.
-  - `add-comment`: Posts a summary of which files were formatted and which lint rules were corrected.
-  - `remove-labels`: Removes the `lint-failed` label to unblock the gatekeeper.
+  - `create-pull-request`: Opens a stacked PR (labelled `lint-remediation`, title prefix `style(lint): `) targeting the author's feature branch with the formatting and lint fixes.
+  - `add-comment`: Posts a summary on the parent PR of which files were formatted and which lint rules were corrected.
+- **Auto-merge**: The agent's `conclusion` job dispatches `pr-stacked-merge.yml`, which squash-merges the stacked PR into the feature branch, posts an audit comment with the merged commit on the parent PR, and — once the repair round is over — re-runs the PR Quality Pipeline on the new revision. The `lint-failed` label is only removed by the Lint gate when the re-check passes.

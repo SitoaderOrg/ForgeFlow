@@ -88,9 +88,6 @@ safe-outputs:
     title: true
     body: true
     target: "*"
-  remove-labels:
-    allowed: ["needs-metadata"]
-    target: "*"
   add-comment:
     max: 1
     target: "*"
@@ -134,4 +131,4 @@ Analyze the changes introduced in this pull request and generate complete, accur
 4. **Apply Safe Outputs**:
    - `update-pull-request`: Update the PR with the new `title` and generated `body`.
    - `add-comment`: Post a friendly comment indicating that the PR metadata was automatically drafted based on the diff, and encourage the author to review and customize it.
-   - `remove-labels`: Remove the `needs-metadata` label.
+   - Do **not** touch the `needs-metadata` label: the PR Gatekeeper removes it once the re-check passes.

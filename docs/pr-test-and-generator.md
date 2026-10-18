@@ -30,7 +30,7 @@ flowchart TD
     Generator --> Synthesize[Synthesize Idiomatic Unit Tests\nCover boundary cases & edge scenarios]
     Generator --> StackedPR[Create Stacked PR targeting feature branch\nTagged: test-remediation]
 
-    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit, clears label & posts audit link]
+    StackedPR --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit & posts audit link\nGate clears label on recheck]
     AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
 ```
 

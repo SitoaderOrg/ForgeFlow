@@ -153,7 +153,7 @@ jobs:
             echo "1. **GitHub Copilot Code Review** has been requested for deep semantic and architectural analysis."
             echo "2. Review any inline suggestions left by Copilot (you can apply suggestions directly with one-click **\"Commit suggestion\"** buttons)."
             echo "3. If remediation commits were merged, review the changes via the links above."
-            echo "4. **⏳ Awaiting human review** — once a maintainer approves, this PR is ready to merge into \`main\`! 🚀"
+            echo "4. **⏳ Awaiting human review** — all gates passed (\`pr-quality\` is green). Final approval and the merge into \`main\` are up to a maintainer. 🚀"
           } > "$COMMENT_FILE"
 
           gh pr comment "$PR_NUM" --body-file "$COMMENT_FILE"

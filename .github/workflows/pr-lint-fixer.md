@@ -109,11 +109,12 @@ jobs:
             core.info(`Dispatched remediation relay for '${process.env.GITHUB_REF_NAME}'.`);
 
 safe-outputs:
-  push-to-pull-request-branch:
-    target: "*"
-  remove-labels:
-    allowed: ["lint-failed"]
-    target: "*"
+  create-pull-request:
+    title-prefix: "style(lint): "
+    labels: ["lint-remediation"]
+    allowed-base-branches: ["*"]
+    draft: false
+    fallback-as-issue: false
   add-comment:
     max: 1
     target: "*"
@@ -133,7 +134,7 @@ Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `ite
 - The full PR diff is pre-fetched to `/tmp/gh-aw/pr.diff`. Fix only the files named in the gate findings. Finish in fewer than 15 tool calls.
 
 ## Objective
-Automatically fix code formatting and lint issues on this pull request to help it pass the PR Lint & Format gatekeeper.
+Automatically fix code formatting and lint issues on this pull request to help it pass the PR Lint & Format gatekeeper. Deliver the fixes as a single stacked pull request targeting the author's feature branch; it is auto-merged into that branch by the remediation relay.
 
 ## Instructions
 1. Inspect the pull request using `gh pr diff <pr_number>` and `gh pr view <pr_number> --json files,commits,headRefName`.
@@ -144,6 +145,13 @@ Automatically fix code formatting and lint issues on this pull request to help i
 3. The **Gate findings** above contain the exact Super-Linter output per linter (e.g. `JAVASCRIPT_ES`, `JAVASCRIPT_PRETTIER`, `CSS` = stylelint-config-standard, `HTML` = HTMLHint). Every listed issue must be fixed — `npm run lint` does not cover stylelint, so fix CSS findings by hand. Run `npm run lint:fix`, then fix any remaining errors by hand (e.g. remove unused variables/imports, prefer `const`) **without changing runtime behaviour**. Only touch files changed in this PR unless a linter explicitly requires otherwise. CSS must use modern color notation (`rgb(0 0 0 / 50%)`) and HTML ids/classes must be lowercase-dash-case.
 4. Re-run `npm run lint` until it passes, and run `npm test` to confirm nothing broke.
 5. Apply safe outputs:
-   - Call `push-to-pull-request-branch` to push the formatting/lint fix directly to the PR branch.
-   - Call `add-comment` to post a concise summary of which files were fixed.
-   - Call `remove-labels` to remove the `lint-failed` label once changes are pushed.
+   - Call `create-pull-request` to open a stacked pull request:
+     - Set `base` to the parent PR branch (`headRefName`).
+     - Set `title`: `fix lint and formatting issues`
+     - Set `body`: list each file fixed and the linter rules corrected (e.g. `no-unused-vars`, Prettier formatting), then end with: "This stacked PR was automatically opened by the **PR Lint Fixer** agent and will be automatically squashed and merged into your feature branch by \`pr-stacked-merge.yml\`."
+   - Call `add-comment` on the parent PR to tell the developer that a stacked lint remediation PR has been opened with a concise summary of the files fixed, and that it will be auto-merged into their branch.
+   - Do **not** touch the `lint-failed` label: the Lint gate removes it once the re-check passes.
+
+## Safe Output Rules
+- When calling `create_pull_request`, provide `title`, `body` and (if needed) `base`/`branch` only — do **not** pass a `temporary_id`.
+- Do not invent or guess URLs for the stacked pull request in comments. Refer to it as "the stacked lint remediation PR"; the remediation relay posts the exact link once it is merged.

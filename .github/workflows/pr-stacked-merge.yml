@@ -1,12 +1,15 @@
 name: PR Stacked Remediation Auto-Merger
 
-# Remediation relay: consolidates agent work into the parent PR branch and re-runs the
-# PR Quality Pipeline.
+# Remediation relay (the "Recheck" step of Check -> Repair -> Recheck -> Review & merge).
 #
 # Agents run with the default GITHUB_TOKEN, and GitHub never starts workflow runs for
 # PRs/pushes/labels created with that token (nor `workflow_run` events for runs that
 # were themselves dispatched with it). Every gh-aw agent therefore dispatches this
-# workflow from its `conclusion` job once its safe outputs are applied.
+# workflow from its `conclusion` job once its safe outputs are applied. The relay:
+#   1. squash-merges open stacked remediation PRs into the parent branch;
+#   2. waits until the repair round is over (no agent still working, no pipeline running);
+#   3. re-dispatches the PR Quality Pipeline once, and only if the PR revision changed.
+# It never clears gate labels or marks anything as fixed: only the gates do that.
 
 on:
   workflow_dispatch:
@@ -37,40 +40,47 @@ permissions:
   pull-requests: write
   issues: write
   actions: write
+  statuses: read
 
 jobs:
   auto-merge-stacked:
-    name: Auto-Merge Remediation PRs & Re-run Pipeline
+    name: Auto-Merge Remediation PRs & Recheck
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     if: >-
       github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'lint-remediation') ||
       contains(github.event.pull_request.labels.*.name, 'test-remediation') ||
       contains(github.event.pull_request.labels.*.name, 'security-remediation') ||
       contains(github.event.pull_request.labels.*.name, 'doc-remediation')
 
     steps:
-      - name: Consolidate Stacked PRs & Re-dispatch Pipeline
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Consolidate Stacked PRs & Recheck
         uses: actions/github-script@v7
         env:
           INPUT_BRANCH: ${{ inputs.branch }}
           AGENT_RESULT: ${{ inputs.agent_result }}
           SOURCE: ${{ inputs.source }}
+          PIPELINE_WAIT_MINUTES: ${{ vars.PIPELINE_WAIT_MINUTES || '30' }}
         with:
           script: |
             const { owner, repo } = context.repo;
             const defaultBranch = context.payload.repository.default_branch;
-            const REMEDIATION = {
-              'test-remediation': ['test-required'],
-              'doc-remediation': ['docs-required'],
-              'security-remediation': ['codeql-alert', 'dependency-alert', 'secret-alert']
-            };
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
+            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/remediation.cjs`);
+            const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
+            const ACTIVE = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const summary = (text) => core.summary.addRaw(`### Remediation Relay\n\n${text}\n`).write();
 
-            let parentBranch;
-            if (context.eventName === 'pull_request') {
-              parentBranch = context.payload.pull_request.base.ref;
-            } else {
-              parentBranch = process.env.INPUT_BRANCH;
-            }
+            const parentBranch = context.eventName === 'pull_request'
+              ? context.payload.pull_request.base.ref
+              : process.env.INPUT_BRANCH;
 
             if (!parentBranch || parentBranch === defaultBranch) {
               core.info(`Nothing to consolidate for branch '${parentBranch}'.`);
@@ -86,10 +96,11 @@ jobs:
             }
             core.info(`Parent PR: #${parent.number} (${parent.html_url})`);
 
-            // 1. Merge every open stacked remediation PR that targets the parent branch
+            // 1. Merge every open stacked remediation PR that targets the parent branch.
+            //    Gate labels stay on the parent PR: only a passing gate removes them.
             const stacked = (await github.paginate(github.rest.pulls.list, {
               owner, repo, state: 'open', base: parentBranch, per_page: 100
-            })).filter(p => p.labels.some(l => REMEDIATION[l.name]));
+            })).filter(p => p.labels.some(l => REMEDIATION_LABELS.includes(l.name)));
 
             let merged = 0;
             for (const pr of stacked) {
@@ -117,27 +128,19 @@ jobs:
                   core.warning(`Could not delete branch '${pr.head.ref}': ${e.message}`);
                 }
 
-                for (const label of pr.labels.flatMap(l => REMEDIATION[l.name] || [])) {
-                  try {
-                    await github.rest.issues.removeLabel({ owner, repo, issue_number: parent.number, name: label });
-                  } catch (e) {
-                    if (e.status !== 404) core.warning(`Could not remove '${label}': ${e.message}`);
-                  }
-                }
-
                 const commitUrl = `${context.serverUrl}/${owner}/${repo}/commit/${result.sha}`;
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: parent.number,
                   body: [
                     '### 🤖 Autonomous Remediation Auto-Merged',
                     '',
-                    'The remediation agent has automatically incorporated verified improvements into your branch:',
+                    'A remediation agent proposed a fix that has been squashed into your branch:',
                     '',
                     `- **Stacked PR**: [#${pr.number} - ${pr.title}](${pr.html_url})`,
                     `- **Merged Commit**: [\`${result.sha.slice(0, 7)}\`](${commitUrl})`,
                     `- **Target Branch**: \`${parentBranch}\``,
                     '',
-                    '> 💡 *All changes are squashed directly into your feature branch. The PR Quality Pipeline has been re-run on the updated branch.*'
+                    '> 💡 *The fix is not trusted until the gates pass: the PR Quality Pipeline re-checks this commit once the current repair round is over.*'
                   ].join('\n')
                 });
               } catch (e) {
@@ -149,37 +152,74 @@ jobs:
               }
             }
 
-            // 2. Re-run the PR Quality Pipeline on the (possibly updated) parent branch.
-            //    Agents that push directly (lint fixer) or edit metadata (validation) also
-            //    rely on this, because GITHUB_TOKEN pushes never raise `synchronize`.
-            // Re-run only when there is something new to validate. If the agent itself failed
-            // (e.g. inference quota/rate limit), stop here instead of looping; a human can re-run.
-            const agentResult = process.env.AGENT_RESULT || '';
-            const agentFailed = context.eventName === 'workflow_dispatch' && ['failure', 'cancelled'].includes(agentResult);
-            const shouldRerun = merged > 0 || (context.eventName === 'workflow_dispatch' && !agentFailed);
-            if (agentFailed && merged === 0) {
-              core.warning(`${process.env.SOURCE} finished with '${agentResult}'; not re-running the pipeline.`);
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: parent.number,
-                body: [
-                  `### ⚠️ Remediation agent did not complete`,
-                  '',
-                  `\`${process.env.SOURCE}\` finished with **${agentResult}**, so the pipeline was not re-run automatically.`,
-                  '',
-                  `Re-run it once the cause is resolved: \`gh workflow run pr-pipeline.yml --ref ${parentBranch} -f pr_number=${parent.number}\``
-                ].join('\n')
+            // 2. Wait for the repair round to end. The last agent to finish triggers the recheck.
+            const sourceRunId = Number((/run (\d+)/.exec(process.env.SOURCE || '') || [])[1]) || undefined;
+            const deferIfAgentsPending = async () => {
+              const pending = await quality.pendingRemediationRuns({ github, context, branch: parentBranch, excludeRunId: sourceRunId });
+              if (!pending.length) return false;
+              core.info(`Repair round still in progress (${pending.map(p => `${p.workflow} #${p.id}`).join(', ')}); deferring the recheck to the last agent.`);
+              await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: deferred, agents still working: ${pending.map(p => `[${p.workflow}](${p.url})`).join(', ')}`);
+              return true;
+            };
+            if (await deferIfAgentsPending()) return;
+
+            // A pipeline still running on this branch may dispatch more agents for this round.
+            const deadline = Date.now() + Number(process.env.PIPELINE_WAIT_MINUTES) * 60000;
+            for (;;) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: 'pr-pipeline.yml', branch: parentBranch, per_page: 20
               });
+              const running = data.workflow_runs.filter(r => ACTIVE.has(r.status));
+              if (!running.length) break;
+              if (Date.now() > deadline) {
+                core.warning(`PR Quality Pipeline still running after ${process.env.PIPELINE_WAIT_MINUTES} minutes; deciding anyway.`);
+                break;
+              }
+              core.info(`Waiting for PR Quality Pipeline run(s) ${running.map(r => r.id).join(', ')} to finish...`);
+              await sleep(30000);
             }
-            if (shouldRerun) {
+            if (await deferIfAgentsPending()) return;
+
+            // 3. Recheck only a revision that has no verdict yet (new commit, metadata or decision label).
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: parent.number });
+            const rev = quality.revision(pr);
+            const status = await quality.getQualityStatus({ github, context, sha: pr.head.sha });
+            const alreadyChecked = status && status.final && status.revision === rev;
+
+            if (!alreadyChecked) {
               await github.rest.actions.createWorkflowDispatch({
                 owner, repo,
                 workflow_id: 'pr-pipeline.yml',
                 ref: parentBranch,
                 inputs: { pr_number: String(parent.number) }
               });
-              core.info(`🔁 Re-dispatched PR Quality Pipeline for PR #${parent.number} on '${parentBranch}'.`);
+              core.info(`🔁 Re-dispatched PR Quality Pipeline for PR #${parent.number} (revision ${rev}).`);
+              await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: dispatched for revision \`${rev}\``);
+              return;
             }
 
-            await core.summary.addRaw(
-              `### Stacked Remediation Consolidation\n\n- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Pipeline re-dispatched: ${shouldRerun}\n`
-            ).write();
+            if (status.state === 'success') {
+              core.info(`Revision ${rev} already passed; nothing to re-check.`);
+              await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: not needed, revision \`${rev}\` already passed`);
+              return;
+            }
+
+            // The repair round did not change anything the gates evaluate: stop instead of looping.
+            const agentResult = process.env.AGENT_RESULT || '';
+            const agentFailed = ['failure', 'cancelled'].includes(agentResult);
+            const rerun = `gh workflow run pr-pipeline.yml --ref ${parentBranch} -f pr_number=${parent.number} -f force=true`;
+            core.warning(`Revision ${rev} still fails (${status.description}) and the repair round produced no new revision.`);
+            await helpers.commentOnce({
+              github, context,
+              prNumber: parent.number,
+              marker: `<!-- remediation-stalled:${rev} -->`,
+              body: [
+                '### ⚠️ Remediation round finished without a new revision',
+                '',
+                `The \`pr-quality\` check still reports: **${status.description}** ([run](${status.targetUrl})).`,
+                agentFailed ? `\`${process.env.SOURCE}\` finished with **${agentResult}**.` : 'The remediation agents did not change the code, PR metadata or gate decisions.',
+                '',
+                `Please fix the remaining issues manually (pushing a commit re-runs the checks), or re-check this revision with \`${rerun}\`.`
+              ].join('\n')
+            });
+            await summary(`- Parent PR: #${parent.number}\n- Stacked PRs merged: ${merged}\n- Recheck: stopped, revision \`${rev}\` unchanged and failing`);

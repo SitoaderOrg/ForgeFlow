@@ -32,7 +32,7 @@ flowchart TD
     SecretFixer --> ScrubSecret[Scrub Secrets & Add Env Var Lookups]
     SecretFixer --> StackedPRSecret[Create Stacked PR: security-remediation]
 
-    StackedPRDep & StackedPRCodeql & StackedPRSecret --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit, clears security labels & posts audit link]
+    StackedPRDep & StackedPRCodeql & StackedPRSecret --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/pr-stacked-merge.yml\nSquashes commit & posts audit link\nGates clear security labels on recheck]
 
     AutoMerge --> Recheck([Feature Branch Updated & Pipeline Re-triggered])
 ```
@@ -62,7 +62,7 @@ The deterministic security gate leverages native GitHub Code Security features:
   - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. The **`secret-alert`** label and `pr-secret-fixer.md` remain available for manual dispatch.
 - **Autonomous Label Management**:
   - Each label is independent: if only one check fails, only its specific alert label is attached.
-  - The remediation relay auto-merges the stacked PR, clears the labels and re-runs the pipeline on the feature branch.
+  - The remediation relay auto-merges the stacked PR into the feature branch and re-checks it once the repair round is over; the security gate clears the labels only if the re-check passes.
 
 ---
 
