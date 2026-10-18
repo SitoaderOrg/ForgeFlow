@@ -53,6 +53,10 @@ The build gate (Stage 2) has no agent: a broken build halts the pipeline with `b
   models can hit organization rate limits (`429`). Switch models by updating the repository variable;
   the list of available models is written to `sandbox/firewall/logs/api-proxy-logs/models.json`
   in every agent run's `agent` artifact.
+- **Token-frugal agents**: deterministic `steps:` pre-fetch the PR metadata and diff to
+  `/tmp/gh-aw/pr.json` / `/tmp/gh-aw/pr.diff`, and each prompt scopes the files to read and the
+  number of tool calls. Unscoped agents were observed spending 60+ requests (~1.7M input tokens)
+  on a single documentation change, which exhausts organization rate limits.
 - **Fail closed on agent errors**: the relay receives the agent job result. When an agent fails
   and nothing was merged, the relay does not re-run the pipeline (avoiding hot loops during
   outages); it comments on the PR with the re-run command instead. Cancelled/skipped agent runs

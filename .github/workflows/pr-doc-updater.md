@@ -57,6 +57,17 @@ strict: true
 features:
   copilot-requests: true
 
+steps:
+  - name: Snapshot pull request diff for the agent
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.inputs.pr_number }}
+    run: |
+      mkdir -p /tmp/gh-aw
+      gh pr view "$PR_NUMBER" --json number,title,body,headRefName,files > /tmp/gh-aw/pr.json || true
+      gh pr diff "$PR_NUMBER" > /tmp/gh-aw/pr.diff || true
+      wc -l /tmp/gh-aw/pr.diff || true
+
 jobs:
   # Runs after safe outputs are applied. GITHUB_TOKEN-created PRs/pushes/labels never
   # trigger workflows (and neither does workflow_run for GITHUB_TOKEN-dispatched runs),
@@ -112,6 +123,11 @@ ${{ github.event.inputs.findings }}
 ```
 
 Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
+
+## Efficiency Rules (keep the run small)
+- The PR metadata is pre-fetched to `/tmp/gh-aw/pr.json` and the full diff to `/tmp/gh-aw/pr.diff`. Read those files instead of calling `gh`.
+- `readme.md` and `docs/` in this repository document the **CI framework**, not the applications. Do not search them. Documentation for an application lives next to it in `apps/<app>/README.md` (create it if it does not exist) — e.g. `apps/ferret-heist/README.md`.
+- Only read the source files listed in the gate findings. Finish in fewer than 15 tool calls.
 
 ## Objective
 Semantically evaluate the pull request diff to determine if documentation updates are required. If documentation is needed and missing, autonomously draft accurate, clear documentation in a stacked pull request and apply the `docs-required` label. If documentation is already present or not required, clear the label cleanly.
