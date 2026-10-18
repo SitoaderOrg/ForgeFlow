@@ -15,6 +15,13 @@ on:
       base_ref:
         required: true
         type: string
+  # Re-run this gate alone; head/base refs are resolved from the PR.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -36,7 +43,34 @@ jobs:
       codeql_matrix: ${{ steps.check.outputs.codeql_matrix }}
       has_codeql_languages: ${{ steps.check.outputs.has_codeql_languages }}
       has_dependencies: ${{ steps.check.outputs.has_dependencies }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
     steps:
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+        with:
+          script: |
+            // workflow_call passes the refs from the pipeline; workflow_dispatch passes only pr_number.
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(process.env.PR_NUMBER)
+            });
+            if (context.eventName === 'workflow_dispatch' && context.ref !== `refs/heads/${pr.head.ref}`) {
+              core.setFailed(`Dispatch ref '${context.ref}' does not match PR head branch '${pr.head.ref}'. Re-run with --ref ${pr.head.ref}.`);
+              return;
+            }
+            core.setOutput('head_ref', process.env.HEAD_REF || pr.head.ref);
+            core.setOutput('head_sha', process.env.HEAD_SHA || pr.head.sha);
+            core.setOutput('base_ref', process.env.BASE_REF || pr.base.ref);
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -87,8 +121,8 @@ jobs:
         with:
           fail-on-severity: high
           # Explicit refs so the review also works for dispatched (non pull_request) runs
-          base-ref: ${{ inputs.base_ref }}
-          head-ref: ${{ inputs.head_sha }}
+          base-ref: ${{ needs.detect-environment.outputs.base_ref }}
+          head-ref: ${{ needs.detect-environment.outputs.head_sha }}
 
   codeql-analysis:
     name: GitHub CodeQL SAST (${{ matrix.language }})
@@ -176,7 +210,8 @@ jobs:
   security-gatekeeper:
     name: Security Gatekeeper Status
     needs: [detect-environment, dependency-review, codeql-analysis]
-    if: always()
+    # Skip when PR resolution failed; otherwise labels would be cleared without any scan.
+    if: always() && needs.detect-environment.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout shared scripts
@@ -196,7 +231,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_REF: ${{ needs.detect-environment.outputs.head_ref }}
           DEP_REVIEW_RESULT: ${{ needs.dependency-review.result }}
           CODEQL_RESULT: ${{ needs.codeql-analysis.result }}
         with:

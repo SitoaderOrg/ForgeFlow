@@ -25,6 +25,7 @@ flowchart LR
 | :--- | :--- |
 | `pr-pipeline.yml` | Runs on `pull_request` **and** `workflow_dispatch(pr_number)`. Stage 0 resolves the PR (number, head/base ref, head SHA) and passes it to every reusable gate, so no gate depends on a `pull_request` payload. |
 | `.github/scripts/remediation.cjs` | Shared helper used by every gate: adds/removes labels and dispatches the matching agent on the PR head branch. It skips dispatch when the agent is already running, when an unmerged stacked remediation PR exists, or when the retry budget is exhausted (then it comments once asking for a human). |
+| Reusable gates | Called by the pipeline via `workflow_call`. Each also has a `workflow_dispatch` that takes only `pr_number`; head/base refs and head SHA are resolved from the PR, and the run fails if it was not dispatched on the PR head branch. They do not declare workflow-level concurrency. |
 | gh-aw agents (`pr-*.md`) | Triggered only by `workflow_dispatch` with `pr_number` and `findings` inputs (the gate's concrete failure output — linter messages, failing tests and coverage, CodeQL rule/file/line). Safe outputs target the PR explicitly. Their `conclusion` job dispatches the relay after safe outputs are applied. |
 | `pr-stacked-merge.yml` | The relay. Marks draft stacked PRs ready, squash-merges every open `*-remediation` PR into the parent branch, clears the matching parent labels, posts an audit comment, and re-dispatches the pipeline on the parent branch. |
 
@@ -76,6 +77,9 @@ case; the dispatch-based chain continues to work unchanged.
 ```bash
 # Re-run the pipeline for PR 42 whose head branch is feat/my-change
 gh workflow run pr-pipeline.yml --ref feat/my-change -f pr_number=42
+
+# Re-run a single gate on the PR head branch (refs are resolved from the PR)
+gh workflow run pr-lint.yml --ref feat/my-change -f pr_number=42
 
 # Re-run an agent with custom findings
 gh workflow run pr-test-generator.lock.yml --ref feat/my-change -f pr_number=42 -f findings="tests/foo.test.js fails"

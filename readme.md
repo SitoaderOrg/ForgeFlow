@@ -48,13 +48,13 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 ### 1. Standard GitHub Actions Workflows
 
 - **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows in a clean staged DAG. Runs on `pull_request` and on `workflow_dispatch(pr_number)` re-runs from the remediation relay.
-- **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable).
-- **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter (reusable).
-- **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts (reusable).
-- **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check (reusable).
-- **Security Scanning (`pr-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable).
-- **Documentation Drift Gate (`pr-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable).
-- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable).
+- **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable; also `workflow_dispatch`).
+- **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter (reusable; also `workflow_dispatch`).
+- **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts (reusable; also `workflow_dispatch`).
+- **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check (reusable; also `workflow_dispatch`).
+- **Security Scanning (`pr-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable; also `workflow_dispatch`).
+- **Documentation Drift Gate (`pr-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
+- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
 - **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs the pipeline.
 - **Shared gate helper (`.github/scripts/remediation.cjs`)**: Label management and deduplicated, budgeted agent dispatch.
 

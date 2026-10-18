@@ -15,6 +15,13 @@ on:
       base_ref:
         required: true
         type: string
+  # Re-run this gate alone; head/base refs are resolved from the PR.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -31,6 +38,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+        with:
+          script: |
+            // workflow_call passes the refs from the pipeline; workflow_dispatch passes only pr_number.
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(process.env.PR_NUMBER)
+            });
+            if (context.eventName === 'workflow_dispatch' && context.ref !== `refs/heads/${pr.head.ref}`) {
+              core.setFailed(`Dispatch ref '${context.ref}' does not match PR head branch '${pr.head.ref}'. Re-run with --ref ${pr.head.ref}.`);
+              return;
+            }
+            core.setOutput('head_ref', process.env.HEAD_REF || pr.head.ref);
+            core.setOutput('head_sha', process.env.HEAD_SHA || pr.head.sha);
+            core.setOutput('base_ref', process.env.BASE_REF || pr.base.ref);
+
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
@@ -39,8 +70,8 @@ jobs:
       - name: Detect Documentation Drift
         id: drift
         env:
-          BASE_REF: ${{ inputs.base_ref }}
-          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           git fetch --no-tags origin "$HEAD_SHA" 2>/dev/null || true
           CHANGED=$(git diff --name-only --diff-filter=d "origin/$BASE_REF...$HEAD_SHA")
@@ -75,7 +106,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
           RESULT: ${{ steps.drift.outputs.result }}
           SOURCE_FILES: ${{ steps.drift.outputs.source }}
           DOC_FILES: ${{ steps.drift.outputs.docs }}

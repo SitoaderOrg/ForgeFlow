@@ -9,6 +9,13 @@ on:
       head_ref:
         required: true
         type: string
+  # Re-run this gate alone; the head branch is resolved from the PR.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -91,7 +98,7 @@ jobs:
               remediation = await helpers.dispatchRemediation({
                 github, context, core,
                 prNumber: pr.number,
-                headRef: process.env.HEAD_REF,
+                headRef: process.env.HEAD_REF || pr.head.ref,
                 workflow: 'pr-validation.lock.yml',
                 findings: errors.join('\n')
               });
