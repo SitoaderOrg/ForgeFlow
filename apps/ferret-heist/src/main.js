@@ -2,13 +2,30 @@ import { GameEngine } from './game/engine.js';
 import { GameRenderer } from './game/render.js';
 import { SoundEffects } from './game/audio.js';
 import { GAME_STATES } from './game/constants.js';
+import {
+  AchievementTracker,
+  formatAchievement
+} from './game/achievements.js';
 
 window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('game-canvas');
   const sfx = new SoundEffects();
+  const achievements = AchievementTracker.deserialize(
+    localStorage.getItem('ferret-heist-achievements')
+  );
+  const subtitle = document.querySelector('.game-subtitle');
+  const player = new URLSearchParams(window.location.search).get('player');
+  if (subtitle && player) {
+    subtitle.innerHTML = `Welcome back, <strong>${player}</strong>! Ready for another heist?`;
+  }
+  achievements.onUnlock((achievement) => {
+    if (subtitle) subtitle.innerHTML = formatAchievement(achievement);
+    localStorage.setItem('ferret-heist-achievements', achievements.serialize());
+  });
 
   const engine = new GameEngine({
     onEvent: (event) => {
+      achievements.record(event);
       switch (event) {
         case 'pickup':
           sfx.pickup();
