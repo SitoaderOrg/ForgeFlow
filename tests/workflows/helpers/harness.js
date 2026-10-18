@@ -48,6 +48,11 @@ export function loadAgentFrontmatter(file) {
   return parse(match[1]);
 }
 
+/** Natural-language prompt (markdown body) of a gh-aw agent workflow. */
+export function loadAgentBody(file) {
+  return readWorkflow(file).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
+}
+
 export function listWorkflowFiles(predicate = () => true) {
   return fs.readdirSync(WORKFLOWS_DIR).filter(predicate).sort();
 }

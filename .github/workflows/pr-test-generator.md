@@ -23,6 +23,10 @@ concurrency:
   group: "gh-aw-${{ github.workflow }}-${{ github.ref }}"
   job-discriminator: ${{ github.ref }}
 
+# Agents edit the branch they are dispatched on and stack their PR onto it; a run left on
+# the default branch (the Actions UI default) can never target the feature PR.
+if: github.ref_name != github.event.repository.default_branch
+
 engine:
   id: copilot
   # Pinned: "auto" can resolve to models that reject Copilot CLI custom tools (e.g. gpt-5.6-luna-utility).
@@ -57,52 +61,10 @@ network:
     - defaults
     - node
 
-steps:
-  - name: Install project dependencies
-    run: |
-      if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; fi
-  - name: Snapshot pull request diff for the agent
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ github.event.inputs.pr_number }}
-    run: |
-      mkdir -p /tmp/gh-aw
-      gh pr view "$PR_NUMBER" --json number,title,body,headRefName,files > /tmp/gh-aw/pr.json || true
-      gh pr diff "$PR_NUMBER" > /tmp/gh-aw/pr.diff || true
-      wc -l /tmp/gh-aw/pr.diff || true
-
 strict: true
 
 features:
   copilot-requests: true
-
-jobs:
-  # Runs after safe outputs are applied. GITHUB_TOKEN-created PRs/pushes/labels never
-  # trigger workflows (and neither does workflow_run for GITHUB_TOKEN-dispatched runs),
-  # so hand off explicitly to the remediation relay (pr-stacked-merge.yml), which
-  # auto-merges stacked PRs and re-runs the PR Quality Pipeline.
-  conclusion:
-    permissions:
-      actions: write
-    pre-steps:
-      - name: Hand off to remediation relay
-        uses: actions/github-script@v7
-        env:
-          AGENT_RESULT: ${{ needs.agent.result }}
-        with:
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'pr-stacked-merge.yml',
-              ref: context.payload.repository.default_branch,
-              inputs: {
-                branch: process.env.GITHUB_REF_NAME,
-                agent_result: process.env.AGENT_RESULT,
-                source: `${process.env.GITHUB_WORKFLOW} (run ${context.runId})`
-              }
-            });
-            core.info(`Dispatched remediation relay for '${process.env.GITHUB_REF_NAME}'.`);
 
 safe-outputs:
   create-pull-request:
@@ -114,6 +76,10 @@ safe-outputs:
   add-comment:
     max: 1
     target: "*"
+  # Hand-off to the remediation relay (GITHUB_TOKEN events do not trigger workflows).
+  dispatch-workflow:
+    workflows: [pr-stacked-merge]
+    target-ref: ${{ github.event.repository.default_branch }}
 ---
 
 ## Pull Request Context
@@ -126,8 +92,11 @@ ${{ github.event.inputs.findings }}
 
 Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `item_number` for comments/labels) to safe outputs that target the parent PR.
 
+## Before You Start
+Confirm with `gh pr view ${{ github.event.inputs.pr_number }} --json state,headRefName` that the pull request is open and that its head branch is the branch checked out in the workspace (`git branch --show-current`). Your changes and any stacked pull request are based on this branch, and the sandbox cannot fetch other branches. If the pull request is not open or its head branch is different, change nothing: call `noop` explaining that this workflow must be re-dispatched with "Use workflow from" set to the pull request's head branch, and stop.
+
 ## Efficiency Rules (keep the run small)
-- The full PR diff is pre-fetched to `/tmp/gh-aw/pr.diff`; read it instead of calling `gh`.
+- Read the PR diff once with `gh pr diff ${{ github.event.inputs.pr_number }}` and run `npm ci` once before running the tests.
 - Only read the changed source files and their test files. Run the single relevant test file first (`npx vitest run tests/<file>.test.js`), then `npx vitest run --coverage` once to confirm the threshold. Finish in fewer than 20 tool calls.
 
 ## Objective
@@ -203,3 +172,11 @@ Apply safe outputs:
 ## Safe Output Rules
 - When calling `create_pull_request`, provide `title`, `body` and (if needed) `base`/`branch` only — do **not** pass a `temporary_id`.
 - Do not invent or guess URLs for the stacked pull request in comments. Refer to it as "the stacked remediation PR"; the remediation relay posts the exact link once it is merged.
+
+## Hand Off to the Remediation Relay
+Unless you stopped in **Before You Start**, finish by calling `dispatch_workflow` for `pr-stacked-merge`, after all other safe outputs, with these inputs:
+- `branch`: the checked-out branch (the pull request's head branch)
+- `agent_result`: `success` if your safe outputs address the gate findings, otherwise `failure`
+- `source`: `${{ github.workflow }} (run ${{ github.run_id }})`
+
+The relay merges stacked remediation pull requests into the feature branch and re-runs the PR Quality Pipeline. Only the gates decide whether the findings are fixed, so never claim they are.

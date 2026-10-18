@@ -78,8 +78,8 @@ async function setQualityStatus({ github, context, sha, state, summary, rev, tar
 
 /**
  * Remediation agent runs on `branch` that have not applied their safe outputs yet.
- * A run counts as finished once its `conclusion` job started: by then the stacked PR /
- * metadata change exists and the run has already handed off to the relay.
+ * A run counts as finished once its `conclusion` job started: by then its `safe_outputs`
+ * job has created the stacked PR / metadata change and dispatched the relay.
  */
 async function pendingRemediationRuns({ github, context, branch, excludeRunId }) {
   const { owner, repo } = context.repo;

@@ -14,7 +14,7 @@ flowchart LR
     Pipeline -->|verdict job| Status[(pr-quality commit status\non the head SHA)]
     Helper -->|workflow_dispatch\nref = PR head branch\ninputs: pr_number, findings| Agent[gh-aw agent\n*.lock.yml]
     Agent -->|safe outputs:\nstacked PR / metadata / comment| Branch[(PR head branch)]
-    Agent -->|conclusion job pre-step\nworkflow_dispatch| Relay[pr-stacked-merge.yml\nremediation relay]
+    Agent -->|dispatch-workflow safe output\nref = default branch| Relay[pr-stacked-merge.yml\nremediation relay]
     Relay -->|squash-merge stacked PRs\naudit comment| Branch
     Relay -->|repair round over and\nrevision changed: workflow_dispatch| Pipeline
     Status -->|green| Review([Copilot review +\nhuman approval & merge])
@@ -48,7 +48,7 @@ flowchart LR
 | `.github/scripts/remediation.cjs` | Shared helper used by every gate: adds/removes labels and dispatches the matching agent on the PR head branch. It skips dispatch when the agent is already running, when an unmerged stacked remediation PR exists, or when the retry budget is exhausted (then it comments once asking for a human). |
 | `.github/scripts/pr-quality.cjs` | Revision fingerprint, `pr-quality` status read/write, and detection of agents that are still part of the current repair round. |
 | Reusable gates | Called by the pipeline via `workflow_call`. Each also has a `workflow_dispatch` that takes only `pr_number`; head/base refs and head SHA are resolved from the PR, and the run fails if it was not dispatched on the PR head branch. They do not declare workflow-level concurrency. Gates are the only writers of their labels. |
-| gh-aw agents (`pr-*.md`) | Triggered only by `workflow_dispatch` with `pr_number` and `findings` inputs (the gate's concrete failure output — linter messages, failing tests and coverage, CodeQL rule/file/line). Safe outputs target the PR explicitly and cannot remove gate labels. Their `conclusion` job dispatches the relay after safe outputs are applied. |
+| gh-aw agents (`pr-*.md`) | Triggered only by `workflow_dispatch` with `pr_number` and `findings` inputs (the gate's concrete failure output — linter messages, failing tests and coverage, CodeQL rule/file/line). Safe outputs target the PR explicitly and cannot remove gate labels. They are purely declarative — a natural-language prompt plus gh-aw frontmatter (no `steps:`/`jobs:` scripts) — and hand off to the relay with the `dispatch-workflow` safe output as their last action. |
 | `pr-stacked-merge.yml` | The relay. Marks draft stacked PRs ready, squash-merges every open `*-remediation` PR into the parent branch, posts an audit comment, waits for the repair round to end, and re-dispatches the pipeline once if the revision changed. |
 
 ## Gate → agent mapping
@@ -76,10 +76,18 @@ The build gate (Stage 2) has no agent: a broken build halts the pipeline with `b
   models can hit organization rate limits (`429`). Switch models by updating the repository variable;
   the list of available models is written to `sandbox/firewall/logs/api-proxy-logs/models.json`
   in every agent run's `agent` artifact.
-- **Token-frugal agents**: deterministic `steps:` pre-fetch the PR metadata and diff to
-  `/tmp/gh-aw/pr.json` / `/tmp/gh-aw/pr.diff`, and each prompt scopes the files to read and the
-  number of tool calls. Unscoped agents were observed spending 60+ requests (~1.7M input tokens)
-  on a single documentation change, which exhausts organization rate limits.
+- **Token-frugal agents**: each prompt tells the agent to read the PR diff once, starts from the
+  gate findings, and scopes the files to read and the number of tool calls. Unscoped agents were observed
+  spending 60+ requests (~1.7M input tokens) on a single documentation change, which exhausts organization rate limits.
+- **Agents run on the PR head branch only**: an agent edits the branch it was dispatched on and
+  opens its stacked PR against it, and the sandbox firewall blocks `git fetch` of other branches.
+  A run dispatched on the default branch (e.g. a manual run left on `main` in the Actions UI) is
+  skipped by the workflow-level `if:`; for any other branch, the prompt's *Before You Start* section
+  has the agent confirm the PR is open and its head branch is checked out, and otherwise `noop`
+  with re-dispatch advice.
+- **Agent crashes**: the relay hand-off is a safe output, so an agent run that fails before
+  emitting it does not trigger a recheck. gh-aw reports the failed run; re-run the pipeline with
+  `gh workflow run pr-pipeline.yml -f pr_number=<PR>` once the cause is fixed.
 - **Fail closed on agent errors**: when a repair round ends without a new revision (an agent failed,
   or it changed nothing), the relay does not re-run the pipeline (avoiding hot loops during
   outages); it comments once on the PR with the re-run command instead. Cancelled/skipped agent runs
@@ -126,7 +134,7 @@ so the tests run the exact code that runs in Actions.
 | `pipeline.test.js` | Triggers/concurrency/job graph, context job (new revision, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref), verdict job |
 | `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), waiting for agents and the pipeline, timeout, recheck vs. stalled comment |
 | `gates.test.js` | Every gate's handlers: metadata, lint, build, tests, docs, security, review dispatcher |
-| `agents.test.js` | gh-aw agent contracts: dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, relay hand-off |
+| `agents.test.js` | gh-aw agent contracts: declarative (no scripted steps/jobs), skipped on the default branch, dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, relay hand-off |
 
 Run `gh aw compile` after editing an agent `.md` file; `agents.test.js` fails when a lock file's
 safe outputs or relay hand-off no longer match the source.

@@ -1,16 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createContext,
-  createGitHub,
   listWorkflowFiles,
+  loadAgentBody,
   loadAgentFrontmatter,
   loadWorkflow,
   quality,
-  readWorkflow,
-  runScript
+  readWorkflow
 } from './helpers/harness.js';
 
 // Contract tests for the gh-aw remediation agents (Repair stage): what they may do,
+// that they stay declarative (natural-language prompt + gh-aw features, no scripts),
 // how they hand off to the relay, and that compiled lock files match their sources.
 
 const AGENTS = listWorkflowFiles((f) => f.endsWith('.md'));
@@ -47,11 +46,6 @@ function lockSafeOutputs(md) {
   const raw = findEnv(loadWorkflow(lockFile(md)), 'GH_AW_SAFE_OUTPUTS_CONFIG');
   if (!raw) throw new Error(`No GH_AW_SAFE_OUTPUTS_CONFIG in ${lockFile(md)}`);
   return JSON.parse(raw);
-}
-
-function relayHandoffStep(md) {
-  const steps = loadWorkflow(lockFile(md)).jobs.conclusion.steps;
-  return steps.find((s) => s.name === 'Hand off to remediation relay');
 }
 
 it('the agent list matches REMEDIATION_WORKFLOWS used by the relay', () => {
@@ -100,12 +94,55 @@ describe.each(AGENTS)('%s', (md) => {
     );
   });
 
-  it('hands off to the relay from its conclusion job', () => {
-    const handoff = fm.jobs.conclusion['pre-steps'].find(
-      (s) => s.name === 'Hand off to remediation relay'
+  it('is declarative: no scripted steps or custom jobs in the frontmatter', () => {
+    for (const key of [
+      'steps',
+      'pre-steps',
+      'pre-agent-steps',
+      'post-steps',
+      'jobs'
+    ]) {
+      expect(fm[key], `${md} must not define ${key}`).toBeUndefined();
+    }
+  });
+
+  it('is skipped when dispatched on the default branch', () => {
+    const condition =
+      'github.ref_name != github.event.repository.default_branch';
+    expect(fm.if).toBe(condition);
+    expect(loadWorkflow(lockFile(md)).jobs.activation.if).toBe(condition);
+  });
+
+  it('tells the agent to verify the PR before changing anything', () => {
+    const body = loadAgentBody(md);
+    expect(body).toContain('## Before You Start');
+    expect(body).toContain(
+      'gh pr view ${{ github.event.inputs.pr_number }} --json state,headRefName'
     );
-    expect(handoff.env.AGENT_RESULT).toBe('${{ needs.agent.result }}');
-    expect(fm.jobs.conclusion.permissions.actions).toBe('write');
+    expect(body).toMatch(/call `noop`[^\n]*and stop/);
+  });
+
+  it('hands off to the relay with the dispatch-workflow safe output', () => {
+    expect(safe['dispatch-workflow']).toEqual({
+      workflows: ['pr-stacked-merge'],
+      'target-ref': '${{ github.event.repository.default_branch }}'
+    });
+    const body = loadAgentBody(md);
+    const handoff = body.slice(
+      body.indexOf('## Hand Off to the Remediation Relay')
+    );
+    expect(handoff).toContain('`dispatch_workflow` for `pr-stacked-merge`');
+    const relayInputs = Object.keys(
+      loadWorkflow('pr-stacked-merge.yml').on.workflow_dispatch.inputs
+    );
+    for (const input of relayInputs) expect(handoff).toContain(`\`${input}\``);
+    // The relay excludes the dispatching run by parsing `run <id>` from the source
+    const source = /`source`: `([^`]+)`/.exec(handoff)[1];
+    expect(source).toBe('${{ github.workflow }} (run ${{ github.run_id }})');
+    const rendered = source
+      .replace('${{ github.workflow }}', fm.name)
+      .replace('${{ github.run_id }}', '123456');
+    expect(/run (\d+)/.exec(rendered)[1]).toBe('123456');
   });
 
   it('has a compiled lock file whose safe outputs match the source', () => {
@@ -124,33 +161,8 @@ describe.each(AGENTS)('%s', (md) => {
     } else {
       expect(config.add_labels).toBeUndefined();
     }
-  });
-
-  it('compiles the relay hand-off into the lock file', () => {
-    const step = relayHandoffStep(md);
-    expect(step).toBeDefined();
-    expect(step.with.script).toContain("workflow_id: 'pr-stacked-merge.yml'");
-  });
-
-  it('dispatches the relay on the default branch with a parsable source', async () => {
-    const github = createGitHub();
-    await runScript(relayHandoffStep(md).with.script, {
-      github,
-      context: createContext({ runId: 123456, ref: 'refs/heads/feat/sample' }),
-      env: {
-        AGENT_RESULT: 'success',
-        GITHUB_REF_NAME: 'feat/sample',
-        GITHUB_WORKFLOW: fm.name
-      }
-    });
-    const [dispatch] = github.state.dispatches;
-    expect(dispatch).toMatchObject({
-      workflow_id: 'pr-stacked-merge.yml',
-      ref: 'main',
-      inputs: { branch: 'feat/sample', agent_result: 'success' }
-    });
-    // The relay excludes the dispatching run by parsing `run <id>` from the source
-    expect(/run (\d+)/.exec(dispatch.inputs.source)[1]).toBe('123456');
+    expect(config.dispatch_workflow.workflows).toEqual(['pr-stacked-merge']);
+    expect(config.dispatch_workflow.max).toBe(1);
   });
 });
 

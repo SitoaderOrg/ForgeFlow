@@ -5,7 +5,7 @@ name: PR Stacked Remediation Auto-Merger
 # Agents run with the default GITHUB_TOKEN, and GitHub never starts workflow runs for
 # PRs/pushes/labels created with that token (nor `workflow_run` events for runs that
 # were themselves dispatched with it). Every gh-aw agent therefore dispatches this
-# workflow from its `conclusion` job once its safe outputs are applied. The relay:
+# workflow through its `dispatch-workflow` safe output, after its other safe outputs. The relay:
 #   1. squash-merges open stacked remediation PRs into the parent branch;
 #   2. waits until the repair round is over (no agent still working, no pipeline running);
 #   3. re-dispatches the PR Quality Pipeline once, and only if the PR revision changed.
