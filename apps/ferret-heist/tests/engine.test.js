@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { GameEngine } from '../apps/ferret-heist/src/game/engine.js';
-import { GAME_STATES } from '../apps/ferret-heist/src/game/constants.js';
+import { GameEngine } from '../src/game/engine.js';
+import { GAME_STATES } from '../src/game/constants.js';
 
 describe('Game Engine & Loop Orchestration', () => {
   it('initializes in MENU state', () => {

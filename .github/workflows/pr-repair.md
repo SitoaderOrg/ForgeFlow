@@ -348,14 +348,15 @@ safe-outputs:
       policy: blocked
       exclude:
         - package.json
+        - 'apps/*/package.json'
         - package-lock.json
         - README.md
     allowed-files:
       - 'apps/**'
-      - 'tests/**'
       - 'docs/**/*.md'
       - 'readme.md'
       - 'README.md'
+      - 'prereqs.md'
       - 'package.json'
       - 'package-lock.json'
   steps:
@@ -419,12 +420,44 @@ safe-outputs:
           const tip = refs[0].split(' ')[0];
           const original = process.env.EXPECTED_HEAD_SHA;
           await git(['merge-base', '--is-ancestor', original, tip]);
-          const files = (await git(['diff', '--name-only', '-z', original, tip])).split('\0').filter(Boolean);
+          const changes = (await git(['diff', '--name-status', '-z', '--find-renames', original, tip])).split('\0').filter(Boolean);
+          const files = [];
+          while (changes.length) {
+            const status = changes.shift();
+            const first = changes.shift();
+            const renamed = /^[RC]/.test(status);
+            files.push({
+              filename: renamed ? changes.shift() : first,
+              previous_filename: renamed ? first : undefined,
+              status: { M: 'modified', A: 'added', D: 'removed', R: 'renamed' }[status[0]],
+            });
+          }
           if (!files.length || files.length > 20) throw new Error('The repair must change between 1 and 20 files.');
-          const protectedConfig = /(^|\/)(?:\.github|\.agents|\.copilot|\.claude)\//;
-          const protectedName = /(^|\/)(?:AGENTS\.md|CLAUDE\.md|CODEOWNERS|\.env(?:\..*)?|\.eslint(?:rc(?:\..*)?|ignore)|\.prettier(?:rc(?:\..*)?|ignore)|\.htmlhintrc|(?:ts|js)config(?:\.[^/]+)?\.json|[^/]+\.config\.[^/]+)$/;
-          if (files.some(file => protectedConfig.test(file) || protectedName.test(file))) throw new Error('Workflow, instruction, secret, and gate configuration files are protected.');
-          if (process.env.REPAIR_KIND === 'docs' && files.some(file => !file.endsWith('.md'))) throw new Error('Documentation repairs may only change Markdown documentation.');
+          const kind = process.env.REPAIR_KIND;
+          // Keep native publisher and scoped validator policy identical.
+          const manifestFile = file => /^(?:package\.json|apps\/[^/]+\/package\.json)$/.test(file);
+          const dependencyFile = file => manifestFile(file) || file === 'package-lock.json';
+          const testFile = file => /(^|\/)(?:test|tests|__tests__|fixtures|__fixtures__|__snapshots__)\//i.test(file) || /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(file);
+          const allowed = file => {
+            if (!['lint', 'build', 'test', 'security', 'docs'].includes(kind) ||
+                typeof file !== 'string' || file.split('/').some(part => !part || part.startsWith('.')) ||
+                /(^|\/)(?:AGENTS\.md|CLAUDE\.md|SKILL\.md|SECURITY\.md|(?:copilot-)?instructions\.md|[^/]+\.instructions\.md|CODEOWNERS|(?:ts|js)config(?:\.[^/]+)?\.json|[^/]+\.config\.[^/]+|vitest\.workspace\.[^/]+)$/i.test(file)) return false;
+            if (dependencyFile(file)) return ['build', 'security'].includes(kind);
+            if (/(^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/i.test(file)) return false;
+            const documentation = /^(?:docs\/.*\.md|apps\/[^/]+\/.*\.md|readme\.md|README\.md|prereqs\.md)$/.test(file);
+            if (kind === 'docs') return documentation;
+            return documentation || /^apps\/[^/]+\/.+\.(?:[cm]?[jt]sx?|css|html|json)$/.test(file) ||
+              (/^apps\/[^/]+\//.test(file) && testFile(file));
+          };
+          for (const file of files) {
+            if (!['added', 'modified', 'removed', 'renamed'].includes(file.status) ||
+                !allowed(file.filename) || (file.previous_filename && !allowed(file.previous_filename)) ||
+                (file.status === 'removed' && testFile(file.filename)) ||
+                (file.previous_filename && testFile(file.previous_filename)) ||
+                ((dependencyFile(file.filename) || dependencyFile(file.previous_filename)) && file.status !== 'modified')) {
+              throw new Error(`Repair cannot change protected/out-of-scope path: ${file.filename}`);
+            }
+          }
           const stable = value => JSON.stringify(normalize(value));
           function normalize(value) {
             if (Array.isArray(value)) return value.map(normalize);
@@ -433,26 +466,55 @@ safe-outputs:
           }
           const dependencyFields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
           const immutable = value => Object.fromEntries(Object.entries(value).filter(([key]) => !dependencyFields.includes(key)));
-          const readJson = async (ref, file) => JSON.parse(await git(['show', `${ref}:${file}`]));
           function verifyVersions(before, after, file) {
-            if (stable(immutable(before)) !== stable(immutable(after))) throw new Error(`${file}: scripts, engines, package metadata, and gate settings must not change.`);
+            if (!before || !after || typeof before !== 'object' || typeof after !== 'object' ||
+                Array.isArray(before) || Array.isArray(after)) throw new Error(`${file}: invalid package manifest.`);
+            if (stable(immutable(before)) !== stable(immutable(after))) throw new Error(`${file}: package scripts, engines, package metadata, workspaces, and gate settings must not change.`);
             for (const field of dependencyFields) {
+              if (Object.hasOwn(before, field) !== Object.hasOwn(after, field)) throw new Error(`${file}: dependency fields must not change.`);
+              if (Object.hasOwn(before, field) && [before[field], after[field]].some(value =>
+                !value || typeof value !== 'object' || Array.isArray(value))) throw new Error(`${file}: dependency fields must remain objects.`);
               const oldVersions = before[field] || {}, newVersions = after[field] || {};
               if (stable(Object.keys(oldVersions).sort()) !== stable(Object.keys(newVersions).sort())) throw new Error(`${file}: adding or removing dependencies is not a version-only repair.`);
               for (const [name, version] of Object.entries(newVersions)) {
-                if (version !== oldVersions[name] && (typeof version !== 'string' || !/^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version))) throw new Error(`${file}: ${name} must use a concrete registry version, optionally prefixed with ^ or ~.`);
+                if (stable(version) !== stable(oldVersions[name]) && [oldVersions[name], version].some(value => typeof value !== 'string' || !/^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value))) throw new Error(`${file}: ${name} must use a concrete registry version, optionally prefixed with ^ or ~.`);
               }
             }
           }
-          for (const file of files) {
-            if (/(^|\/)package\.json$/.test(file)) {
-              verifyVersions(await readJson(original, file), await readJson(tip, file), file);
+          function verifyLock(before, after, file) {
+            const header = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['packages', 'dependencies'].includes(key)));
+            if (stable(header(before)) !== stable(header(after))) throw new Error(`${file}: lockfile identity and format must not change.`);
+            if (!before.packages || !after.packages) throw new Error(`${file}: workspace package topology is required.`);
+            verifyVersions(before.packages[''], after.packages[''], `${file} root package`);
+            const workspaces = value => Object.keys(value.packages).filter(key => key && !/(^|\/)node_modules\//.test(key)).sort();
+            if (stable(workspaces(before)) !== stable(workspaces(after))) throw new Error(`${file}: workspace membership must not change.`);
+            for (const workspace of workspaces(before)) {
+              verifyVersions(before.packages[workspace], after.packages[workspace], `${file} workspace ${workspace}`);
             }
-            if (/(^|\/)package-lock\.json$/.test(file)) {
-              const before = await readJson(original, file), after = await readJson(tip, file);
-              const header = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['packages', 'dependencies'].includes(key)));
-              if (stable(header(before)) !== stable(header(after))) throw new Error(`${file}: lockfile identity and format must not change.`);
-              verifyVersions(before.packages?.[''] || {}, after.packages?.[''] || {}, `${file} root package`);
+            const links = value => Object.fromEntries(Object.entries(value.packages).filter(([, entry]) =>
+              entry.link || /^(?:file:|link:|workspace:|apps\/)/.test(entry.resolved || '')));
+            if (stable(links(before)) !== stable(links(after))) throw new Error(`${file}: local workspace link topology must not change.`);
+            const legacyLinks = value => {
+              const result = {};
+              const visit = (dependencies, prefix = '') => {
+                for (const [name, entry] of Object.entries(dependencies || {})) {
+                  const key = `${prefix}/${name}`;
+                  if (entry.link || /^(?:file:|link:|workspace:|apps\/)/.test(entry.version || '') ||
+                      /^(?:file:|link:|workspace:|apps\/)/.test(entry.resolved || '')) result[key] = entry;
+                  visit(entry.dependencies, key);
+                }
+              };
+              visit(value.dependencies);
+              return result;
+            };
+            if (stable(legacyLinks(before)) !== stable(legacyLinks(after))) throw new Error(`${file}: legacy local workspace links must not change.`);
+          }
+          const readJson = async (ref, file) => JSON.parse(await git(['show', `${ref}:${file}`]));
+          for (const file of files) {
+            if (dependencyFile(file.filename)) {
+              const before = await readJson(original, file.filename), after = await readJson(tip, file.filename);
+              if (manifestFile(file.filename)) verifyVersions(before, after, file.filename);
+              else verifyLock(before, after, file.filename);
             }
           }
           core.info(`Validated ${files.length} repair files against the exact parent head; no branch was pushed or modified.`);
@@ -585,13 +647,23 @@ until success. Leave time to publish only coherent, validated improvements.
 - `lint`, `build`, or `test`: fix only the indicated failure and any regression
   tests needed to demonstrate that fix. Do not opportunistically fix unrelated
   parent failures. Do not change gate or test-runner configuration.
+  Compatible JavaScript/TypeScript application source and app-local tests/fixtures
+  belong under `apps/<app>/` (including JS, JSX, TS, TSX, MJS, CJS, CSS, HTML,
+  and JSON). Discover the affected workspace; never assume an application name.
+  Root `tests/`, including every `tests/framework/` governance test, is protected.
+  Never delete or rename app tests or fixtures to evade discovery or assertions.
 - `security`: fix the vulnerable behavior or dependency; remove exposed credentials
   without displaying/copying their values. Credential rotation and history cleanup
   require a maintainer: report these blockers, never claim they are resolved.
-  Dependency repairs may update versions of existing dependencies and the matching
-  lockfile only. Do not add/remove dependency entries or change package scripts,
-  engines, package identity, lockfile format, test commands, or gate configuration.
-  Use registry versions with optional `^` or `~`, not file/git/URL dependencies.
+- Only selected `build` or `security` repairs may change existing root
+  `package.json` or `apps/<app>/package.json` dependency versions and the shared
+  root `package-lock.json`. Do not create, remove, or rename manifests or create
+  app-local lockfiles. Do not add/remove dependency keys or alter scripts, names,
+  engines, coverage/gates, metadata, workspace membership, or local workspace links
+  in either manifests or the lockfile. Only concrete registry version changes with
+  optional `^` or `~` are allowed; do not replace file/git/URL/workspace dependencies.
+  Required external transitive lock graph updates are allowed. Every dependency
+  file change requires the security gate. `docs` and `metadata` never change them.
 - `docs`: change Markdown documentation only. Explain the actual changed
   behavior/API/configuration and ensure
   examples match code. A changed Markdown file is not proof of sufficient docs.
@@ -600,21 +672,27 @@ until success. Leave time to publish only coherent, validated improvements.
   read/edit those only for explicit framework findings. If fixing framework docs
   requires modifying workflows or gates, report a manual blocker instead.
 - Never modify `.github/`, workflow files, CI/gate scripts or configurations,
-  instruction files, credentials, branch protections, or security policy. Do not
+  instruction files, dotfiles, root framework tests, credentials, branch protections,
+  or security policy, including app-local build/lint/test configuration. Do not
   add bypass markers, blanket ignores, suppressed alerts, or self-certifications.
 
 ## Project command contracts
 
-Use this Node project's existing commands, not language autodetection:
+Use project-owned npm workspace contracts, not assumed root Vite/Vitest commands
+or language autodetection. The private root package aggregates `apps/*`; each app
+owns its scripts, dependencies, configuration, and tests:
 
-- `npm run lint` executes the repository's ESLint, Prettier check, and HTMLHint
-  contract; `npm run lint:fix` is a broad formatter, so use it only if its full diff
-  stays within the selected repair. Additional lint findings remain authoritative.
-- `npm run build` executes the project's Vite build contract.
-- `npm test -- <focused selectors>` executes the project's Vitest test contract.
-- `npm run test:ci -- <supported selectors>` executes Vitest with coverage and
-  the repository's existing thresholds. A focused run does not certify full-suite
-  coverage or excuse a known unrelated failing test.
+- `npm run lint`, `npm run build`, and `npm run test:ci` at the root are mandatory
+  aggregate contracts. Do not bypass an app or the root framework governance tests.
+- Discover the app package name from its existing `apps/<app>/package.json`.
+  Use `npm run test:ci --workspace <name> -- <selectors>` for focused app tests,
+  using selectors relative to that app's test contract, not assumed root `tests/`.
+  Use explicit `npm run lint --workspace <name>` or
+  `npm run build --workspace <name>` only when those existing app scripts apply.
+- Read the relevant package's scripts before running optional commands such as
+  `lint:fix`; a broad formatter is allowed only if its entire diff stays in scope.
+  Preserve the project's coverage thresholds and supported command arguments.
+  Focused checks do not certify aggregate coverage or excuse unrelated failures.
 - `npm audit` is supplemental dependency evidence, not a replacement for the
   parent's selected security checks.
 

@@ -1,34 +1,36 @@
 {
-  "name": "ferret-heist",
+  "name": "autonomous-pr-lifecycle",
   "version": "1.0.0",
-  "description": "Ferret Heist: The Stash Under the Couch - A mischievous 2D stealth action game",
+  "private": true,
+  "description": "Reusable GitHub-native pull request validation and repair lifecycle",
   "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "test": "vitest run",
-    "test:ci": "vitest run --coverage",
-    "test:cov": "vitest run --coverage",
-    "lint": "eslint . && prettier --check . && htmlhint \"apps/**/*.html\"",
-    "lint:fix": "eslint . --fix && prettier --write ."
+    "dev": "npm run dev --workspaces --",
+    "build": "npm run build --workspaces --",
+    "preview": "npm run preview --workspaces --",
+    "test:framework": "vitest run",
+    "test:apps": "npm run test --workspaces --",
+    "test": "npm run test:framework && npm run test:apps --",
+    "test:ci": "npm run test:framework && npm run test:ci --workspaces --",
+    "test:cov": "npm run test:ci --",
+    "lint:framework": "eslint tests/framework vitest.config.js && prettier --check tests/framework package.json vitest.config.js .eslintrc.json .prettierrc",
+    "lint": "npm run lint:framework && npm run lint --workspaces --",
+    "lint:fix": "npm run lint:fix --workspaces --"
   },
   "keywords": [
-    "game",
-    "ferret",
-    "stealth",
-    "html5-canvas",
-    "vitest"
+    "github-actions",
+    "agentic-workflows",
+    "pull-requests"
   ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "@vitest/coverage-v8": "^5.0.1",
     "eslint": "^8.57.1",
-    "htmlhint": "^1.9.2",
     "js-yaml": "^4.1.0",
     "prettier": "^3.9.10",
-    "vite": "^6.2.0",
     "vitest": "^5.0.1"
   }
 }

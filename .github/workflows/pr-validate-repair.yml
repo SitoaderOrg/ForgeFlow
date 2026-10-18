@@ -72,7 +72,6 @@ jobs:
           STATE: ${{ inputs.state }}
         with:
           script: |
-            const { isDeepStrictEqual } = require('node:util');
             const { createHash } = require('node:crypto');
             const state = JSON.parse(process.env.STATE);
             const feature = state?.feature;
@@ -142,39 +141,97 @@ jobs:
                 files.reduce((sum, file) => sum + file.changes, 0) > 256) {
               throw new Error('Repair must be a nonempty, bounded change (20 files / 256 changed lines).');
             }
+            const kind = process.env.KIND;
+            // Keep native publisher and scoped validator policy identical.
+            const manifestFile = file => /^(?:package\.json|apps\/[^/]+\/package\.json)$/.test(file);
+            const dependencyFile = file => manifestFile(file) || file === 'package-lock.json';
+            const testFile = file => /(^|\/)(?:test|tests|__tests__|fixtures|__fixtures__|__snapshots__)\//i.test(file) || /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(file);
             const allowed = file => {
-              if (/(^|\/)(AGENTS|CLAUDE|SKILL)\.md$/i.test(file) ||
-                  /(^|\/)(vitest|vite|eslint|prettier|jest|playwright|webpack|rollup)\.config\./i.test(file) ||
-                  /\/(package(-lock)?|npm-shrinkwrap)\.json$/.test(file) ||
-                  file.split('/').some(part => part.startsWith('.'))) return false;
-              const documentation = /^(docs\/.*\.md|apps\/.*\.md|readme\.md|README\.md|prereqs\.md)$/.test(file);
-              if (process.env.KIND === 'docs') return documentation;
-              return documentation || /^apps\/.*\.(js|css|html|json)$/.test(file) ||
-                /^tests\/.*\.js$/.test(file) ||
-                (['build', 'security'].includes(process.env.KIND) && /^package(-lock)?\.json$/.test(file));
+              if (!['lint', 'build', 'test', 'security', 'docs'].includes(kind) ||
+                  typeof file !== 'string' || file.split('/').some(part => !part || part.startsWith('.')) ||
+                  /(^|\/)(?:AGENTS\.md|CLAUDE\.md|SKILL\.md|SECURITY\.md|(?:copilot-)?instructions\.md|[^/]+\.instructions\.md|CODEOWNERS|(?:ts|js)config(?:\.[^/]+)?\.json|[^/]+\.config\.[^/]+|vitest\.workspace\.[^/]+)$/i.test(file)) return false;
+              if (dependencyFile(file)) return ['build', 'security'].includes(kind);
+              if (/(^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/i.test(file)) return false;
+              const documentation = /^(?:docs\/.*\.md|apps\/[^/]+\/.*\.md|readme\.md|README\.md|prereqs\.md)$/.test(file);
+              if (kind === 'docs') return documentation;
+              return documentation || /^apps\/[^/]+\/.+\.(?:[cm]?[jt]sx?|css|html|json)$/.test(file) ||
+                (/^apps\/[^/]+\//.test(file) && testFile(file));
             };
-            const testFile = file => /(^|\/)(tests|__tests__)\//.test(file) || /\.(test|spec)\.js$/.test(file);
             for (const file of files) {
-              if (!allowed(file.filename) || (file.previous_filename && !allowed(file.previous_filename)) ||
+              if (!['added', 'modified', 'removed', 'renamed'].includes(file.status) ||
+                  !allowed(file.filename) || (file.previous_filename && !allowed(file.previous_filename)) ||
                   (file.status === 'removed' && testFile(file.filename)) ||
-                  (file.previous_filename && testFile(file.previous_filename))) {
+                  (file.previous_filename && testFile(file.previous_filename)) ||
+                  ((dependencyFile(file.filename) || dependencyFile(file.previous_filename)) && file.status !== 'modified')) {
                 throw new Error(`Repair cannot change protected/out-of-scope path: ${file.filename}`);
               }
             }
-            if (files.some(file => file.filename === 'package.json')) {
-              const readPackage = async ref => {
-                const { data } = await github.rest.repos.getContent({ ...context.repo, path: 'package.json', ref });
-                if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 100000) throw new Error('Invalid package manifest.');
-                const manifest = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
-                for (const key of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'overrides']) delete manifest[key];
-                return manifest;
+            const stable = value => JSON.stringify(normalize(value));
+            function normalize(value) {
+              if (Array.isArray(value)) return value.map(normalize);
+              if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, normalize(value[key])]));
+              return value;
+            }
+            const dependencyFields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+            const immutable = value => Object.fromEntries(Object.entries(value).filter(([key]) => !dependencyFields.includes(key)));
+            function verifyVersions(before, after, file) {
+              if (!before || !after || typeof before !== 'object' || typeof after !== 'object' ||
+                  Array.isArray(before) || Array.isArray(after)) throw new Error(`${file}: invalid package manifest.`);
+              if (stable(immutable(before)) !== stable(immutable(after))) throw new Error(`${file}: package scripts, engines, package metadata, workspaces, and gate settings must not change.`);
+              for (const field of dependencyFields) {
+                if (Object.hasOwn(before, field) !== Object.hasOwn(after, field)) throw new Error(`${file}: dependency fields must not change.`);
+                if (Object.hasOwn(before, field) && [before[field], after[field]].some(value =>
+                  !value || typeof value !== 'object' || Array.isArray(value))) throw new Error(`${file}: dependency fields must remain objects.`);
+                const oldVersions = before[field] || {}, newVersions = after[field] || {};
+                if (stable(Object.keys(oldVersions).sort()) !== stable(Object.keys(newVersions).sort())) throw new Error(`${file}: adding or removing dependencies is not a version-only repair.`);
+                for (const [name, version] of Object.entries(newVersions)) {
+                  if (stable(version) !== stable(oldVersions[name]) && [oldVersions[name], version].some(value => typeof value !== 'string' || !/^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value))) throw new Error(`${file}: ${name} must use a concrete registry version, optionally prefixed with ^ or ~.`);
+                }
+              }
+            }
+            function verifyLock(before, after, file) {
+              const header = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['packages', 'dependencies'].includes(key)));
+              if (stable(header(before)) !== stable(header(after))) throw new Error(`${file}: lockfile identity and format must not change.`);
+              if (!before.packages || !after.packages) throw new Error(`${file}: workspace package topology is required.`);
+              verifyVersions(before.packages[''], after.packages[''], `${file} root package`);
+              const workspaces = value => Object.keys(value.packages).filter(key => key && !/(^|\/)node_modules\//.test(key)).sort();
+              if (stable(workspaces(before)) !== stable(workspaces(after))) throw new Error(`${file}: workspace membership must not change.`);
+              for (const workspace of workspaces(before)) {
+                verifyVersions(before.packages[workspace], after.packages[workspace], `${file} workspace ${workspace}`);
+              }
+              const links = value => Object.fromEntries(Object.entries(value.packages).filter(([, entry]) =>
+                entry.link || /^(?:file:|link:|workspace:|apps\/)/.test(entry.resolved || '')));
+              if (stable(links(before)) !== stable(links(after))) throw new Error(`${file}: local workspace link topology must not change.`);
+              const legacyLinks = value => {
+                const result = {};
+                const visit = (dependencies, prefix = '') => {
+                  for (const [name, entry] of Object.entries(dependencies || {})) {
+                    const key = `${prefix}/${name}`;
+                    if (entry.link || /^(?:file:|link:|workspace:|apps\/)/.test(entry.version || '') ||
+                        /^(?:file:|link:|workspace:|apps\/)/.test(entry.resolved || '')) result[key] = entry;
+                    visit(entry.dependencies, key);
+                  }
+                };
+                visit(value.dependencies);
+                return result;
               };
-              if (!isDeepStrictEqual(await readPackage(parent.head.sha), await readPackage(repair.head.sha))) {
-                throw new Error('Repairs may change dependencies, not package scripts, engines, or quality policy.');
+              if (stable(legacyLinks(before)) !== stable(legacyLinks(after))) throw new Error(`${file}: legacy local workspace links must not change.`);
+            }
+            const readJson = async (ref, file) => {
+              const { data } = await github.rest.repos.getContent({ ...context.repo, path: file, ref });
+              const limit = file === 'package-lock.json' ? 1000000 : 100000;
+              if (data.type !== 'file' || data.encoding !== 'base64' || data.size > limit) throw new Error('Invalid dependency file.');
+              return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+            };
+            for (const file of files) {
+              if (dependencyFile(file.filename)) {
+                const before = await readJson(parent.head.sha, file.filename), after = await readJson(repair.head.sha, file.filename);
+                if (manifestFile(file.filename)) verifyVersions(before, after, file.filename);
+                else verifyLock(before, after, file.filename);
               }
             }
             const required = new Set([process.env.KIND, ...kinds.filter(kind => baseline[kind] === 'success')]);
-            if (files.some(file => /^package(-lock)?\.json$/.test(file.filename))) required.add('security');
+            if (files.some(file => dependencyFile(file.filename))) required.add('security');
             for (const kind of kinds) core.setOutput(kind, String(required.has(kind)));
             core.setOutput('head_sha', repair.head.sha);
             core.setOutput('head_ref', repair.head.ref);

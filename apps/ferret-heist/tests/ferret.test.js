@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { Ferret } from '../apps/ferret-heist/src/game/ferret.js';
-import { Loot } from '../apps/ferret-heist/src/game/loot.js';
-import { FERRET_CONFIG } from '../apps/ferret-heist/src/game/constants.js';
+import { Ferret } from '../src/game/ferret.js';
+import { Loot } from '../src/game/loot.js';
+import { FERRET_CONFIG } from '../src/game/constants.js';
 
 describe('Ferret Model & Mechanics', () => {
   it('initializes with default coordinates and full dance meter', () => {

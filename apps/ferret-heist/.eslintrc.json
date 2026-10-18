@@ -1,0 +1,15 @@
+{
+  "env": {
+    "browser": true,
+    "node": false
+  },
+  "overrides": [
+    {
+      "files": ["*.config.js", "tests/**/*.js"],
+      "env": {
+        "browser": false,
+        "node": true
+      }
+    }
+  ]
+}

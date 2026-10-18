@@ -5,7 +5,7 @@ import { Script } from 'node:vm';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import yaml from 'js-yaml';
-import testConfig from '../vitest.config.js';
+import testConfig from '../../vitest.config.js';
 
 const require = createRequire(import.meta.url);
 const workflow = (name) =>
@@ -1115,11 +1115,26 @@ describe('native workflow structure', () => {
     );
   });
 
-  it('keeps project commands and coverage policy in the project configuration', () => {
+  it('keeps workspace commands independent of the sample app and coverage policy', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
-    expect(manifest.scripts['test:ci']).toBe('vitest run --coverage');
+    expect(manifest.private).toBe(true);
+    expect(manifest.workspaces).toEqual(['apps/*']);
+    expect(manifest.scripts['test:ci']).toBe(
+      'npm run test:framework && npm run test:ci --workspaces --'
+    );
+    expect(manifest.scripts.build).toBe('npm run build --workspaces --');
+    expect(manifest.scripts.lint).toBe(
+      'npm run lint:framework && npm run lint --workspaces --'
+    );
+    for (const command of ['dev', 'preview', 'test:apps', 'lint:fix']) {
+      expect(manifest.scripts[command]).toMatch(/--workspaces --$/);
+    }
+    expect(Object.values(manifest.scripts).join('\n')).not.toMatch(
+      /--if-present|ferret-heist/
+    );
     expect(testConfig.test.passWithNoTests).toBe(false);
-    expect(testConfig.test.coverage.thresholds.lines).toBe(80);
+    expect(testConfig.test.include).toEqual(['tests/framework/**/*.test.js']);
+    expect(testConfig.test.coverage).toBeUndefined();
     for (const [name, command] of [
       ['pr-lint', 'lint'],
       ['pr-build', 'build'],
@@ -1275,7 +1290,11 @@ describe('scoped stacked repair safety', () => {
   function attempt(
     kind = 'test',
     files = [
-      { filename: 'tests/streak.test.js', status: 'modified', changes: 2 }
+      {
+        filename: 'apps/sample/tests/streak.test.js',
+        status: 'modified',
+        changes: 2
+      }
     ]
   ) {
     const parent = pullRequest();
@@ -1410,6 +1429,7 @@ describe('scoped stacked repair safety', () => {
   it.each([
     '.github/workflows/pr-pipeline.yml',
     'vitest.config.js',
+    'tests/framework/workflows.test.js',
     'apps/game/package.json',
     'apps/game/AGENTS.md',
     'apps/game/.env'
@@ -1433,7 +1453,11 @@ describe('scoped stacked repair safety', () => {
 
   it('rejects deleted tests instead of allowing an easier green result', async () => {
     const { sandbox } = attempt('test', [
-      { filename: 'tests/streak.test.js', status: 'removed', changes: 20 }
+      {
+        filename: 'apps/sample/tests/streak.test.js',
+        status: 'removed',
+        changes: 20
+      }
     ]);
     await expect(execute('inspect', sandbox, validation)).rejects.toThrow(
       'out-of-scope'
@@ -1444,7 +1468,7 @@ describe('scoped stacked repair safety', () => {
     const { sandbox } = attempt('test', [
       {
         filename: 'apps/game/helper.js',
-        previous_filename: 'tests/streak.test.js',
+        previous_filename: 'apps/sample/tests/streak.test.js',
         status: 'renamed',
         changes: 0
       }
@@ -1482,14 +1506,18 @@ describe('scoped stacked repair safety', () => {
     { files: [] },
     {
       files: Array.from({ length: 21 }, (_, index) => ({
-        filename: `tests/${index}.test.js`,
+        filename: `apps/sample/tests/${index}.test.js`,
         status: 'added',
         changes: 1
       }))
     },
     {
       files: [
-        { filename: 'tests/streak.test.js', status: 'modified', changes: 257 }
+        {
+          filename: 'apps/sample/tests/streak.test.js',
+          status: 'modified',
+          changes: 257
+        }
       ]
     }
   ])('rejects empty or oversized repairs', async ({ files }) => {
@@ -1534,7 +1562,7 @@ describe('scoped stacked repair safety', () => {
 
   it('accepts the exact file and changed-line bounds', async () => {
     const files = Array.from({ length: 20 }, (_, index) => ({
-      filename: `tests/${index}.test.js`,
+      filename: `apps/sample/tests/${index}.test.js`,
       status: 'modified',
       changes: index === 0 ? 9 : 13
     }));

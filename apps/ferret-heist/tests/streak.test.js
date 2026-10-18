@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { StreakTracker } from '../apps/ferret-heist/src/game/streak.js';
+import { StreakTracker } from '../src/game/streak.js';
 
 describe('StreakTracker', () => {
   it('starts with an empty streak', () => {

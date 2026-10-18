@@ -13,8 +13,7 @@ gh aw compile --validate --purge
 ```
 
 Use `gh extension upgrade gh-aw --pin v0.89.21` if the extension is already installed.
-Run local lifecycle tests with
-`npx vitest run tests/workflows.test.js tests/stack-registration.test.js tests/stack-landing.test.js`.
+Run local lifecycle tests with `npm run test:framework`.
 Compilation drift is a failure requiring a reviewed local change; automation never
 pushes protected workflow modifications.
 
@@ -113,6 +112,20 @@ not identify which quota was exceeded.
 
 Only same-repository feature PRs are automated. Do not switch to a privileged
 `pull_request_target` checkout of untrusted code to support forks.
+
+### App command contract
+
+The npm adapters install from the root `package-lock.json` and call the root
+`lint`, `build`, and `test:ci` scripts. Those scripts delegate required checks
+to packages discovered by `workspaces: ["apps/*"]`; `test:ci` first checks the
+framework independently. Each app must provide its own explicit commands,
+dependencies, test-discovery configuration and coverage/no-tests policy.
+
+Keep a single root lockfile. Put app source, tests, build/test configuration,
+documentation, `dist` and `coverage` under the app directory. Root framework
+tests and shared lint/format conventions are not part of the game. App dependency
+repairs cannot alter workspace membership, scripts, configuration or framework
+tests. Update the security adapter explicitly when introducing a new language.
 
 ## 5. Security services
 
