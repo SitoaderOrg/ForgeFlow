@@ -1,5 +1,3 @@
-import { GAME_STATES } from './constants.js';
-
 const COMBO_WINDOW_MS = 3000;
 const MAX_MULTIPLIER = 5;
 
