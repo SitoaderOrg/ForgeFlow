@@ -8,7 +8,10 @@ This step implements a language-agnostic code quality gate combined with an auto
 
 ```mermaid
 flowchart TD
-    Autofix[Pipeline autofix job\neslint --fix / prettier --write\non changed files] --> Linter[Lint Gate, in parallel with the other gates\n.github/workflows/pr-lint.yml]
+    Autofix[Pipeline autofix job\neslint --fix / prettier --write\non changed files] -->|nothing to fix| Linter[Lint Gate, in parallel with the other gates\n.github/workflows/pr-lint.yml]
+    Autofix -->|files fixed| AutofixPR[Stacked PR 'lint-remediation'\nlint-autofix/pr-N]
+    AutofixPR --> AutofixRelay[pr-stacked-merge.yml\nSquash-merge, then full check of the fixed commit]
+    AutofixRelay --> Linter
     
     Linter -->|✅ All Linters Pass| Passed[gate/lint: success\nlabel 'lint-passed']
     Linter -->|❌ Lint / Style Failure| AddLabel[gate/lint: failure\nApply 'lint-failed' Label]
@@ -32,7 +35,7 @@ The linter gate uses GitHub's official **Super-Linter** to provide out-of-the-bo
   - Excludes noisy non-code linters (`VALIDATE_CHECKOV: false`, `VALIDATE_MARKDOWN: false`, `VALIDATE_NATURAL_LANGUAGE: false`, `VALIDATE_JSCPD: false`) to keep focus on code logic and formatting.
   - Skips internal metadata paths (`.github/`, `docs/`, `*.lock.yml`, and temp logs) via `FILTER_REGEX_EXCLUDE`.
 - **Diff-Aware**: Sets `VALIDATE_ALL_CODEBASE: false` to only inspect changed files in the PR, minimizing runtime and avoiding legacy repo-wide noise.
-- **Deterministic autofix first**: before any gate runs, the pipeline's `autofix` job runs `eslint --fix` and `prettier --write` on the changed files and pushes a `style: auto-fix lint and formatting [pr-autofix]` commit if anything changed (same-repository PRs only). Most formatting failures therefore never reach the agent.
+- **Deterministic autofix first**: before any gate runs, the pipeline's `autofix` job runs `eslint --fix` and `prettier --write` on the changed files (same-repository PRs only). If anything changed, it commits `style(lint): auto-fix lint and formatting [pr-autofix]` to `lint-autofix/pr-<number>` and opens it as a stacked PR labelled `lint-remediation` — like every automated change, it never pushes to the feature branch directly. It then hands off to `pr-stacked-merge.yml`, which squash-merges the stacked PR; the gates run on the merged commit. Most formatting failures therefore never reach the agent.
 - **Gate result & Triggering Remediation**:
   - If any linter detects errors, the workflow marks the job as failed, records `gate/lint: failure` and attaches the **`lint-failed`** label to the PR.
   - If all linters pass, it clears the `lint-failed` label and records `gate/lint: success` (label `lint-passed`).

@@ -10,9 +10,10 @@ which never execute on their own.
 
 To keep those held runs out of the Actions list, `pr-pipeline.yml` only listens to PRs that
 target `main` (stacked remediation PRs target the feature branch), and `pr-stacked-merge.yml`
-has no `pull_request` trigger at all. The two bot pushes to a feature branch (autofix and the
-relay's stacked-PR merge) can use a GitHub App token instead, so their `synchronize` run is the
-re-check and no held run is left behind — see
+has no `pull_request` trigger at all. Every automated change reaches a feature branch the same way —
+as a stacked PR that the relay squash-merges (the lint autofix included), so the relay merge is the
+only bot push. It can use a GitHub App token instead, so its `synchronize` run is the re-check and
+no held run is left behind — see
 [GitHub App for bot pushes](#recommended-github-app-for-bot-pushes).
 
 The framework therefore chains every hop explicitly with `workflow_dispatch`:
@@ -20,6 +21,7 @@ The framework therefore chains every hop explicitly with `workflow_dispatch`:
 ```mermaid
 flowchart LR
     PR[pull_request event\nopened / synchronize] --> Pipeline[pr-pipeline.yml\ncontext → autofix → 6 gates in parallel → verdict]
+    Pipeline -->|autofix changed files:\nstacked PR lint-remediation\ngates wait for the merge| Relay
     Pipeline -->|gate fails| Helper[.github/scripts/remediation.cjs\nlabel + dispatchRemediation]
     Pipeline -->|each gate| Gates[(gate/* commit statuses\n+ *-passed labels)]
     Gates -->|verdict| Status[(pr-quality commit status\non the head SHA)]
@@ -37,9 +39,13 @@ flowchart LR
 
 1. **Check** — `pr-pipeline.yml` runs once per PR *revision*: the head SHA plus a hash of the PR
    title, body and gate decision labels (`docs-not-required`). An **autofix** job first applies
-   `eslint --fix` and `prettier --write` to the changed files and pushes the result, so formatting
-   never needs an agent (the push re-dispatches the pipeline on the fixed commit, or starts it
-   natively when the [GitHub App](#recommended-github-app-for-bot-pushes) is set up). Then all six gates
+   `eslint --fix` and `prettier --write` to the changed files, so formatting never needs an agent.
+   Like every automated change, the fix does not land on the feature branch directly: it is
+   committed to `lint-autofix/pr-<number>`, opened as a stacked PR (`lint-remediation`) and handed
+   to the relay (source `Lint auto-fix (run <id>)`), which squash-merges it. No gate ran on the
+   unfixed commit, so the merged commit gets the full check (started natively by the
+   [GitHub App](#recommended-github-app-for-bot-pushes) merge, or by the relay re-checking every
+   gate without it). When there is nothing to fix, all six gates
    — Metadata, Lint, Build, Tests, Security, Docs — run **in parallel**, so every failure is found
    in the first round. Each gate records its result as a `gate/<id>` commit status on the head SHA
    (mirrored as a `<id>-passed` label), and the verdict job derives `pr-quality` from them. A
@@ -80,7 +86,7 @@ With four failing gates, the PR is checked once, repaired by four agents, re-che
 
 | Piece | Responsibility |
 | :--- | :--- |
-| `pr-pipeline.yml` | Runs on `pull_request` **and** `workflow_dispatch(pr_number, force)`. The context job resolves the PR (number, head/base ref, head SHA, revision), de-duplicates already-checked revisions and sets `pr-quality` to `pending`; the autofix job pushes deterministic lint/format fixes (or marks every `gate/<id>` pending); the six gates run in parallel; the verdict job publishes `pr-quality`. A Bot-sent push made only of relay merges (`Recheck-Gates` trailer) runs the `recheck` job instead of the full check. Human pushes cancel a running check; dispatched and Bot-sent runs queue behind it. |
+| `pr-pipeline.yml` | Runs on `pull_request` **and** `workflow_dispatch(pr_number, force)`. The context job resolves the PR (number, head/base ref, head SHA, revision), de-duplicates already-checked revisions and sets `pr-quality` to `pending`; the autofix job proposes deterministic lint/format fixes as a stacked PR and hands off to the relay (or marks every `gate/<id>` pending); the six gates run in parallel; the verdict job publishes `pr-quality`. A Bot-sent push made only of relay merges (`Recheck-Gates` trailer) runs the `recheck` job instead of the full check, unless no gate was checked before the merges (the merged autofix). Human pushes cancel a running check; dispatched and Bot-sent runs queue behind it. |
 | `.github/scripts/remediation.cjs` | Shared helper used by every gate: adds/removes labels and dispatches the matching agent on the PR head branch. It skips dispatch when the agent is already running, when an unmerged stacked remediation PR exists, or when the retry budget is exhausted (then it comments once asking for a human). |
 | `.github/scripts/pr-quality.cjs` | Revision fingerprint and `pr-quality` status; `gate/<id>` statuses and `<id>-passed` labels (`recordGate`, `startGates`); `recheckGates` (re-check repaired gates, carry the others over); `evaluateVerdict` (pending / repairing / failure / final check / success); detection of remediation still in progress. |
 | `pr-quality-verdict.yml` | Reusable verdict called by a gate re-checked alone (also `workflow_dispatch(pr_number)`). One verdict per PR at a time (`pr-quality-verdict-<PR>` concurrency group). Every 15 minutes it runs as the watchdog for stalled `pr-quality` statuses. |
@@ -93,7 +99,7 @@ With four failing gates, the PR is checked once, repaired by four agents, re-che
 | Gate (`gate/<id>`) | Label | Agent | Fix delivery |
 | :--- | :--- | :--- | :--- |
 | Metadata (`gate/metadata`) | `needs-metadata` | `pr-validation.lock.yml` | Edits PR title/body |
-| Lint (`gate/lint`) | `lint-failed` | `pr-lint-fixer.lock.yml` (only for what autofix cannot fix) | Stacked PR (`lint-remediation`) |
+| Lint (`gate/lint`) | `lint-failed` | Pipeline autofix (before the gates), then `pr-lint-fixer.lock.yml` for what autofix cannot fix | Stacked PR (`lint-remediation`) |
 | Tests & Coverage (`gate/tests`) | `test-required` | `pr-test-generator.lock.yml` | Stacked PR (`test-remediation`) |
 | Security — CodeQL (`gate/security`) | `codeql-alert` | `pr-codeql-fixer.lock.yml` | Stacked PR (`security-remediation`) |
 | Security — Dependency Review (`gate/security`) | `dependency-alert` | `pr-dependency-fixer.lock.yml` | Stacked PR (`security-remediation`) |
@@ -162,8 +168,10 @@ the `pr-quality` status, which is tied to the exact commit.
   relay running — e.g. an agent run cancelled before its hand-off step could run — gets its stuck gates
   re-checked and a fresh verdict. Scheduled runs can be delayed or skipped by GitHub, so the
   watchdog is a backstop, not the primary failure path.
-- **Autofix**: only pushes to same-repository PR branches (also for dispatched runs), skips a head
-  that is already an auto-fix commit, and never fails the pipeline.
+- **Autofix**: only runs for same-repository PR branches (also for dispatched runs), never pushes
+  to the feature branch (it force-pushes `lint-autofix/pr-<number>` and reuses that stacked PR if it
+  is still open), skips a head that is an already merged auto-fix (`[pr-autofix]` in the squash
+  title), and never fails the pipeline.
 - **Concurrency**: `pr-pipeline.yml` declares `pr-pipeline-<PR>` (human `pull_request` pushes cancel
   in-progress checks, dispatched and Bot-sent runs queue); verdict jobs share `pr-quality-verdict-<PR>` so
   gates finishing together publish one verdict at a time.
@@ -173,8 +181,9 @@ the `pr-quality` status, which is tied to the exact commit.
 ## Recommended: GitHub App for bot pushes
 
 With `GITHUB_TOKEN` only, every bot push to a feature branch leaves an approval-held
-`pull_request` run ("Action required") next to the run that was dispatched for it. Configure a
-GitHub App to remove that noise:
+`pull_request` run ("Action required") next to the run that was dispatched for it. The only bot
+push is the relay's squash-merge of stacked PRs (the lint autofix is a stacked PR too).
+Configure a GitHub App to remove that noise:
 
 1. Create a GitHub App (no webhook) with repository permissions **Contents: Read and write**,
    **Pull requests: Read and write** (Metadata: read is implied) and install it on this
@@ -182,21 +191,23 @@ GitHub App to remove that noise:
 2. Set the repository variable `PR_BOT_CLIENT_ID` to the App's client ID and the secret
    `PR_BOT_PRIVATE_KEY` to its private key.
 
-When both are set (and the PR targets the default branch), the bot pushes run under the App
+When both are set (and the PR targets the default branch), the relay merges under the App
 (`actions/create-github-app-token`) and the native `synchronize` run does the work that a
 dispatch used to do:
 
 | Bot push | Without the App | With the App |
 | :--- | :--- | :--- |
-| Autofix commit (`[pr-autofix]`) | held run + dispatched full pipeline | one full pipeline run on the fixed commit |
 | Relay squash-merge of stacked PRs | held run + relay re-checks the repaired gates | relay stops after merging; the pipeline run re-checks the repaired gates |
+| Relay squash-merge of the autofix stacked PR | held run + relay checks every gate (none ran yet) | relay stops after merging; the pipeline run does the full check |
 
 The relay writes a `Recheck-Gates: <gate ids>` trailer into each squash-merge commit message.
 When a Bot-sent `synchronize` contains only such commits, the pipeline's context job switches to
 **recheck** mode: it skips the full check and its `recheck` job calls the same `recheckGates` and
 verdict logic the relay uses (repaired gates re-run, the others carried over). Earlier relay merges
-whose re-check was replaced in the concurrency queue are folded in. Any other push — human,
-force-push, autofix, or a mix — gets the full check. Bot-sent pipeline runs queue instead of
+whose re-check was replaced in the concurrency queue are folded in. When no gate was ever checked
+before the merges (the autofix stacked PR is proposed before the gates run), there is nothing to
+carry over and the push gets the full check. Any other push — human, force-push, or a mix — gets
+the full check. Bot-sent pipeline runs queue instead of
 cancelling each other, so a re-check is never lost.
 
 Without the App (or if minting the token fails) the workflows fall back to the dispatch chain
@@ -235,8 +246,8 @@ so the tests run the exact code that runs in Actions.
 |---|---|
 | `remediation.test.js` | Label helpers, `commentOnce`, `dispatchRemediation` (dispatch, already running, pending stacked PR, budget exhaustion, cancelled runs not counted, truncation, API errors) |
 | `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome, the `sweepStalled` watchdog |
-| `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref), autofix, verdict job |
-| `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure |
+| `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check), autofix stacked PR and relay hand-off, verdict job |
+| `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR |
 | `gates.test.js` | Every gate's handlers (metadata, lint, build, tests, docs, security, review dispatcher), *Record gate result* steps, standalone `verdict` jobs, `pr-quality-verdict.yml` |
 | `agents.test.js` | gh-aw agent contracts: declarative (no scripted steps/jobs), skipped on the default branch, dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, the shared relay hand-off compiled into every `conclusion` job (`agent_result` for repairs, no changes, crashes and failed safe outputs) |
 

@@ -1,8 +1,9 @@
 name: PR Quality Pipeline
 
 # Check -> Repair -> Recheck -> Review & merge
-#   Check:   lint is auto-fixed (ESLint --fix + Prettier) first, then every gate runs in parallel
-#            and records a `gate/<id>` commit status (mirrored by a `<id>-passed` label).
+#   Check:   lint is auto-fixed (ESLint --fix + Prettier) first, proposed as a stacked PR like
+#            every other automated change; then every gate runs in parallel and records a
+#            `gate/<id>` commit status (mirrored by a `<id>-passed` label).
 #   Repair:  each failing gate dispatches its gh-aw agent right away, so all agents of a round
 #            work in parallel (bounded by MAX_REMEDIATION_ATTEMPTS, default 1).
 #   Recheck: when an agent's stacked PR is merged, the relay (pr-stacked-merge.yml) re-checks
@@ -18,9 +19,9 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-  # Re-entry point after the lint auto-fix commit and for the final all-gates check once every
-  # gate is green (pr-quality.cjs). Commits made with GITHUB_TOKEN do not raise `synchronize`
-  # events, so the pipeline is re-dispatched on the PR head branch instead.
+  # Re-entry point for the final all-gates check once every gate is green (pr-quality.cjs) and
+  # for manual re-checks. Commits made with GITHUB_TOKEN do not raise `synchronize` events, so
+  # the pipeline is re-dispatched on the PR head branch instead.
   workflow_dispatch:
     inputs:
       pr_number:
@@ -34,7 +35,7 @@ on:
         default: false
 
 # New pushes cancel a running check; dispatched re-checks queue behind it and are
-# de-duplicated by revision instead. Bot pushes (lint auto-fix, relay merges) queue as well, so
+# de-duplicated by revision instead. Bot pushes (relay merges) queue as well, so
 # the run that pushed finishes and a repair re-check can carry over the previous results.
 concurrency:
   group: pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -181,11 +182,12 @@ jobs:
             core.info(`PR #${prNumber}: ${pr.head.ref} (${pr.head.sha}) -> ${pr.base.ref}, revision ${rev}`);
 
   # Stage 1: Deterministic lint auto-fix (~1m). ESLint --fix and Prettier repair most lint
-  # findings in seconds, so the PR Lint Fixer agent is only needed for what is left. A fix is
-  # pushed to the PR branch with the GitHub App token (PR_BOT_CLIENT_ID / PR_BOT_PRIVATE_KEY), whose
-  # `synchronize` event starts the check of the new commit; without the App, the push uses
-  # GITHUB_TOKEN and the pipeline is re-dispatched instead. Otherwise every gate is marked pending
-  # on the head commit and the gates start.
+  # findings in seconds, so the PR Lint Fixer agent is only needed for what is left. Like every
+  # automated change, a fix never lands on the feature branch directly: it is committed to
+  # `lint-autofix/pr-<number>`, proposed as a stacked PR (`lint-remediation`) and handed off to the
+  # remediation relay, which squash-merges it. The merge starts the full check of the fixed commit
+  # (with the GitHub App token its `synchronize` event does; without it, the relay re-checks the
+  # gates itself). Otherwise every gate is marked pending on the head commit and the gates start.
   autofix:
     name: 'Stage 1: Lint auto-fix'
     needs: [context]
@@ -198,25 +200,15 @@ jobs:
       actions: write
       statuses: write
     outputs:
-      pushed: ${{ steps.fix.outputs.pushed }}
+      stacked: ${{ steps.fix.outputs.stacked }}
     steps:
-      - name: Mint GitHub App token
-        id: app
-        if: needs.context.outputs.same_repo == 'true' && vars.PR_BOT_CLIENT_ID != ''
-        continue-on-error: true
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.PR_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
-
       - name: Checkout PR branch
-        # Fork PRs (also when dispatched) cannot be pushed to.
+        # A stacked PR cannot target a fork's branch (also when dispatched).
         if: needs.context.outputs.same_repo == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.context.outputs.head_ref }}
           fetch-depth: 0
-          token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Auto-fix lint & formatting in changed files
         id: fix
@@ -224,12 +216,12 @@ jobs:
         continue-on-error: true
         env:
           BASE_REF: ${{ needs.context.outputs.base_ref }}
-          HEAD_REF: ${{ needs.context.outputs.head_ref }}
           HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          FIX_BRANCH: lint-autofix/pr-${{ needs.context.outputs.pr_number }}
         run: |
-          echo "pushed=false" >> "$GITHUB_OUTPUT"
+          echo "stacked=false" >> "$GITHUB_OUTPUT"
           if git log -1 --format=%B | grep -qF '[pr-autofix]'; then
-            echo "Head is already an auto-fix commit; not fixing again."
+            echo "Head is already a merged auto-fix; not fixing again."
             exit 0
           fi
           if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
@@ -258,10 +250,13 @@ jobs:
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -am 'style: auto-fix lint and formatting [pr-autofix]'
-          git push origin "HEAD:$HEAD_REF"
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          git switch -c "$FIX_BRANCH"
+          git commit -am 'style(lint): auto-fix lint and formatting [pr-autofix]'
+          git push --force origin "HEAD:refs/heads/$FIX_BRANCH"
+          echo "stacked=true" >> "$GITHUB_OUTPUT"
+          echo "branch=$FIX_BRANCH" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "files=$(git diff --name-only HEAD~1 HEAD | paste -sd, -)" >> "$GITHUB_OUTPUT"
           git show --stat --format='%h %s' HEAD
 
       - name: Checkout shared scripts
@@ -270,51 +265,84 @@ jobs:
           sparse-checkout: .github/scripts
           path: .gate-scripts
 
-      - name: Re-check the auto-fixed commit or start the gates
+      - name: Propose the auto-fix as a stacked PR or start the gates
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ needs.context.outputs.pr_number }}
           HEAD_REF: ${{ needs.context.outputs.head_ref }}
           HEAD_SHA: ${{ needs.context.outputs.head_sha }}
-          PUSHED: ${{ steps.fix.outputs.pushed }}
+          REVISION: ${{ needs.context.outputs.revision }}
+          STACKED: ${{ steps.fix.outputs.stacked }}
+          FIX_BRANCH: ${{ steps.fix.outputs.branch }}
           FIX_SHA: ${{ steps.fix.outputs.sha }}
-          # The App push only starts a run when the PR targets a branch `on.pull_request` listens to.
-          APP_PUSH: ${{ steps.app.outputs.token != '' && needs.context.outputs.base_ref == 'main' }}
+          FIX_FILES: ${{ steps.fix.outputs.files }}
         with:
           script: |
             const quality = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/pr-quality.cjs`);
+            const { owner, repo } = context.repo;
             const prNumber = Number(process.env.PR_NUMBER);
-            if (process.env.PUSHED === 'true') {
-              const appPush = process.env.APP_PUSH === 'true';
-              if (!appPush) {
-                // GITHUB_TOKEN pushes only create approval-held runs: re-dispatch on the new commit.
-                await github.rest.actions.createWorkflowDispatch({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  workflow_id: 'pr-pipeline.yml',
-                  ref: process.env.HEAD_REF,
-                  inputs: { pr_number: String(prNumber) }
-                });
-              }
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: `### 🧹 Lint & formatting auto-fixed\n\nESLint \`--fix\` and Prettier were applied to the files changed in this PR ` +
-                  `(commit ${process.env.FIX_SHA.slice(0, 7)}). The quality gates now run on that commit.`
-              });
-              const next = appPush ? 'Its push starts the pipeline on the fixed commit.' : 'The pipeline was re-dispatched on the fixed commit.';
-              await core.summary.addRaw(`### 🧹 Auto-fixed lint in ${process.env.FIX_SHA}\n\n${next}\n`).write();
+            if (process.env.STACKED !== 'true') {
+              await quality.startGates({ github, context, core, prNumber, sha: process.env.HEAD_SHA });
               return;
             }
-            await quality.startGates({ github, context, core, prNumber, sha: process.env.HEAD_SHA });
+
+            // Same path as the remediation agents: stacked PR -> relay squash-merge -> gates.
+            const headRef = process.env.HEAD_REF;
+            const branch = process.env.FIX_BRANCH;
+            const files = (process.env.FIX_FILES || '').split(',').filter(Boolean);
+            const [existing] = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', head: `${owner}:${branch}`, base: headRef, per_page: 10
+            });
+            let stacked = existing;
+            if (!stacked) {
+              ({ data: stacked } = await github.rest.pulls.create({
+                owner, repo,
+                head: branch,
+                base: headRef,
+                title: 'style(lint): auto-fix lint and formatting [pr-autofix]',
+                body: [
+                  `ESLint \`--fix\` and Prettier applied to the files changed in #${prNumber}:`,
+                  '',
+                  ...files.map((f) => `- \`${f}\``),
+                  '',
+                  'This stacked PR was automatically opened by the **PR Quality Pipeline** lint auto-fix and will be ' +
+                    'automatically squashed and merged into your feature branch by `pr-stacked-merge.yml`.'
+                ].join('\n')
+              }));
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number: stacked.number, labels: ['lint-remediation'] });
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber,
+              body: `### 🧹 Lint & formatting auto-fix proposed\n\nESLint \`--fix\` and Prettier fixed ${files.length} file(s) ` +
+                `changed in this PR. The stacked PR #${stacked.number} will be auto-merged into \`${headRef}\`, ` +
+                'and the quality gates then run on the fixed commit.'
+            });
+            await quality.setQualityStatus({
+              github, context,
+              sha: process.env.HEAD_SHA,
+              state: 'pending',
+              summary: `Repairing: Lint (auto-fix stacked PR #${stacked.number})`,
+              rev: process.env.REVISION,
+              targetUrl: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`
+            });
+            const defaultBranch = (context.payload.repository && context.payload.repository.default_branch) || 'main';
+            await github.rest.actions.createWorkflowDispatch({
+              owner, repo,
+              workflow_id: 'pr-stacked-merge.yml',
+              ref: defaultBranch,
+              inputs: { branch: headRef, agent_result: 'success', source: `Lint auto-fix (run ${context.runId})` }
+            });
+            await core.summary.addRaw(
+              `### 🧹 Lint auto-fix proposed as stacked PR #${stacked.number}\n\n` +
+              `Commit ${process.env.FIX_SHA} on \`${branch}\`; the remediation relay merges it and the gates run on the fixed commit.\n`
+            ).write();
 
   # Stage 2: every gate runs in parallel, so all failures (and their repair agents) start in
   # the first round. Each gate records a `gate/<id>` status and dispatches its own agent.
   gatekeeper:
     name: 'Stage 2: Metadata'
     needs: [context, autofix]
-    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'
     uses: ./.github/workflows/pr-gatekeeper.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -330,7 +358,7 @@ jobs:
   lint:
     name: 'Stage 2: Linters'
     needs: [context, autofix]
-    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'
     uses: ./.github/workflows/pr-lint.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -347,7 +375,7 @@ jobs:
   build:
     name: 'Stage 2: Build'
     needs: [context, autofix]
-    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'
     uses: ./.github/workflows/pr-build.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -362,7 +390,7 @@ jobs:
   test:
     name: 'Stage 2: Tests & Coverage'
     needs: [context, autofix]
-    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'
     uses: ./.github/workflows/pr-test.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -379,7 +407,7 @@ jobs:
   security:
     name: 'Stage 2: Security & CodeQL'
     needs: [context, autofix]
-    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'
     uses: ./.github/workflows/pr-security.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -397,7 +425,7 @@ jobs:
   docs:
     name: 'Stage 2: Documentation Drift'
     needs: [context, autofix]
-    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    if: needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'
     uses: ./.github/workflows/pr-docs.yml
     with:
       pr_number: ${{ needs.context.outputs.pr_number }}
@@ -417,7 +445,7 @@ jobs:
   verdict:
     name: 'PR Quality Verdict'
     needs: [context, autofix, gatekeeper, lint, build, test, security, docs]
-    if: always() && !cancelled() && needs.context.result == 'success' && needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'
+    if: always() && !cancelled() && needs.context.result == 'success' && needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: pr-quality-verdict-${{ needs.context.outputs.pr_number }}

@@ -675,3 +675,42 @@ describe('pr-stacked-merge.yml relay: GitHub App token', () => {
     expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
   });
 });
+
+describe('pr-stacked-merge.yml relay: lint auto-fix stacked PR', () => {
+  const autofixPR = () =>
+    makePR({
+      number: 45,
+      branch: 'lint-autofix/pr-20',
+      base: BRANCH,
+      title: 'style(lint): auto-fix lint and formatting [pr-autofix]',
+      labels: ['lint-remediation']
+    });
+  const SOURCE = 'Lint auto-fix (run 600)';
+
+  it('merges it with the App token; the merge keeps the [pr-autofix] marker so it is not fixed again', async () => {
+    const { github } = world({ parentLabels: [], stacked: [autofixPR()] });
+    await relay(github, { APP_TOKEN: 'app-token', SOURCE });
+    expect(github.state.merges).toMatchObject([
+      {
+        number: 45,
+        token: 'app-token',
+        commit_message: 'Recheck-Gates: lint'
+      }
+    ]);
+    const merged = github.state.commits[github.pr(20).head.sha].message;
+    expect(merged).toContain('[pr-autofix]');
+    expect(github.state.deletedRefs).toContain('heads/lint-autofix/pr-20');
+    expect(github.state.dispatches).toEqual([]);
+  });
+
+  it('checks every gate on the fixed commit without the App (no gate ran before the fix)', async () => {
+    const { github } = world({ parentLabels: [], stacked: [autofixPR()] });
+    await relay(github, { SOURCE });
+    expect(github.state.merges).toMatchObject([
+      { number: 45, token: 'github-token' }
+    ]);
+    expect(gateDispatches(github).sort()).toEqual(
+      quality.GATES.map((g) => g.workflow).sort()
+    );
+  });
+});
