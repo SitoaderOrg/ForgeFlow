@@ -1,7 +1,7 @@
 flowchart TD
     Start([PR Created / Synchronized]) --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
-    Pipeline --> Autofix[Autofix job\neslint --fix / prettier --write\ncommit pr-autofix and re-run]
-    Autofix -->|pushed| Pipeline
+    Pipeline --> Autofix[Autofix job\neslint --fix / prettier --write\nstacked PR lint-remediation]
+    Autofix -->|files fixed: relay squash-merges,\nthen the fixed commit is checked| Pipeline
 
     subgraph Parallel [All Gates in Parallel ~1-2m]
         Autofix --> Gate[Metadata\n.github/workflows/pr-gatekeeper.yml]

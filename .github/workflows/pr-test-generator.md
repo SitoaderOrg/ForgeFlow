@@ -37,9 +37,9 @@ engine:
   concurrency:
     group: "gh-aw-copilot-remediation-agents"
     queue: max
-  # Back off generously on 429s instead of giving up after ~35s.
+  # One retry (2 attempts): a 429 with a long retry-after should fail fast and hand off to the relay.
   harness:
-    max-retries: 5
+    max-retries: 1
     initial-delay-ms: 30000
     backoff-multiplier: 2
     max-delay-ms: 180000

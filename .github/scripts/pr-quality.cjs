@@ -26,12 +26,14 @@ const GATES = [
   { id: 'docs', name: 'Docs', workflow: 'pr-docs.yml' }
 ];
 
-// Gate repaired by a stacked remediation PR (label) or by a remediation agent (workflow name).
+// Gate repaired by a stacked remediation PR (label) or by its source (agent workflow name or the
+// pipeline's lint auto-fix).
 const REPAIRED_GATE = {
   'lint-remediation': 'lint',
   'test-remediation': 'tests',
   'security-remediation': 'security',
   'doc-remediation': 'docs',
+  'Lint auto-fix': 'lint',
   'PR Validation': 'metadata',
   'PR Lint Fixer': 'lint',
   'PR Test Generator': 'tests',
@@ -525,7 +527,9 @@ function parseRecheckTrailer(message) {
  * Classify a `synchronize` push. When every pushed commit is a relay merge, return the gates to
  * re-check and the commit whose gate results carry over; otherwise null (full check).
  * Earlier relay merges whose own pipeline run never recorded every gate (e.g. it was replaced
- * by this push) are folded in, so their repairs are re-checked too.
+ * by this push) are folded in, so their repairs are re-checked too. When no gate was ever
+ * checked before the merges (the lint auto-fix stacked PR is proposed before the gates run),
+ * there is nothing to carry over: null, so the push gets the full check.
  */
 async function repairPush({ github, context, before, after, limit = 20 }) {
   const { owner, repo } = context.repo;
@@ -546,15 +550,16 @@ async function repairPush({ github, context, before, after, limit = 20 }) {
   }
 
   let base = before;
-  for (let i = 0; i < limit; i++) {
-    const statuses = await getGateStatuses({ github, context, sha: base });
-    if (GATES.every((g) => statuses[g.id])) break;
+  let statuses = await getGateStatuses({ github, context, sha: base });
+  for (let i = 0; i < limit && !GATES.every((g) => statuses[g.id]); i++) {
     const { data: commit } = await github.rest.repos.getCommit({ owner, repo, ref: base });
     const repaired = parseRecheckTrailer(commit.commit && commit.commit.message);
     if (!repaired || !(commit.parents || []).length) break;
     repaired.forEach((id) => gates.add(id));
     base = commit.parents[0].sha;
+    statuses = await getGateStatuses({ github, context, sha: base });
   }
+  if (!GATES.some((g) => statuses[g.id])) return null;
   return { before: base, gates: GATES.map((g) => g.id).filter((id) => gates.has(id)) };
 }
 

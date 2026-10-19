@@ -8,8 +8,10 @@ name: PR Stacked Remediation Auto-Merger
 # therefore dispatches this workflow from its generated `conclusion` job (imported from
 # .github/workflows/shared/remediation-handoff.md), after its safe outputs and whatever its
 # result, with `agent_result` = success | no-changes | failure | cancelled | skipped |
-# safe-outputs-<result>. There is deliberately no `pull_request` trigger: stacked PRs opened with
-# GITHUB_TOKEN would only create runs held for approval. The relay:
+# safe-outputs-<result>. The PR Quality Pipeline's lint auto-fix hands off the same way once it
+# has opened its stacked PR (source `Lint auto-fix (run <id>)`), so every automated change
+# reaches a feature branch through this relay. There is deliberately no `pull_request` trigger:
+# stacked PRs opened with GITHUB_TOKEN would only create runs held for approval. The relay:
 #   1. squash-merges open stacked remediation PRs into the parent branch, with a
 #      `Recheck-Gates:` trailer naming the repaired gates. With the GitHub App token
 #      (PR_BOT_CLIENT_ID / PR_BOT_PRIVATE_KEY) the merge raises `synchronize`, and the PR Quality
@@ -165,7 +167,7 @@ jobs:
                   body: [
                     '### 🤖 Autonomous Remediation Auto-Merged',
                     '',
-                    'A remediation agent proposed a fix that has been squashed into your branch:',
+                    'A stacked remediation PR has been squashed into your branch:',
                     '',
                     `- **Stacked PR**: [#${pr.number} - ${pr.title}](${pr.html_url})`,
                     `- **Merged Commit**: [\`${result.sha.slice(0, 7)}\`](${commitUrl})`,

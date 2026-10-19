@@ -212,6 +212,14 @@ export function createGitHub(initial = {}) {
           )
         })
       ),
+      create: record(
+        'pulls.create',
+        async ({ head, base, title, body, draft = false }) => {
+          const pr = makePR({ branch: head, base, title, body, draft });
+          state.pulls.push(pr);
+          return { data: clone(pr) };
+        }
+      ),
       merge: record(
         'pulls.merge',
         async ({ pull_number, merge_method, commit_title, commit_message }) => {

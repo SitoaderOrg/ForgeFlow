@@ -53,7 +53,7 @@ describe('pr-pipeline.yml structure', () => {
     for (const job of GATE_JOBS) {
       expect(wf.jobs[job].needs).toEqual(['context', 'autofix']);
       expect(wf.jobs[job].if).toBe(
-        "needs.context.outputs.skip != 'true' && needs.autofix.outputs.pushed != 'true'"
+        "needs.context.outputs.skip != 'true' && needs.autofix.outputs.stacked != 'true'"
       );
       expect(wf.jobs[job].permissions.statuses).toBe('write');
       expect(wf.jobs[job].with.pr_number).toBe(
@@ -66,7 +66,7 @@ describe('pr-pipeline.yml structure', () => {
     expect(wf.jobs.dispatcher).toBeUndefined();
   });
 
-  it('only pushes lint auto-fixes to same-repository branches and never fails on them', () => {
+  it('commits lint auto-fixes to a stacked branch, never to the feature branch, and never fails on them', () => {
     const steps = wf.jobs.autofix.steps;
     const fix = steps.find((s) => s.id === 'fix');
     expect(fix['continue-on-error']).toBe(true);
@@ -74,14 +74,23 @@ describe('pr-pipeline.yml structure', () => {
     expect(wf.jobs.context.outputs.same_repo).toBe(
       '${{ steps.pr.outputs.same_repo }}'
     );
+    expect(fix.env.FIX_BRANCH).toBe(
+      'lint-autofix/pr-${{ needs.context.outputs.pr_number }}'
+    );
+    expect(fix.env.HEAD_REF).toBeUndefined();
     expect(fix.run).toContain('[pr-autofix]');
     expect(fix.run).toContain('npx eslint --fix');
     expect(fix.run).toContain('npx prettier --write');
     expect(fix.run).toMatch(/grep -vE '\^\(\\\.github\|docs/);
-    expect(wf.jobs.autofix.permissions.contents).toBe('write');
-    expect(wf.jobs.autofix.outputs.pushed).toBe(
-      '${{ steps.fix.outputs.pushed }}'
+    expect(fix.run).toContain('git switch -c "$FIX_BRANCH"');
+    expect(fix.run).toContain(
+      'git push --force origin "HEAD:refs/heads/$FIX_BRANCH"'
     );
+    expect(fix.run).not.toContain('HEAD_REF');
+    expect(wf.jobs.autofix.permissions.contents).toBe('write');
+    expect(wf.jobs.autofix.outputs).toEqual({
+      stacked: '${{ steps.fix.outputs.stacked }}'
+    });
   });
 
   it('publishes a verdict after every gate, even when some failed', () => {
@@ -91,7 +100,7 @@ describe('pr-pipeline.yml structure', () => {
     expect(verdict.if).toContain('!cancelled()');
     expect(verdict.if).toContain("needs.context.result == 'success'");
     expect(verdict.if).toContain("needs.context.outputs.skip != 'true'");
-    expect(verdict.if).toContain("needs.autofix.outputs.pushed != 'true'");
+    expect(verdict.if).toContain("needs.autofix.outputs.stacked != 'true'");
     expect(verdict.concurrency).toEqual({
       group: 'pr-quality-verdict-${{ needs.context.outputs.pr_number }}',
       'cancel-in-progress': false
@@ -353,37 +362,97 @@ describe('pr-pipeline.yml context job (Check entry point)', () => {
 const autofixScript = getScript(
   FILE,
   'autofix',
-  'Re-check the auto-fixed commit or start the gates'
+  'Propose the auto-fix as a stacked PR or start the gates'
 );
 
+const autofixEnv = (pr, extra = {}) => ({
+  PR_NUMBER: String(pr.number),
+  HEAD_REF: pr.head.ref,
+  HEAD_SHA: pr.head.sha,
+  REVISION: quality.revision(pr),
+  STACKED: 'true',
+  FIX_BRANCH: `lint-autofix/pr-${pr.number}`,
+  FIX_SHA: 'f1x0000000000000000000000000000000000000',
+  FIX_FILES: 'src/a.js,src/b.css',
+  ...extra
+});
+
 describe('pr-pipeline.yml autofix job', () => {
-  it('re-dispatches the pipeline on the auto-fixed commit instead of checking the old one', async () => {
+  it('proposes the auto-fix as a stacked lint PR and hands off to the relay', async () => {
     const pr = makePR({ number: 40 });
     const github = createGitHub({ pulls: [pr] });
     const { core } = await runScript(autofixScript, {
       github,
       context: createContext({ runId: 600 }),
-      env: {
-        PR_NUMBER: '40',
-        HEAD_REF: 'feat/sample',
-        HEAD_SHA: pr.head.sha,
-        PUSHED: 'true',
-        FIX_SHA: 'f1x0000000000000000000000000000000000000'
-      }
+      env: autofixEnv(pr)
     });
+
+    const stacked = github.state.pulls.find(
+      (p) => p.head.ref === 'lint-autofix/pr-40'
+    );
+    expect(stacked).toMatchObject({
+      state: 'open',
+      base: { ref: 'feat/sample' },
+      title: 'style(lint): auto-fix lint and formatting [pr-autofix]'
+    });
+    expect(stacked.body).toContain('- `src/a.js`');
+    expect(stacked.body).toContain('pr-stacked-merge.yml');
+    expect(github.labels(stacked.number)).toEqual(['lint-remediation']);
+
+    // Same hand-off as the agents' conclusion job; the gates wait for the merged fix.
     expect(github.state.dispatches).toEqual([
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pr-pipeline.yml',
-        ref: 'feat/sample',
-        inputs: { pr_number: '40' }
+        workflow_id: 'pr-stacked-merge.yml',
+        ref: 'main',
+        inputs: {
+          branch: 'feat/sample',
+          agent_result: 'success',
+          source: 'Lint auto-fix (run 600)'
+        }
       }
     ]);
-    expect(github.comments(40)[0]).toContain('auto-fixed');
-    expect(github.comments(40)[0]).toContain('f1x0000');
-    expect(github.state.statuses[pr.head.sha]).toBeUndefined();
-    expect(core.summaryText).toContain('re-dispatched');
+    expect(quality.repairedGate('Lint auto-fix (run 600)')).toBe('lint');
+    expect(github.comments(40)[0]).toContain(`stacked PR #${stacked.number}`);
+    const [status] = github.qualityStatuses(pr.head.sha);
+    expect(status.state).toBe('pending');
+    expect(status.description).toContain(
+      `Repairing: Lint (auto-fix stacked PR #${stacked.number})`
+    );
+    expect(status.description).toContain(`[rev ${quality.revision(pr)}]`);
+    expect(
+      Object.keys(
+        await quality.getGateStatuses({
+          github,
+          context: createContext(),
+          sha: pr.head.sha
+        })
+      )
+    ).toEqual([]);
+    expect(github.calls('pulls.merge')).toEqual([]);
+    expect(core.summaryText).toContain('stacked PR');
+  });
+
+  it('reuses an open stacked auto-fix PR that the force-push updated', async () => {
+    const pr = makePR({ number: 43 });
+    const previous = makePR({
+      number: 44,
+      branch: 'lint-autofix/pr-43',
+      base: 'feat/sample',
+      labels: ['lint-remediation']
+    });
+    const github = createGitHub({ pulls: [pr, previous] });
+    await runScript(autofixScript, {
+      github,
+      context: createContext({ runId: 601 }),
+      env: autofixEnv(pr)
+    });
+    expect(github.calls('pulls.create')).toEqual([]);
+    expect(github.comments(43)[0]).toContain('stacked PR #44');
+    expect(github.state.dispatches.map((d) => d.workflow_id)).toEqual([
+      'pr-stacked-merge.yml'
+    ]);
   });
 
   it('marks every gate pending and clears stale passed labels when nothing was fixed', async () => {
@@ -395,7 +464,7 @@ describe('pr-pipeline.yml autofix job', () => {
         PR_NUMBER: '41',
         HEAD_REF: 'feat/sample',
         HEAD_SHA: pr.head.sha,
-        PUSHED: 'false'
+        STACKED: 'false'
       }
     });
     const gates = await quality.getGateStatuses({
@@ -553,28 +622,12 @@ describe('pr-pipeline.yml verdict job', () => {
 describe('pr-pipeline.yml GitHub App token (no approval-held runs)', () => {
   const wf = loadWorkflow(FILE);
 
-  it('pushes lint auto-fixes with the App token when it is configured', () => {
+  it('never pushes to the feature branch from the autofix job (the relay merges the fix)', () => {
     const steps = wf.jobs.autofix.steps;
-    const app = steps.find((s) => s.id === 'app');
-    expect(app.uses).toBe('actions/create-github-app-token@v3');
-    expect(app.if).toBe(
-      "needs.context.outputs.same_repo == 'true' && vars.PR_BOT_CLIENT_ID != ''"
-    );
-    expect(app['continue-on-error']).toBe(true);
-    expect(app.with).toEqual({
-      'client-id': '${{ vars.PR_BOT_CLIENT_ID }}',
-      'private-key': '${{ secrets.PR_BOT_PRIVATE_KEY }}'
-    });
+    expect(steps.find((s) => s.id === 'app')).toBeUndefined();
     const checkout = steps.find((s) => s.name === 'Checkout PR branch');
-    expect(checkout.with.token).toBe(
-      '${{ steps.app.outputs.token || github.token }}'
-    );
-    const recheck = steps.find(
-      (s) => s.name === 'Re-check the auto-fixed commit or start the gates'
-    );
-    expect(recheck.env.APP_PUSH).toBe(
-      "${{ steps.app.outputs.token != '' && needs.context.outputs.base_ref == 'main' }}"
-    );
+    expect(checkout.with.token).toBeUndefined();
+    expect(readWorkflow(FILE)).not.toContain('HEAD:$HEAD_REF');
   });
 
   it('runs a repair re-check job instead of the gates for relay merges', () => {
@@ -594,25 +647,6 @@ describe('pr-pipeline.yml GitHub App token (no approval-held runs)', () => {
       recheck_before: '${{ steps.pr.outputs.recheck_before }}',
       recheck_gates: '${{ steps.pr.outputs.recheck_gates }}'
     });
-  });
-
-  it('does not re-dispatch after an App-token push: its synchronize event starts the check', async () => {
-    const pr = makePR({ number: 42 });
-    const github = createGitHub({ pulls: [pr] });
-    const { core } = await runScript(autofixScript, {
-      github,
-      env: {
-        PR_NUMBER: '42',
-        HEAD_REF: 'feat/sample',
-        HEAD_SHA: pr.head.sha,
-        PUSHED: 'true',
-        APP_PUSH: 'true',
-        FIX_SHA: 'f1x0000000000000000000000000000000000000'
-      }
-    });
-    expect(github.state.dispatches).toEqual([]);
-    expect(github.comments(42)[0]).toContain('auto-fixed');
-    expect(core.summaryText).toContain('Its push starts the pipeline');
   });
 });
 
@@ -720,6 +754,28 @@ describe('pr-pipeline.yml context job: relay merge pushes', () => {
     });
   });
 
+  it('runs the full check when the merged auto-fix landed before any gate ran', async () => {
+    const world = repairWorld({
+      commits: [
+        {
+          sha: MERGE_1,
+          message: `Merge stacked PR #45: style(lint): auto-fix lint and formatting [pr-autofix]\n\n${quality.recheckTrailer(['lint'])}`
+        }
+      ]
+    });
+    world.github.state.commits[world.before] = {
+      message: 'feat(heist): add combo meter',
+      parents: ['c'.repeat(40)]
+    };
+    const { outputs, github } = await resolvePush(world);
+    expect(outputs).toMatchObject({
+      skip: 'false',
+      mode: 'full',
+      recheck_gates: ''
+    });
+    expect(github.qualityStatuses(MERGE_1)[0].state).toBe('pending');
+  });
+
   it.each([
     [
       'a human pushes a commit with the trailer',
@@ -727,12 +783,12 @@ describe('pr-pipeline.yml context job: relay merge pushes', () => {
       [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
     ],
     [
-      'the App pushes a lint auto-fix',
+      'the App pushes a commit that is not a relay merge',
       {},
       [
         {
           sha: MERGE_1,
-          message: 'style: auto-fix lint and formatting [pr-autofix]'
+          message: 'style: reformat'
         }
       ]
     ],

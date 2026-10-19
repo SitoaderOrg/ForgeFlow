@@ -1,6 +1,6 @@
 ### End-to-End PR Quality Flow
 
-1. **Pre-Flight Gatekeeper**: Validates PR metadata, templates, and branch rules. All six gates (1–6) run in parallel after a deterministic `eslint --fix`/`prettier --write` autofix, so every failure is found in the first run.
+1. **Pre-Flight Gatekeeper**: Validates PR metadata, templates, and branch rules. All six gates (1–6) run in parallel after a deterministic `eslint --fix`/`prettier --write` autofix (proposed as a stacked PR and auto-merged, like every automated change), so every failure is found in the first run.
 2. **Linters & Static Formatters**: Prettier, ESLint, Stylelint, `gofmt` (runs standard linters).
 3. **Polyglot Build Verification**: Verifies compilation and build artifacts across ecosystems (TypeScript, Go, Rust, Java, .NET).
 4. **Automated Testing & Coverage**: Executes test runner with diff-scoped coverage (configurable threshold, defaulting to 80%).
@@ -47,7 +47,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ### 1. Standard GitHub Actions Workflows
 
-- **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` and on `workflow_dispatch(pr_number, force)` (autofix pushes and the final check after repairs).
+- **PR Orchestrator Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` and on `workflow_dispatch(pr_number, force)` (manual re-checks and the final check after repairs).
 - **PR Gatekeeper (`pr-gatekeeper.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable; also `workflow_dispatch`).
 - **Linters (`pr-lint.yml`)**: Polyglot linting using Super-Linter (reusable; also `workflow_dispatch`).
 - **Build Gate (`pr-build.yml`)**: Compiles and builds project artifacts (reusable; also `workflow_dispatch`).

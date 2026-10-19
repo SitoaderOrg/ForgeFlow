@@ -289,6 +289,7 @@ describe('pr-quality.cjs repairedGate', () => {
     ['test-remediation', 'tests'],
     ['security-remediation', 'security'],
     ['doc-remediation', 'docs'],
+    ['Lint auto-fix (run 7)', 'lint'],
     ['PR Validation (run 12)', 'metadata'],
     ['PR Lint Fixer (run 3)', 'lint'],
     ['PR Test Generator', 'tests'],
