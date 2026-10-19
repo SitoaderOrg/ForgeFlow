@@ -61,9 +61,11 @@ Navigate to **Settings → Secrets and variables → Actions**:
 - `MAX_REMEDIATION_ATTEMPTS`: (Default: `1`) How many times a gate may dispatch the same remediation agent for one PR branch. With `1`, a gate that still fails after its repair fails `pr-quality` and asks for manual intervention.
 - `PIPELINE_WAIT_MINUTES`: (Default: `30`) How long the remediation relay waits for a running pipeline before re-checking gates.
 - `STALE_VERDICT_MINUTES`: (Default: `30`) How long `pr-quality` may stay pending (with no pipeline or relay running) before the watchdog re-evaluates it.
+- `PR_BOT_CLIENT_ID`: *(Recommended)* Client ID of the GitHub App used for bot pushes (autofix commits and stacked-PR merges). Set it with `PR_BOT_PRIVATE_KEY`.
 
 ### Secrets (Repository Secrets)
-- `GH_AW_CI_TRIGGER_TOKEN`: *(Optional)* Not required. GitHub does not start workflows for events created with `GITHUB_TOKEN`, so the framework chains every gate → agent → relay → pipeline hop with `workflow_dispatch` (see [Remediation Chaining](docs/remediation-chaining.md)). A PAT only makes agent-created PRs also trigger `pull_request` workflows natively.
+- `PR_BOT_PRIVATE_KEY`: *(Recommended)* Private key of that GitHub App. The App needs **Contents: Read and write** and **Pull requests: Read and write** and is installed on this repository only. Without it, every bot push also leaves an approval-held "Action required" run, because PR events created with `GITHUB_TOKEN` are held for approval (see [GitHub App for bot pushes](docs/remediation-chaining.md#recommended-github-app-for-bot-pushes)).
+- `GH_AW_CI_TRIGGER_TOKEN`: *(Not recommended)* The framework chains every gate → agent → relay → pipeline hop with `workflow_dispatch` (see [Remediation Chaining](docs/remediation-chaining.md)). A PAT here would also make agent-created stacked PRs start `pull_request` runs, which only adds noise.
 
 ---
 
@@ -93,6 +95,7 @@ When developing and compiling workflows locally:
 | :--- | :--- | :--- | :--- |
 | **Actions** | Read and write permissions | Settings → Actions → General | Auto-merging & labeling PRs |
 | **Actions** | Allow Actions to create & approve PRs | Settings → Actions → General | Stacked remediation PRs |
+| **Actions** | `PR_BOT_CLIENT_ID` variable + `PR_BOT_PRIVATE_KEY` secret (GitHub App) | Settings → Secrets and variables → Actions | No "Action required" runs after bot pushes (recommended) |
 | **Security** | Dependency graph & alerts | Settings → Code security | Dependency Review Gatekeeper |
 | **Security** | Automatic dependency submission | Settings → Code security | Build-time dependency detection |
 | **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |

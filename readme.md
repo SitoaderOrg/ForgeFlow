@@ -29,8 +29,8 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 - **Regular GitHub Actions:** Deterministic, binary (pass/fail), fast, reproducible tasks (compiling, running test runners, linting, scanning). -> (fast, zero token cost, reproducible).
 - **`gh-aw` (English Agentic Workflows):** Tasks requiring **reasoning, semantic understanding, synthesis, or code generation**. -> (using English in Markdown).
-- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group: a newer push cancels the obsolete check, while dispatched runs queue behind it and are de-duplicated per revision via the `pr-quality` status; verdicts are serialized per PR. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
-- **No PAT required:** Events created with `GITHUB_TOKEN` never trigger workflows, so every hop is chained with `workflow_dispatch` — see [Remediation Chaining Without PATs](docs/remediation-chaining.md).
+- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group: a newer human push cancels the obsolete check, while dispatched and bot runs queue behind it and are de-duplicated per revision via the `pr-quality` status; verdicts are serialized per PR. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
+- **No PAT required:** Events created with `GITHUB_TOKEN` never start workflows on their own (PR events only create approval-held runs), so every hop is chained with `workflow_dispatch` — see [Remediation Chaining Without PATs](docs/remediation-chaining.md). An optional, repository-scoped GitHub App (`PR_BOT_CLIENT_ID` / `PR_BOT_PRIVATE_KEY`) makes bot pushes start the pipeline natively, so no "Action required" runs are left behind.
 
 ### Documentation & Implemented Modules
 
