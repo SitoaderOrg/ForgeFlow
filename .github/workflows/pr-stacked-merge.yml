@@ -16,6 +16,9 @@ name: PR Stacked Remediation Auto-Merger
 #      `Recheck-Gates:` trailer naming the repaired gates. With the GitHub App token
 #      (PR_BOT_CLIENT_ID / PR_BOT_PRIVATE_KEY) the merge raises `synchronize`, and the PR Quality
 #      Pipeline run it starts re-checks those gates: the relay stops here;
+#      A stacked PR that conflicts with the parent branch is closed as superseded instead
+#      (`remediation-superseded`) and its gate re-checked on the current head: if the gate still
+#      fails, its agent regenerates the fix there (once per label and branch; then it is blocked);
 #   2. otherwise (no App, or nothing merged) it re-checks only the gate(s) the agent repaired on
 #      the new commit itself, carrying the other gate results over, so agents working in
 #      parallel never wait for each other. A failed agent or one that changed nothing re-checks
@@ -132,7 +135,52 @@ jobs:
             })).filter(p => p.labels.some(l => REMEDIATION_LABELS.includes(l.name)));
 
             let merged = 0;
+            const superseded = new Set();
+
+            // A stacked PR that conflicts with the parent branch was built on a commit that other
+            // repairs (or the author) have changed since. Rather than resolving conflict markers,
+            // close it and re-check its gate on the current head: if the gate still fails, it
+            // dispatches the same agent again with fresh findings (a superseded PR gives its
+            // attempt back). Once per remediation label and branch; a second conflict blocks.
+            const supersede = async (pr, gates) => {
+              const label = pr.labels.map(l => l.name).find(n => REMEDIATION_LABELS.includes(n));
+              const closed = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'closed', base: parentBranch, per_page: 100
+              });
+              const names = (p) => p.labels.map(l => l.name);
+              if (closed.some(p => names(p).includes(quality.SUPERSEDED_LABEL) && names(p).includes(label))) {
+                core.warning(`A '${label}' PR was already regenerated after a conflict on '${parentBranch}'.`);
+                return false;
+              }
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: [quality.SUPERSEDED_LABEL] });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr.number,
+                body: `Superseded: this fix conflicts with \`${parentBranch}\`, which changed after it was generated. ` +
+                  `The gate is re-checked on the latest commit and the fix regenerated there if it is still needed.`
+              });
+              await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });
+              await github.rest.git.deleteRef({ owner, repo, ref: `heads/${pr.head.ref}` })
+                .catch(e => core.warning(`Could not delete branch '${pr.head.ref}': ${e.message}`));
+              gates.forEach(g => superseded.add(g));
+              const gateNames = gates.map(g => quality.GATES.find(x => x.id === g).name).join(', ');
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: parent.number,
+                body: [
+                  '### 🔀 Stacked remediation PR superseded after a merge conflict',
+                  '',
+                  `[#${pr.number} - ${pr.title}](${pr.html_url}) conflicts with \`${parentBranch}\`, which changed ` +
+                    'after the fix was generated. Instead of resolving the conflict, it was closed:',
+                  '',
+                  `- the **${gateNames}** gate is re-checked on the latest commit;`,
+                  '- if it still fails, its agent regenerates the fix on that commit (one extra attempt).'
+                ].join('\n')
+              });
+              core.info(`🔀 Superseded conflicting stacked PR #${pr.number}; re-checking ${gates.join(', ')}.`);
+              return true;
+            };
+
             for (const pr of stacked) {
+              const gates = pr.labels.map(l => quality.repairedGate(l.name)).filter(Boolean);
               try {
                 if (pr.draft) {
                   await github.graphql(
@@ -142,7 +190,6 @@ jobs:
                   core.info(`Marked stacked PR #${pr.number} ready for review.`);
                 }
 
-                const gates = pr.labels.map(l => quality.repairedGate(l.name)).filter(Boolean);
                 const { data: result } = await merger.rest.pulls.merge({
                   owner, repo,
                   pull_number: pr.number,
@@ -178,18 +225,28 @@ jobs:
                 });
               } catch (e) {
                 core.warning(`Failed to merge stacked PR #${pr.number}: ${e.message}`);
+                // Only a real conflict is regenerated; GitHub may still be computing mergeability.
+                const { state: mergeState } = await quality.mergeability({ github, context, prNumber: pr.number, sleep, delayMs: 5000 });
+                const regenerated = mergeState === 'conflict' &&
+                  await supersede(pr, gates).catch(err => { core.warning(`Could not supersede #${pr.number}: ${err.message}`); return false; });
+                if (regenerated) continue;
                 // A human has to resolve it: stop counting it as repair in progress.
                 await github.rest.issues.addLabels({
                   owner, repo, issue_number: pr.number, labels: [quality.BLOCKED_LABEL]
                 }).catch(err => core.warning(`Could not label stacked PR #${pr.number}: ${err.message}`));
+                const reason = mergeState === 'conflict'
+                  ? `It conflicts with \`${parentBranch}\` again after its fix was already regenerated once.`
+                  : e.message;
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: parent.number,
-                  body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${e.message}\n\nPlease review and merge it manually.`
+                  body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${reason}\n\nPlease review and merge it manually.`
                 });
               }
             }
 
-            if (merged && appMerge) {
+            // With the App token, the pipeline run started by the merges re-checks the merged gates;
+            // superseded gates are not in any merge commit, so the relay re-checks those itself.
+            if (merged && appMerge && !superseded.size) {
               await summary([
                 `- Parent PR: #${parent.number}`,
                 `- Stacked PRs merged: ${merged} (GitHub App token)`,
@@ -219,13 +276,16 @@ jobs:
             //    its result from the commit before the repair (marked as carried over).
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: parent.number });
             const reason = process.env.SOURCE || (merged ? `stacked PR merge` : 'remediation');
+            // Rare: App merges plus a superseded PR. Re-checking the merged gates here too (the
+            // pipeline run started by the merges may not be listed yet) beats carrying a failure.
+            const recheck = new Set([...repaired, ...superseded]);
             const plan = await quality.recheckGates({
               github, context, core,
               prNumber: parent.number,
               branch: parentBranch,
               before: headBefore,
               sha: pr.head.sha,
-              repaired: [...repaired],
+              repaired: [...recheck],
               reason
             });
 
@@ -236,6 +296,7 @@ jobs:
             await summary([
               `- Parent PR: #${parent.number}`,
               `- Stacked PRs merged: ${merged}`,
+              ...(superseded.size ? [`- Superseded after a merge conflict (regenerated if still needed): ${gateNames([...superseded])}`] : []),
               `- Repaired by: ${process.env.SOURCE || 'stacked PR'}${process.env.AGENT_RESULT ? ` (${process.env.AGENT_RESULT})` : ''}`,
               `- Re-checking: ${gateNames(plan.recheck)}`,
               `- Carried over: ${gateNames(plan.carried)}`,

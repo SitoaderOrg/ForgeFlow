@@ -242,3 +242,51 @@ describe('remediation.cjs dispatchRemediation', () => {
     expect(env.core.warnings[0]).toContain('workflow not found on ref');
   });
 });
+
+describe('remediation.cjs dispatchRemediation after a superseded stacked PR', () => {
+  const ran = () =>
+    makeRun({
+      id: 1,
+      workflow: WF,
+      branch: 'feat/sample',
+      conclusion: 'success'
+    });
+  const closedStacked = (labels) =>
+    makePR({
+      number: 8,
+      branch: 'lint-fix-1',
+      base: 'feat/sample',
+      labels,
+      state: 'closed'
+    });
+
+  it('gives the attempt of a superseded stacked PR back, so the fix is regenerated once', async () => {
+    const env = setup({
+      runs: [ran()],
+      pulls: [closedStacked(['lint-remediation', remediation.SUPERSEDED_LABEL])]
+    });
+    expect(
+      await dispatch(env, { stackedLabel: 'lint-remediation', maxAttempts: 1 })
+    ).toBe('dispatched');
+  });
+
+  it('still counts merged (or otherwise closed) stacked PRs', async () => {
+    const env = setup({
+      runs: [ran()],
+      pulls: [closedStacked(['lint-remediation'])]
+    });
+    expect(
+      await dispatch(env, { stackedLabel: 'lint-remediation', maxAttempts: 1 })
+    ).toBe('exhausted');
+  });
+
+  it('only refunds superseded PRs of the same remediation label', async () => {
+    const env = setup({
+      runs: [ran()],
+      pulls: [closedStacked(['test-remediation', remediation.SUPERSEDED_LABEL])]
+    });
+    expect(
+      await dispatch(env, { stackedLabel: 'lint-remediation', maxAttempts: 1 })
+    ).toBe('exhausted');
+  });
+});

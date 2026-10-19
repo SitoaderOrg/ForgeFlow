@@ -1001,3 +1001,115 @@ describe('pr-quality.cjs Recheck-Gates trailer', () => {
     expect(github.calls('repos.compareCommitsWithBasehead')).toEqual([]);
   });
 });
+
+describe('pr-quality.cjs merge conflicts with the base branch', () => {
+  const noSleep = async () => {};
+
+  it('polls mergeability while GitHub is still computing it', async () => {
+    const w = gateWorld();
+    w.github.pr(20).mergeable = null;
+    let polls = 0;
+    const sleep = async () => {
+      if (++polls === 2) w.github.pr(20).mergeable = false;
+    };
+    const result = await quality.mergeability({ ...w, prNumber: 20, sleep });
+    expect(result.state).toBe('conflict');
+    expect(polls).toBe(2);
+  });
+
+  it('reports unknown after the attempts and clean when mergeable', async () => {
+    const w = gateWorld();
+    w.github.pr(20).mergeable = null;
+    expect(
+      (
+        await quality.mergeability({
+          ...w,
+          prNumber: 20,
+          sleep: noSleep,
+          attempts: 3
+        })
+      ).state
+    ).toBe('unknown');
+    expect(w.github.calls('pulls.get')).toHaveLength(3);
+    w.github.pr(20).mergeable = true;
+    expect((await quality.mergeability({ ...w, prNumber: 20 })).state).toBe(
+      'clean'
+    );
+  });
+
+  it('never hands a PR that conflicts with its base to review', async () => {
+    const w = gateWorld();
+    w.github.pr(20).mergeable = false;
+    await seedGates(w.github, w.pr.head.sha, ALL_PASSED);
+    const result = await quality.evaluateVerdict({ ...w, prNumber: 20 });
+    expect(result).toMatchObject({ state: 'failure', conflict: true });
+    const [status] = w.github.qualityStatuses(w.pr.head.sha);
+    expect(status.state).toBe('failure');
+    expect(status.description).toMatch(
+      /^Merge conflict with main: merge main into the branch and push \[rev /
+    );
+    expect(
+      quality.isBaseConflict(
+        await quality.getQualityStatus({ ...w, sha: w.pr.head.sha })
+      )
+    ).toBe(true);
+    expect(dispatched(w.github)).toEqual([]);
+    const [comment] = w.github.comments(20);
+    expect(comment).toContain(`<!-- base-conflict:${w.pr.head.sha} -->`);
+    expect(comment).toContain('git merge origin/main');
+  });
+
+  it('flags conflicting PRs once and leaves clean, stacked and closed PRs alone', async () => {
+    const conflicting = makePR({ number: 21 });
+    conflicting.mergeable = false;
+    const clean = makePR({ number: 22 });
+    clean.mergeable = true;
+    const stacked = makePR({
+      number: 23,
+      base: BRANCH,
+      labels: ['lint-remediation']
+    });
+    stacked.mergeable = false;
+    const closed = makePR({ number: 24, state: 'closed' });
+    closed.mergeable = false;
+    const github = createGitHub({
+      pulls: [conflicting, clean, stacked, closed]
+    });
+    const env = {
+      github,
+      context: createContext(),
+      core: createCore(),
+      sleep: noSleep
+    };
+    const pulls = [conflicting, clean, stacked, closed];
+
+    expect(await quality.flagBaseConflicts({ ...env, pulls })).toEqual([21]);
+    expect(github.qualityStatuses(conflicting.head.sha)[0].state).toBe(
+      'failure'
+    );
+    expect(github.qualityStatuses(clean.head.sha)).toEqual([]);
+    expect(github.comments(23)).toEqual([]);
+    expect(github.comments(24)).toEqual([]);
+
+    // A second push to main does not flag the same head commit again.
+    expect(await quality.flagBaseConflicts({ ...env, pulls })).toEqual([]);
+    expect(github.qualityStatuses(conflicting.head.sha)).toHaveLength(1);
+    expect(github.comments(21)).toHaveLength(1);
+  });
+
+  it('does not treat other failures as conflicts', () => {
+    expect(
+      quality.isBaseConflict({
+        state: 'failure',
+        description: 'Failed: Lint [rev x]'
+      })
+    ).toBe(false);
+    expect(
+      quality.isBaseConflict({
+        state: 'pending',
+        description: 'Merge conflict with main'
+      })
+    ).toBe(false);
+    expect(quality.isBaseConflict(null)).toBe(false);
+  });
+});

@@ -7,6 +7,9 @@
 
 const ACTIVE_STATUSES = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const MAX_FINDINGS_LENGTH = 6000;
+// Set by the relay on a stacked PR it closed because it conflicted with the parent branch.
+// Its agent run does not count against the retry budget, so the fix is regenerated once.
+const SUPERSEDED_LABEL = 'remediation-superseded';
 
 async function getLabels({ github, context, prNumber }) {
   const { owner, repo } = context.repo;
@@ -68,7 +71,8 @@ async function commentOnce({ github, context, prNumber, marker, body }) {
 /**
  * Dispatch a gh-aw remediation workflow on the PR head branch.
  * Skips when a run is already active, when an unmerged stacked remediation PR is
- * still pending, or when the retry budget for this branch is exhausted.
+ * still pending, or when the retry budget for this branch is exhausted. Stacked PRs the
+ * relay superseded after a merge conflict give their attempt back.
  * @returns {Promise<'dispatched'|'in-progress'|'pending-stacked-pr'|'exhausted'|'error'>}
  */
 async function dispatchRemediation({
@@ -100,22 +104,27 @@ async function dispatchRemediation({
       return 'in-progress';
     }
 
+    let superseded = 0;
     if (stackedLabel) {
-      const open = await github.paginate(github.rest.pulls.list, {
-        owner,
-        repo,
-        state: 'open',
-        base: headRef,
-        per_page: 100
-      });
-      if (open.some((p) => p.labels.some((l) => l.name === stackedLabel))) {
+      const stacked = (
+        await github.paginate(github.rest.pulls.list, {
+          owner,
+          repo,
+          state: 'all',
+          base: headRef,
+          per_page: 100
+        })
+      ).filter((p) => p.labels.some((l) => l.name === stackedLabel));
+      if (stacked.some((p) => p.state === 'open')) {
         core.info(`A stacked '${stackedLabel}' PR is still pending for '${headRef}'.`);
         return 'pending-stacked-pr';
       }
+      superseded = stacked.filter((p) => p.labels.some((l) => l.name === SUPERSEDED_LABEL)).length;
     }
 
-    // Cancelled/skipped runs never reached the agent, so they do not consume the budget
-    const attempts = runs.filter((r) => !['cancelled', 'skipped'].includes(r.conclusion)).length;
+    // Cancelled/skipped runs never reached the agent, and superseded stacked PRs were
+    // repairs that went stale, so neither consumes the budget.
+    const attempts = runs.filter((r) => !['cancelled', 'skipped'].includes(r.conclusion)).length - superseded;
     if (attempts >= max) {
       core.warning(`${workflow} already ran ${attempts} time(s) for '${headRef}' (max ${max}).`);
       await commentOnce({
@@ -151,4 +160,4 @@ async function dispatchRemediation({
   }
 }
 
-module.exports = { getLabels, addLabel, removeLabel, commentOnce, dispatchRemediation };
+module.exports = { SUPERSEDED_LABEL, getLabels, addLabel, removeLabel, commentOnce, dispatchRemediation };

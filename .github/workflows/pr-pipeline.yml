@@ -57,6 +57,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: write
       statuses: write
     outputs:
       pr_number: ${{ steps.pr.outputs.pr_number }}
@@ -134,9 +135,17 @@ jobs:
 
             const rev = quality.revision(pr);
 
+            // `pull_request` runs never start for a PR that conflicts with its base, but dispatched
+            // runs (final check, manual re-checks) do: checking code that cannot merge is wasted.
+            let mode = skip ? 'skip' : 'full';
+            if (!skip && pr.mergeable === false) {
+              await quality.failBaseConflict({ github, context, core, pr, rev });
+              skip = true;
+              mode = 'conflict';
+            }
+
             // Relay merges pushed with the GitHub App token raise `synchronize` themselves: re-check
             // only the repaired gates and carry the others over (see pr-stacked-merge.yml).
-            let mode = skip ? 'skip' : 'full';
             let repair = null;
             if (!skip && context.eventName === 'pull_request' && context.payload.action === 'synchronize' &&
                 context.payload.sender && context.payload.sender.type === 'Bot') {
@@ -153,7 +162,7 @@ jobs:
             if (!skip) {
               const forced = process.env.FORCE === 'true' || Number(process.env.GITHUB_RUN_ATTEMPT) > 1;
               const existing = await quality.getQualityStatus({ github, context, sha: pr.head.sha });
-              if (!forced && existing && existing.final && existing.revision === rev) {
+              if (!forced && existing && existing.final && existing.revision === rev && !quality.isBaseConflict(existing)) {
                 core.notice(`Revision ${rev} already has a '${existing.state}' verdict (${existing.targetUrl}). Skipping duplicate check; dispatch with force=true to re-check.`);
                 skip = true;
               }

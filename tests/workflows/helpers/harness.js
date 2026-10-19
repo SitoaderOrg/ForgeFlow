@@ -230,6 +230,11 @@ export function createGitHub(initial = {}) {
           }
           const pr = findPull(pull_number);
           if (!pr) throw notFound();
+          if (pr.mergeable === false) {
+            throw Object.assign(new Error('Pull Request is not mergeable'), {
+              status: 405
+            });
+          }
           if (pr.draft) {
             throw Object.assign(new Error('Pull Request is still a draft'), {
               status: 405
@@ -258,7 +263,13 @@ export function createGitHub(initial = {}) {
           });
           return { data: { sha, merged: true } };
         }
-      )
+      ),
+      update: record('pulls.update', async ({ pull_number, state: st }) => {
+        const pr = findPull(pull_number);
+        if (!pr) throw notFound();
+        if (st) pr.state = st;
+        return { data: clone(pr) };
+      })
     },
     issues: {
       listLabelsOnIssue: record(

@@ -46,6 +46,8 @@ const REPAIRED_GATE = {
 const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
 // Set by the relay on a stacked PR it could not merge: a human has to resolve it.
 const BLOCKED_LABEL = 'remediation-blocked';
+// Set by the relay on a stacked PR it closed after a merge conflict (defined with the retry budget).
+const { SUPERSEDED_LABEL } = require(path.join(__dirname, 'remediation.cjs'));
 // Gates whose result depends on PR metadata / decision labels, not only on the commit.
 const METADATA_GATES = ['metadata', 'docs'];
 const RELAY_WORKFLOW = 'pr-stacked-merge.yml';
@@ -430,6 +432,8 @@ async function evaluateVerdict({ github, context, core, prNumber, reported, excl
       });
       core.info(`Gates ${carried.join(', ')} were carried over from earlier commits; dispatched a final full check.`);
     }
+  } else if (pr.mergeable === false) {
+    return failBaseConflict({ github, context, core, pr, rev, targetUrl });
   } else {
     state = 'success';
     summary = 'All gates passed';
@@ -563,12 +567,90 @@ async function repairPush({ github, context, before, after, limit = 20 }) {
   return { before: base, gates: GATES.map((g) => g.id).filter((id) => gates.has(id)) };
 }
 
+// ---------------------------------------------------------------------------
+// Merge conflicts
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a PR still merges into its base: 'clean', 'conflict' or 'unknown'. GitHub computes
+ * `mergeable` in the background after either branch moves (null meanwhile), so with `sleep`
+ * the PR is polled up to `attempts` times.
+ */
+async function mergeability({ github, context, prNumber, sleep, attempts = 5, delayMs = 3000 }) {
+  const { owner, repo } = context.repo;
+  for (let i = 1; ; i++) {
+    const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    if (pr.mergeable === false) return { pr, state: 'conflict' };
+    if (pr.mergeable !== null) return { pr, state: 'clean' };
+    if (!sleep || i >= attempts) return { pr, state: 'unknown' };
+    await sleep(delayMs);
+  }
+}
+
+/**
+ * Fail `pr-quality` for a PR that conflicts with its base branch. Resolving it means deciding
+ * how this change combines with what landed on the base, so it is left to the author: no gate
+ * or agent runs on a commit that cannot be merged anyway.
+ */
+async function failBaseConflict({ github, context, core, pr, rev = revision(pr), targetUrl = runUrl(context) }) {
+  const base = pr.base.ref;
+  const summary = `Merge conflict with ${base}: merge ${base} into the branch and push`;
+  await setQualityStatus({ github, context, sha: pr.head.sha, state: 'failure', summary, rev, targetUrl });
+  await helpers().commentOnce({
+    github,
+    context,
+    prNumber: pr.number,
+    marker: `<!-- base-conflict:${pr.head.sha} -->`,
+    body: [
+      `### ⚔️ Merge conflict with \`${base}\``,
+      '',
+      `This branch no longer merges cleanly into \`${base}\`, so the quality gates and remediation agents ` +
+        'stop here. Conflict resolutions decide how this change combines with what landed on ' +
+        `\`${base}\`, so they are left to you:`,
+      '',
+      '```bash',
+      'git fetch origin',
+      `git merge origin/${base}   # resolve the conflicts, then commit`,
+      'git push',
+      '```',
+      '',
+      'The push re-runs every gate.'
+    ].join('\n')
+  });
+  core.notice(`PR #${pr.number} conflicts with ${base}: pr-quality = failure.`);
+  return { state: 'failure', summary, rev, waiting: [], failed: [], carried: [], repairing: [], conflict: true };
+}
+
+/** A `pr-quality` status set by `failBaseConflict` (not a verdict on the code itself). */
+const isBaseConflict = (status) => Boolean(status) && status.state === 'failure' && /^Merge conflict with /.test(status.description || '');
+
+/**
+ * Flag open PRs that conflict with their base (`pull_request` workflows do not run for them at
+ * all). `pulls`: PRs to check; already flagged head commits are left alone.
+ */
+async function flagBaseConflicts({ github, context, core, pulls, sleep }) {
+  const flagged = [];
+  for (const candidate of pulls) {
+    if (candidate.labels.some((l) => REMEDIATION_LABELS.includes(l.name))) continue;
+    const { pr, state } = await mergeability({ github, context, prNumber: candidate.number, sleep });
+    if (pr.state !== 'open' || state !== 'conflict') {
+      core.info(`PR #${pr.number}: ${pr.state === 'open' ? state : pr.state}.`);
+      continue;
+    }
+    if (isBaseConflict(await getQualityStatus({ github, context, sha: pr.head.sha }))) continue;
+    await failBaseConflict({ github, context, core, pr });
+    flagged.push(pr.number);
+  }
+  return flagged;
+}
+
 module.exports = {
   STATUS_CONTEXT,
   DECISION_LABELS,
   REMEDIATION_WORKFLOWS,
   REMEDIATION_LABELS,
   BLOCKED_LABEL,
+  SUPERSEDED_LABEL,
   METADATA_GATES,
   GATES,
   revision,
@@ -588,5 +670,9 @@ module.exports = {
   sweepStalled,
   recheckTrailer,
   parseRecheckTrailer,
-  repairPush
+  repairPush,
+  mergeability,
+  failBaseConflict,
+  isBaseConflict,
+  flagBaseConflicts
 };

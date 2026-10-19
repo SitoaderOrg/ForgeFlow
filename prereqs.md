@@ -96,6 +96,7 @@ When developing and compiling workflows locally:
 | **Actions** | Read and write permissions | Settings → Actions → General | Auto-merging & labeling PRs |
 | **Actions** | Allow Actions to create & approve PRs | Settings → Actions → General | Stacked remediation PRs |
 | **Actions** | `PR_BOT_CLIENT_ID` variable + `PR_BOT_PRIVATE_KEY` secret (GitHub App) | Settings → Secrets and variables → Actions | No "Action required" runs after bot pushes (recommended) |
+| **Branches** | Require `pr-quality` status + "Require branches to be up to date before merging" on `main` | Settings → Branches (or Rulesets) | No merge on a stale or conflicting verdict (recommended) |
 | **Security** | Dependency graph & alerts | Settings → Code security | Dependency Review Gatekeeper |
 | **Security** | Automatic dependency submission | Settings → Code security | Build-time dependency detection |
 | **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |

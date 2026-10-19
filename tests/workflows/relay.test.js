@@ -714,3 +714,107 @@ describe('pr-stacked-merge.yml relay: lint auto-fix stacked PR', () => {
     );
   });
 });
+
+describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch', () => {
+  const conflicting = (number, label = 'lint-remediation') => {
+    const pr = stackedPR(number, label);
+    pr.mergeable = false;
+    return pr;
+  };
+
+  it('supersedes a conflicting stacked PR and re-checks its gate instead of blocking', async () => {
+    const { github, parent } = world({
+      stacked: [conflicting(31), stackedPR(32, 'test-remediation')]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      tests: 'failure'
+    });
+    const { core } = await relay(github, {
+      SOURCE: 'PR Test Generator (run 1000)'
+    });
+
+    expect(github.state.merges.map((m) => m.number)).toEqual([32]);
+    expect(github.pr(31).state).toBe('closed');
+    expect(github.labels(31)).toContain(quality.SUPERSEDED_LABEL);
+    expect(github.labels(31)).not.toContain(quality.BLOCKED_LABEL);
+    expect(github.state.deletedRefs).toContain('heads/lint-remediation-31');
+    expect(github.comments(31)[0]).toContain('Superseded');
+    const superseded = github
+      .comments(20)
+      .find((c) => c.includes('superseded'));
+    expect(superseded).toContain(
+      'the **Lint** gate is re-checked on the latest commit'
+    );
+    expect(github.comments(20).join()).not.toContain(
+      'could not be auto-merged'
+    );
+
+    // Lint is re-checked on the new head: if it still fails, the lint gate dispatches its agent again.
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-test.yml']);
+    const gates = await gatesOn(github, github.pr(20).head.sha);
+    expect(gates.lint.state).toBe('pending');
+    expect(core.summaryText).toContain('Superseded after a merge conflict');
+  });
+
+  it('waits for GitHub to compute mergeability before deciding', async () => {
+    const pr = stackedPR(31);
+    pr.mergeable = null;
+    const { github, parent } = world({ stacked: [pr] });
+    github.state.mergeErrors[31] = 'Pull Request is not mergeable';
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    await relay(
+      github,
+      {},
+      {
+        onSleep: () => {
+          github.pr(31).mergeable = false;
+        }
+      }
+    );
+    expect(github.labels(31)).toContain(quality.SUPERSEDED_LABEL);
+  });
+
+  it('blocks a stacked PR that conflicts again after its fix was regenerated once', async () => {
+    const earlier = stackedPR(30, 'lint-remediation', { state: 'closed' });
+    earlier.labels.push({ name: quality.SUPERSEDED_LABEL });
+    const { github } = world({ stacked: [earlier, conflicting(31)] });
+    await relay(github);
+    expect(github.pr(31).state).toBe('open');
+    expect(github.labels(31)).toContain(quality.BLOCKED_LABEL);
+    expect(github.labels(31)).not.toContain(quality.SUPERSEDED_LABEL);
+    expect(github.comments(20)[0]).toContain('#31 could not be auto-merged');
+    expect(github.comments(20)[0]).toContain('already regenerated once');
+  });
+
+  it('only regenerates once per remediation label', async () => {
+    const earlier = stackedPR(30, 'test-remediation', { state: 'closed' });
+    earlier.labels.push({ name: quality.SUPERSEDED_LABEL });
+    const { github } = world({ stacked: [earlier, conflicting(31)] });
+    await relay(github);
+    expect(github.labels(31)).toContain(quality.SUPERSEDED_LABEL);
+  });
+
+  it('re-checks superseded gates itself even when the App merged other stacked PRs', async () => {
+    const { github, parent } = world({
+      stacked: [conflicting(31), stackedPR(32, 'doc-remediation')]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      docs: 'failure'
+    });
+    await relay(github, {
+      APP_TOKEN: 'app-token',
+      SOURCE: 'PR Documentation Updater (run 1001)'
+    });
+    expect(github.state.merges).toMatchObject([
+      { number: 32, token: 'app-token', commit_message: 'Recheck-Gates: docs' }
+    ]);
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-docs.yml']);
+  });
+});

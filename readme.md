@@ -55,7 +55,8 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 - **Security Scanning (`pr-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable; also `workflow_dispatch`).
 - **Documentation Drift Gate (`pr-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
 - **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
-- **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs only the repaired gate on the new commit.
+- **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs only the repaired gate on the new commit. A stacked PR that conflicts with the feature branch is superseded and regenerated once on the current head.
+- **Merge Conflict Detector (`pr-merge-conflicts.yml`)**: Runs on every push, because GitHub never starts `pull_request` runs for conflicting PRs; fails `pr-quality` with resolve instructions for PRs that conflict with `main` (see [Merge conflicts](docs/remediation-chaining.md#merge-conflicts)).
 - **PR Quality Verdict (`pr-quality-verdict.yml`)**: Derives the `pr-quality` status from the `gate/<id>` statuses after a gate is re-checked alone (reusable; also `workflow_dispatch`).
 - **Shared gate helper (`.github/scripts/remediation.cjs`)**: Label management and deduplicated, budgeted agent dispatch.
 

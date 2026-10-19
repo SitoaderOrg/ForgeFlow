@@ -92,7 +92,8 @@ With four failing gates, the PR is checked once, repaired by four agents, re-che
 | `pr-quality-verdict.yml` | Reusable verdict called by a gate re-checked alone (also `workflow_dispatch(pr_number)`). One verdict per PR at a time (`pr-quality-verdict-<PR>` concurrency group). Every 15 minutes it runs as the watchdog for stalled `pr-quality` statuses. |
 | Reusable gates | Called by the pipeline via `workflow_call` (`from_pipeline: true`, `head_sha`). Each also has a `workflow_dispatch` that takes only `pr_number`; head/base refs and head SHA are resolved from the PR, and the run fails if it was not dispatched on the PR head branch. Every gate ends with a *Record gate result* step, and when run alone, a `verdict` job. They do not declare workflow-level concurrency. Gates are the only writers of their labels and `gate/<id>` statuses. |
 | gh-aw agents (`pr-*.md`) | Triggered only by `workflow_dispatch` with `pr_number` and `findings` inputs (the gate's concrete failure output — linter messages, failing tests and coverage, CodeQL rule/file/line). Safe outputs target the PR explicitly and cannot remove gate labels. They are declarative — a natural-language prompt plus gh-aw frontmatter (no `steps:`/`jobs:` scripts of their own) — and cannot dispatch workflows. Each imports `shared/remediation-handoff.md`, whose deterministic *Hand off to the remediation relay* step in the generated `conclusion` job (which runs after the agent and its safe outputs, whatever their result) dispatches the relay with `agent_result`: `success` when a repair was applied (stacked PR, PR metadata edit or decision label), `no-changes`, the agent job's result (`failure`, `cancelled`, `skipped`) or `safe-outputs-<result>`. |
-| `pr-stacked-merge.yml` | The relay (run name `Remediation relay for <branch>`). Marks draft stacked PRs ready, squash-merges every open `*-remediation` PR into the parent branch, posts an audit comment naming the gate being re-checked, waits for a running pipeline, then re-checks the repaired gates on the new head (carrying the others over) and updates `pr-quality`. Only an `agent_result` of `success` (or a manual run without one) re-checks the dispatching agent's gate; any other result re-checks nothing new, so the still-failing gate fails `pr-quality` fast. With the GitHub App configured it merges with the App token and stops there: the pipeline run started by the merge re-checks the gates named in the commit's `Recheck-Gates` trailer. It does not wait for other agents: each agent's own relay re-checks its gate. |
+| `pr-stacked-merge.yml` | The relay (run name `Remediation relay for <branch>`). Marks draft stacked PRs ready, squash-merges every open `*-remediation` PR into the parent branch, posts an audit comment naming the gate being re-checked, waits for a running pipeline, then re-checks the repaired gates on the new head (carrying the others over) and updates `pr-quality`. Only an `agent_result` of `success` (or a manual run without one) re-checks the dispatching agent's gate; any other result re-checks nothing new, so the still-failing gate fails `pr-quality` fast. With the GitHub App configured it merges with the App token and stops there: the pipeline run started by the merge re-checks the gates named in the commit's `Recheck-Gates` trailer. It does not wait for other agents: each agent's own relay re-checks its gate. A stacked PR that conflicts with the branch is closed as `remediation-superseded` and its gate re-checked, so the fix is regenerated once on the current head ([Merge conflicts](#merge-conflicts)). |
+| `pr-merge-conflicts.yml` | Runs on every push (GitHub never starts `pull_request` runs for conflicting PRs). Flags open PRs into `main` that conflict with it — all of them after a push to `main`, the branch's own PR otherwise — with a `pr-quality` failure and one comment explaining how to resolve. |
 
 ## Gate → agent mapping
 
@@ -163,6 +164,8 @@ the `pr-quality` status, which is tied to the exact commit.
   replaced in the relay's concurrency queue.
 - **Blocked stacked PRs**: a stacked PR the relay cannot merge gets `remediation-blocked` and a
   comment; it no longer counts as a repair in progress, so `pr-quality` fails instead of waiting.
+  A stacked PR that merely *conflicts* is regenerated once first — see
+  [Merge conflicts](#merge-conflicts).
 - **Watchdog**: `pr-quality-verdict.yml` also runs every 15 minutes. A PR whose `pr-quality` has
   been pending for `STALE_VERDICT_MINUTES` (repository variable, default `30`) with no pipeline or
   relay running — e.g. an agent run cancelled before its hand-off step could run — gets its stuck gates
@@ -177,6 +180,53 @@ the `pr-quality` status, which is tied to the exact commit.
   gates finishing together publish one verdict at a time.
   Reusable workflows must not declare workflow-level concurrency: inside a reusable workflow
   `github.workflow` resolves to the *caller's* name, which deadlocks with the caller's group.
+
+## Merge conflicts
+
+Two kinds of conflicts can occur, and they are handled where they arise:
+
+| Conflict | Typical cause | Handling |
+| :--- | :--- | :--- |
+| Stacked remediation PR ↔ feature branch | Agents run one after another, each from the commit it was dispatched on; an earlier fix (or an author push) changed the same lines | **Automatic, bounded**: the relay closes the stale fix and has it regenerated on the current head |
+| Feature PR ↔ `main` | `main` moved, or the author pushed a conflicting commit | **Detected, left to the author**: `pr-quality` fails with resolve instructions |
+
+### Stacked PR conflicts: regenerate, don't resolve
+
+When the relay's squash-merge fails, it asks GitHub whether the stacked PR conflicts with the
+parent branch (`mergeable`, polled while GitHub is still computing it). Other failures (permissions,
+branch rules, API errors) are blocked as before. For a real conflict the relay:
+
+1. labels the stacked PR `remediation-superseded`, closes it and deletes its branch;
+2. comments on the parent PR and re-checks the stacked PR's gate on the current head commit (the
+   App path does this too, since a superseded PR is not part of any `Recheck-Gates` trailer);
+3. if the gate passes — another repair already fixed it — nothing else happens. If it still fails,
+   the gate dispatches its agent again with fresh findings for the current code. A superseded
+   stacked PR gives its agent attempt back (`dispatchRemediation` subtracts superseded PRs of the
+   same label from the attempts), so this works with `MAX_REMEDIATION_ATTEMPTS=1`.
+
+Regenerating a small fix from fresh findings is cheaper and safer than resolving conflict markers:
+the agent keeps its scope rules (e.g. test files only) and the result is checked by the gate like
+any other repair. It happens **once per remediation label and branch**; a second conflict gets
+`remediation-blocked` and a manual-merge comment.
+
+### Conflicts with `main`: detect early, hand to the author
+
+GitHub [does not start `pull_request` workflows for a PR that has a merge conflict](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request),
+so without help the pipeline silently never runs and `pr-quality` stays on an older commit — or
+stays green after `main` moved. `pr-merge-conflicts.yml` runs on every push instead:
+
+- a push to `main` checks every open PR into `main`;
+- a push to any other branch checks that branch's PR.
+
+A conflicting PR gets `pr-quality` = **failure** (`Merge conflict with main: …`) and one comment per
+head commit with the `git merge origin/main` commands. The resolving push starts the pipeline as
+usual; a conflict-only verdict is never treated as a final verdict for de-duplication. The pipeline's
+context job and `evaluateVerdict` apply the same check, so a dispatched run never checks — and
+`pr-quality` never turns green on — a PR that cannot merge.
+
+Conflicts with `main` are not resolved by an agent: they decide how this change combines with what
+landed on `main`, which is the author's call. For the window between a `main` push and a stale green
+`pr-quality`, enable **Require branches to be up to date before merging** in branch protection.
 
 ## Recommended: GitHub App for bot pushes
 
@@ -244,10 +294,11 @@ so the tests run the exact code that runs in Actions.
 
 | Suite | Covers |
 |---|---|
-| `remediation.test.js` | Label helpers, `commentOnce`, `dispatchRemediation` (dispatch, already running, pending stacked PR, budget exhaustion, cancelled runs not counted, truncation, API errors) |
-| `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome, the `sweepStalled` watchdog |
-| `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check), autofix stacked PR and relay hand-off, verdict job |
-| `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR |
+| `remediation.test.js` | Label helpers, `commentOnce`, `dispatchRemediation` (dispatch, already running, pending stacked PR, budget exhaustion, cancelled runs not counted, superseded stacked PRs refunded, truncation, API errors) |
+| `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome (incl. conflicts with the base), the `sweepStalled` watchdog, `mergeability` polling and `flagBaseConflicts` |
+| `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check, conflicts with `main`), autofix stacked PR and relay hand-off, verdict job |
+| `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR, conflicting stacked PRs (superseded and regenerated once, then blocked; App path) |
+| `merge-conflicts.test.js` | `pr-merge-conflicts.yml`: push trigger and permissions, PRs flagged after a push to `main` vs. a feature branch |
 | `gates.test.js` | Every gate's handlers (metadata, lint, build, tests, docs, security, review dispatcher), *Record gate result* steps, standalone `verdict` jobs, `pr-quality-verdict.yml` |
 | `agents.test.js` | gh-aw agent contracts: declarative (no scripted steps/jobs), skipped on the default branch, dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, the shared relay hand-off compiled into every `conclusion` job (`agent_result` for repairs, no changes, crashes and failed safe outputs) |
 

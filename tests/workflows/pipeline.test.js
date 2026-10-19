@@ -857,3 +857,45 @@ describe('pr-pipeline.yml recheck job', () => {
     expect(core.summaryText).toContain('Carried over: Metadata, Lint');
   });
 });
+
+describe('pr-pipeline.yml context job: merge conflicts with main', () => {
+  it('fails pr-quality and checks nothing for a PR that conflicts with its base', async () => {
+    const pr = makePR({ number: 20 });
+    pr.mergeable = false;
+    const { outputs, github } = await resolve(pr);
+    expect(outputs).toMatchObject({ skip: 'true', mode: 'conflict' });
+    const [status] = github.qualityStatuses(pr.head.sha);
+    expect(status.state).toBe('failure');
+    expect(status.description).toMatch(/^Merge conflict with main/);
+    expect(github.comments(20)[0]).toContain('git merge origin/main');
+    expect(github.state.dispatches).toEqual([]);
+  });
+
+  it('runs normally while GitHub is still computing mergeability', async () => {
+    const pr = makePR({ number: 20 });
+    pr.mergeable = null;
+    const { outputs } = await resolve(pr);
+    expect(outputs).toMatchObject({ skip: 'false', mode: 'full' });
+  });
+
+  it('re-checks a revision whose only verdict is a resolved merge conflict', async () => {
+    const pr = makePR({ number: 20 });
+    const rev = quality.revision(pr);
+    const { github } = setupContext({ pr });
+    await quality.setQualityStatus({
+      github,
+      context: createContext(),
+      sha: pr.head.sha,
+      state: 'failure',
+      summary: 'Merge conflict with main: merge main into the branch and push',
+      rev,
+      targetUrl: 'https://github.com/octo/demo/actions/runs/1'
+    });
+    const { outputs } = await resolve(pr, { statuses: github.state.statuses });
+    expect(outputs.skip).toBe('false');
+  });
+
+  it('may comment from the context job', () => {
+    expect(loadWorkflow(FILE).jobs.context.permissions.issues).toBe('write');
+  });
+});
