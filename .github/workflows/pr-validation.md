@@ -56,6 +56,10 @@ tools:
 
 strict: true
 
+# Hands off to the remediation relay from the generated conclusion job, whatever the agent's result.
+imports:
+  - shared/remediation-handoff.md
+
 features:
   copilot-requests: true
 
@@ -67,10 +71,6 @@ safe-outputs:
   add-comment:
     max: 1
     target: "*"
-  # Hand-off to the remediation relay (GITHUB_TOKEN events do not trigger workflows).
-  dispatch-workflow:
-    workflows: [pr-stacked-merge]
-    target-ref: ${{ github.event.repository.default_branch }}
 ---
 
 ## Pull Request Context
@@ -116,10 +116,5 @@ Analyze the changes introduced in this pull request and generate complete, accur
    - `add-comment`: Post a friendly comment indicating that the PR metadata was automatically drafted based on the diff, and encourage the author to review and customize it.
    - Do **not** touch the `needs-metadata` label: the PR Gatekeeper removes it once the re-check passes.
 
-## Hand Off to the Remediation Relay
-Unless you stopped in **Before You Start**, finish by calling `dispatch_workflow` for `pr-stacked-merge`, after all other safe outputs, with these inputs:
-- `branch`: the checked-out branch (the pull request's head branch)
-- `agent_result`: `success` if your safe outputs address the gate findings, otherwise `failure`
-- `source`: `${{ github.workflow }} (run ${{ github.run_id }})`
-
-The relay merges stacked remediation pull requests into the feature branch and re-runs the PR Quality Pipeline. Only the gates decide whether the findings are fixed, so never claim they are.
+## When You Are Done
+Stop after your safe outputs: the remediation relay is dispatched automatically when this run ends. It merges any stacked remediation pull request into the feature branch and re-checks the gate. Only the gates decide whether the findings are fixed, so never claim they are.

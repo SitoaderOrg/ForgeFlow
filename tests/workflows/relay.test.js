@@ -96,13 +96,11 @@ describe('pr-stacked-merge.yml structure', () => {
   const wf = loadWorkflow(FILE);
 
   it('names each run after the branch so the verdict can see relays in flight', () => {
-    expect(wf['run-name']).toBe(
-      'Remediation relay for ${{ inputs.branch || github.event.pull_request.base.ref }}'
-    );
+    expect(wf['run-name']).toBe('Remediation relay for ${{ inputs.branch }}');
     expect(wf.permissions.statuses).toBe('write');
   });
 
-  it('is dispatched by agents with branch, agent_result and source inputs', () => {
+  it('is dispatched by the agents conclusion job with branch, agent_result and source inputs', () => {
     expect(Object.keys(wf.on.workflow_dispatch.inputs)).toEqual([
       'branch',
       'agent_result',
@@ -112,18 +110,13 @@ describe('pr-stacked-merge.yml structure', () => {
   });
 
   it('runs one relay at a time per parent branch without cancelling', () => {
-    expect(wf.concurrency.group).toBe(
-      'pr-stacked-merge-${{ inputs.branch || github.event.pull_request.base.ref }}'
-    );
+    expect(wf.concurrency.group).toBe('pr-stacked-merge-${{ inputs.branch }}');
     expect(wf.concurrency['cancel-in-progress']).toBe(false);
   });
 
-  it('only reacts to pull_request events of labelled remediation PRs', () => {
-    const condition = wf.jobs['auto-merge-stacked'].if;
-    expect(condition).toContain("github.event_name != 'pull_request'");
-    for (const label of ['lint', 'test', 'security', 'doc']) {
-      expect(condition).toContain(`'${label}-remediation'`);
-    }
+  it('is only started by agents, never by approval-held pull_request runs', () => {
+    expect(Object.keys(wf.on)).toEqual(['workflow_dispatch']);
+    expect(wf.jobs['auto-merge-stacked'].if).toBeUndefined();
     expect(wf.jobs['auto-merge-stacked']['timeout-minutes']).toBeGreaterThan(
       30
     );
@@ -245,22 +238,6 @@ describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => 
       "Could not delete branch 'lint-remediation-31'"
     );
     expect(github.comments(20)[0]).toContain('Auto-Merged');
-  });
-
-  it('uses the base branch of the stacked PR on pull_request events', async () => {
-    const { github } = world({ stacked: [stackedPR(31, 'test-remediation')] });
-    await relay(
-      github,
-      { INPUT_BRANCH: '', SOURCE: '', AGENT_RESULT: '' },
-      {
-        context: {
-          eventName: 'pull_request',
-          payload: { pull_request: { number: 31, base: { ref: BRANCH } } }
-        }
-      }
-    );
-    expect(github.state.merges.map((m) => m.number)).toEqual([31]);
-    expect(gateDispatches(github)).toContain('pr-test.yml');
   });
 });
 
@@ -456,6 +433,71 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
   });
 });
 
+describe('pr-stacked-merge.yml relay: agent runs that repaired nothing', () => {
+  it.each(['failure', 'no-changes', 'skipped', 'safe-outputs-failure'])(
+    'fails pr-quality fast without re-checking the gate (agent_result %s)',
+    async (agentResult) => {
+      const { github, parent } = world();
+      await seedGates(github, parent.head.sha, {
+        ...ALL_PASSED,
+        lint: 'failure'
+      });
+      const { core } = await relay(github, { AGENT_RESULT: agentResult });
+      // Re-checking an unchanged commit would only spend another remediation attempt
+      expect(gateDispatches(github)).toEqual([]);
+      expect(github.qualityStatuses(parent.head.sha)[0].state).toBe('failure');
+      expect(github.comments(20)[0]).toContain('**Lint**');
+      expect(core.summaryText).toContain(`(${agentResult})`);
+    }
+  );
+
+  it('stays pending while another agent still repairs the PR', async () => {
+    const { github, parent } = world({
+      runs: [
+        makeAgentRun({
+          id: 2000,
+          workflow: 'pr-test-generator.lock.yml',
+          branch: BRANCH
+        })
+      ]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      tests: 'failure'
+    });
+    await relay(github, { AGENT_RESULT: 'failure' });
+    expect(gateDispatches(github)).toEqual([]);
+    expect(github.qualityStatuses(parent.head.sha)[0].state).toBe('pending');
+    expect(github.comments(20)).toEqual([]);
+  });
+
+  it('still merges stacked PRs left by other agents and re-checks their gates', async () => {
+    const { github, parent } = world({
+      stacked: [stackedPR(31, 'doc-remediation')]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      docs: 'failure'
+    });
+    await relay(github, { AGENT_RESULT: 'failure' });
+    expect(github.state.merges.map((m) => m.number)).toEqual([31]);
+    expect(github.state.merges[0].commit_message).toBe('Recheck-Gates: docs');
+    expect(gateDispatches(github)).toEqual(['pr-docs.yml']);
+  });
+
+  it('re-checks the source gate for manual runs without agent_result', async () => {
+    const { github, parent } = world();
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    await relay(github, { AGENT_RESULT: '' });
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+  });
+});
+
 describe('pr-stacked-merge.yml relay: waiting for a running pipeline', () => {
   it('waits for a running pipeline before deciding', async () => {
     const { github } = world({
@@ -540,5 +582,96 @@ describe('pr-stacked-merge.yml relay: lost hand-offs', () => {
     ]);
     const gates = await gatesOn(github, github.pr(20).head.sha);
     expect(gates.build.carriedFrom).toBe(before.slice(0, 7));
+  });
+});
+
+describe('pr-stacked-merge.yml relay: GitHub App token', () => {
+  const wf = loadWorkflow(FILE);
+
+  it('mints the App token when configured and hands it to the relay script', () => {
+    const steps = wf.jobs['auto-merge-stacked'].steps;
+    const app = steps.find((s) => s.id === 'app');
+    expect(app.uses).toBe('actions/create-github-app-token@v3');
+    expect(app.if).toBe("vars.PR_BOT_CLIENT_ID != ''");
+    expect(app['continue-on-error']).toBe(true);
+    const relayStep = steps.find(
+      (s) => s.name === 'Consolidate Stacked PRs & Recheck'
+    );
+    expect(relayStep.uses).toBe('actions/github-script@v9');
+    expect(relayStep.env.APP_TOKEN).toBe('${{ steps.app.outputs.token }}');
+  });
+
+  it('merges with the App token and leaves the re-check to the pipeline run it starts', async () => {
+    const { github, parent } = world({
+      stacked: [stackedPR(31, 'doc-remediation')]
+    });
+    const oldSha = parent.head.sha;
+    await seedGates(github, oldSha, { ...ALL_PASSED, docs: 'failure' });
+    const { core } = await relay(github, {
+      APP_TOKEN: 'app-token',
+      SOURCE: 'PR Documentation Updater (run 1001)'
+    });
+    expect(github.state.merges).toMatchObject([
+      {
+        number: 31,
+        token: 'app-token',
+        commit_message: 'Recheck-Gates: docs'
+      }
+    ]);
+    expect(github.state.dispatches).toEqual([]);
+    const newSha = github.pr(20).head.sha;
+    expect(github.state.statuses[newSha]).toBeUndefined();
+    expect(github.comments(20)[0]).toContain('Auto-Merged');
+    expect(core.summaryText).toContain('GitHub App token');
+    expect(core.summaryText).toContain('re-checks docs');
+  });
+
+  it('names the dispatching agent gate in the trailer too', async () => {
+    const { github } = world({ stacked: [stackedPR(31, 'test-remediation')] });
+    await relay(github, { APP_TOKEN: 'app-token' });
+    expect(github.state.merges[0].commit_message).toBe(
+      'Recheck-Gates: tests, lint'
+    );
+    expect(
+      quality.parseRecheckTrailer(
+        github.state.commits[github.pr(20).head.sha].message
+      )
+    ).toEqual(['tests', 'lint']);
+  });
+
+  it('re-checks by itself when nothing was merged', async () => {
+    const { github, parent } = world();
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    await relay(github, { APP_TOKEN: 'app-token' });
+    expect(github.state.merges).toEqual([]);
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+  });
+
+  it('re-checks by itself when the parent PR does not target the default branch', async () => {
+    const { github, parent } = world({ stacked: [stackedPR(31)] });
+    parent.base.ref = 'release/1.0';
+    await seedGates(github, parent.head.sha, ALL_PASSED);
+    await relay(github, { APP_TOKEN: 'app-token' });
+    expect(github.state.merges).toMatchObject([
+      { number: 31, token: 'github-token' }
+    ]);
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+  });
+
+  it('merges with GITHUB_TOKEN and re-checks by itself without the App', async () => {
+    const { github, parent } = world({ stacked: [stackedPR(31)] });
+    await seedGates(github, parent.head.sha, ALL_PASSED);
+    await relay(github);
+    expect(github.state.merges).toMatchObject([
+      {
+        number: 31,
+        token: 'github-token',
+        commit_message: 'Recheck-Gates: lint'
+      }
+    ]);
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
   });
 });

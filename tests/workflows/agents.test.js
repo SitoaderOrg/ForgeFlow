@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createCore,
+  createGitHub,
+  DEFAULT_BRANCH,
   listWorkflowFiles,
   loadAgentBody,
   loadAgentFrontmatter,
   loadWorkflow,
   quality,
-  readWorkflow
+  readWorkflow,
+  runScript
 } from './helpers/harness.js';
 
 // Contract tests for the gh-aw remediation agents (Repair stage): what they may do,
@@ -31,6 +35,14 @@ const STACKED_LABELS = [
 ];
 
 const lockFile = (md) => md.replace(/\.md$/, '.lock.yml');
+
+// Shared import whose conclusion-job step hands every agent run off to the relay.
+const HANDOFF = 'shared/remediation-handoff.md';
+const HANDOFF_STEP = 'Hand off to the remediation relay';
+const handoffJob = loadAgentFrontmatter(HANDOFF).jobs.conclusion;
+const handoffStep = handoffJob['pre-steps'].find(
+  (s) => s.name === HANDOFF_STEP
+);
 
 function findEnv(node, key) {
   if (!node || typeof node !== 'object') return undefined;
@@ -130,29 +142,27 @@ describe.each(AGENTS)('%s', (md) => {
     expect(body).toMatch(/call `noop`[^\n]*and stop/);
   });
 
-  it('hands off to the relay with the dispatch-workflow safe output', () => {
-    expect(safe['dispatch-workflow']).toEqual({
-      workflows: ['pr-stacked-merge'],
-      'target-ref': '${{ github.event.repository.default_branch }}'
-    });
-    const body = loadAgentBody(md);
-    const handoff = body.slice(
-      body.indexOf('## Hand Off to the Remediation Relay')
+  it('hands off to the relay from its conclusion job, whatever the agent result', () => {
+    expect(fm.imports).toEqual([HANDOFF]);
+    // No LLM-driven hand-off: the agent cannot dispatch workflows itself
+    expect(safe['dispatch-workflow']).toBeUndefined();
+    expect(loadAgentBody(md)).not.toContain('dispatch_workflow');
+    expect(loadAgentBody(md)).toContain(
+      'the remediation relay is dispatched automatically when this run ends'
     );
-    expect(handoff).toContain('`dispatch_workflow` for `pr-stacked-merge`');
-    const relayInputs = Object.keys(
-      loadWorkflow('pr-stacked-merge.yml').on.workflow_dispatch.inputs
+    const conclusion = loadWorkflow(lockFile(md)).jobs.conclusion;
+    // Runs after the agent and its safe outputs, also when the agent failed
+    expect(conclusion.needs).toEqual(
+      expect.arrayContaining(['agent', 'safe_outputs'])
     );
-    for (const input of relayInputs) expect(handoff).toContain(`\`${input}\``);
-    // The relay excludes the dispatching run by parsing `run <id>` from the source
-    const source = /`source`: `([^`]+)`/.exec(handoff)[1];
-    expect(source).toBe('${{ github.workflow }} (run ${{ github.run_id }})');
-    const rendered = source
-      .replace('${{ github.workflow }}', fm.name)
-      .replace('${{ github.run_id }}', '123456');
-    expect(/run (\d+)/.exec(rendered)[1]).toBe('123456');
+    expect(conclusion.if).toMatch(/^always\(\) && /);
+    expect(conclusion.permissions.actions).toBe('write');
+    const step = conclusion.steps.find((s) => s.name === HANDOFF_STEP);
+    expect(step, `${md} conclusion job hands off`).toBeDefined();
+    expect(step.if).toBe(handoffStep.if);
+    expect(step.env).toEqual(handoffStep.env);
+    expect(step.with.script).toBe(handoffStep.with.script);
   });
-
   it('has a compiled lock file whose safe outputs match the source', () => {
     const config = lockSafeOutputs(md);
     expect(config.push_to_pull_request_branch).toBeUndefined();
@@ -169,8 +179,7 @@ describe.each(AGENTS)('%s', (md) => {
     } else {
       expect(config.add_labels).toBeUndefined();
     }
-    expect(config.dispatch_workflow.workflows).toEqual(['pr-stacked-merge']);
-    expect(config.dispatch_workflow.max).toBe(1);
+    expect(config.dispatch_workflow).toBeUndefined();
   });
 });
 
@@ -236,5 +245,104 @@ describe('agent / gate wiring', () => {
       const text = readWorkflow(file);
       for (const label of STACKED_LABELS) expect(text).toContain(`'${label}'`);
     }
+  });
+});
+
+describe('shared remediation hand-off', () => {
+  const RELAY_SOURCE = 'PR Lint Fixer (run 123456)';
+  const handoff = async (env) => {
+    const github = createGitHub();
+    const core = createCore();
+    await runScript(handoffStep.with.script, {
+      github,
+      core,
+      env: {
+        BRANCH: 'feat/sample',
+        SOURCE: RELAY_SOURCE,
+        AGENT_RESULT: 'success',
+        SAFE_OUTPUTS_RESULT: 'success',
+        OUTPUT_TYPES: 'create_pull_request, add_comment',
+        ...env
+      }
+    });
+    return { dispatches: github.state.dispatches, core };
+  };
+
+  it.each([
+    ['applied a stacked PR', {}, 'success'],
+    [
+      'edited the PR metadata',
+      { OUTPUT_TYPES: 'update_pull_request, add_comment' },
+      'success'
+    ],
+    ['added a decision label', { OUTPUT_TYPES: 'add_labels' }, 'success'],
+    [
+      'only commented',
+      { OUTPUT_TYPES: 'add_comment', SAFE_OUTPUTS_RESULT: 'success' },
+      'no-changes'
+    ],
+    [
+      'called noop',
+      { OUTPUT_TYPES: '', SAFE_OUTPUTS_RESULT: 'skipped' },
+      'no-changes'
+    ],
+    [
+      'crashed (e.g. HTTP 429)',
+      {
+        AGENT_RESULT: 'failure',
+        OUTPUT_TYPES: '',
+        SAFE_OUTPUTS_RESULT: 'skipped'
+      },
+      'failure'
+    ],
+    [
+      'was skipped (e.g. AI credits exceeded)',
+      {
+        AGENT_RESULT: 'skipped',
+        OUTPUT_TYPES: '',
+        SAFE_OUTPUTS_RESULT: 'skipped'
+      },
+      'skipped'
+    ],
+    [
+      'could not apply its stacked PR',
+      { SAFE_OUTPUTS_RESULT: 'failure' },
+      'safe-outputs-failure'
+    ]
+  ])('dispatches the relay when the agent %s', async (_, env, agentResult) => {
+    const { dispatches, core } = await handoff(env);
+    expect(dispatches).toEqual([
+      expect.objectContaining({
+        workflow_id: 'pr-stacked-merge.yml',
+        ref: DEFAULT_BRANCH,
+        inputs: {
+          branch: 'feat/sample',
+          agent_result: agentResult,
+          source: RELAY_SOURCE
+        }
+      })
+    ]);
+    expect(core.notices[0]).toContain(`agent_result: ${agentResult}`);
+  });
+
+  it('matches the relay inputs and its source parsing', () => {
+    expect(handoffStep.env.SOURCE).toBe(
+      '${{ github.workflow }} (run ${{ github.run_id }})'
+    );
+    expect(handoffStep.env.BRANCH).toBe('${{ github.ref_name }}');
+    expect(quality.repairedGate(RELAY_SOURCE)).toBe('lint');
+    expect(
+      Object.keys(
+        loadWorkflow('pr-stacked-merge.yml').on.workflow_dispatch.inputs
+      )
+    ).toEqual(['branch', 'agent_result', 'source']);
+  });
+
+  it('never hands off from the default branch and cannot fail the agent run', () => {
+    expect(handoffStep.if).toBe(
+      'github.ref_name != github.event.repository.default_branch'
+    );
+    expect(handoffStep['continue-on-error']).toBe(true);
+    expect(handoffJob.permissions).toEqual({ actions: 'write' });
   });
 });
