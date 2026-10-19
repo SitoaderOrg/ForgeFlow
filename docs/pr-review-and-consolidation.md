@@ -58,7 +58,7 @@ flowchart TD
 
 ## 1. Stacked PR Auto-Merger (`.github/workflows/pr-stacked-merge.yml`)
 
-Instead of pinging the developer to manually review and merge 3–4 separate stacked PRs (the relay is dispatched by each agent's `dispatch-workflow` safe output, because PRs created with `GITHUB_TOKEN` only raise approval-held `pull_request` runs — see [Remediation Chaining](remediation-chaining.md)):
+Instead of pinging the developer to manually review and merge 3–4 separate stacked PRs (the relay is dispatched by each agent run's `conclusion` job when it ends, whatever its result, because PRs created with `GITHUB_TOKEN` only raise approval-held `pull_request` runs — see [Remediation Chaining](remediation-chaining.md)):
 - **Automatic Ingestion**: Automatically merges valid remediation PRs with labels (`lint-remediation`, `test-remediation`, `security-remediation`, `doc-remediation`) targeting the feature branch.
 - **Ready & Squash & Delete**: Marks draft stacked PRs ready, squashes the remediation commit into the developer's feature branch and deletes the temporary agent branch.
 - **Re-check the repaired gate only**: Waits for a running pipeline, then re-runs only the gate the agent repaired (e.g. `pr-test.yml` for `test-remediation`) on the new commit and carries the other gates' `gate/<id>` results over. It does not wait for other agents — each agent's relay re-checks its own gate. Once every gate is green, one final full pipeline run verifies the combined fixes. Gate labels are never cleared here — merging a fix is not evidence that it works.

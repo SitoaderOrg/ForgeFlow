@@ -100,7 +100,7 @@ describe('pr-stacked-merge.yml structure', () => {
     expect(wf.permissions.statuses).toBe('write');
   });
 
-  it('is dispatched by agents with branch, agent_result and source inputs', () => {
+  it('is dispatched by the agents conclusion job with branch, agent_result and source inputs', () => {
     expect(Object.keys(wf.on.workflow_dispatch.inputs)).toEqual([
       'branch',
       'agent_result',
@@ -430,6 +430,71 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
     await relay(github, { SOURCE: '' });
     expect(github.qualityStatuses(parent.head.sha)[0].state).toBe('pending');
     expect(github.comments(20)).toEqual([]);
+  });
+});
+
+describe('pr-stacked-merge.yml relay: agent runs that repaired nothing', () => {
+  it.each(['failure', 'no-changes', 'skipped', 'safe-outputs-failure'])(
+    'fails pr-quality fast without re-checking the gate (agent_result %s)',
+    async (agentResult) => {
+      const { github, parent } = world();
+      await seedGates(github, parent.head.sha, {
+        ...ALL_PASSED,
+        lint: 'failure'
+      });
+      const { core } = await relay(github, { AGENT_RESULT: agentResult });
+      // Re-checking an unchanged commit would only spend another remediation attempt
+      expect(gateDispatches(github)).toEqual([]);
+      expect(github.qualityStatuses(parent.head.sha)[0].state).toBe('failure');
+      expect(github.comments(20)[0]).toContain('**Lint**');
+      expect(core.summaryText).toContain(`(${agentResult})`);
+    }
+  );
+
+  it('stays pending while another agent still repairs the PR', async () => {
+    const { github, parent } = world({
+      runs: [
+        makeAgentRun({
+          id: 2000,
+          workflow: 'pr-test-generator.lock.yml',
+          branch: BRANCH
+        })
+      ]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      tests: 'failure'
+    });
+    await relay(github, { AGENT_RESULT: 'failure' });
+    expect(gateDispatches(github)).toEqual([]);
+    expect(github.qualityStatuses(parent.head.sha)[0].state).toBe('pending');
+    expect(github.comments(20)).toEqual([]);
+  });
+
+  it('still merges stacked PRs left by other agents and re-checks their gates', async () => {
+    const { github, parent } = world({
+      stacked: [stackedPR(31, 'doc-remediation')]
+    });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure',
+      docs: 'failure'
+    });
+    await relay(github, { AGENT_RESULT: 'failure' });
+    expect(github.state.merges.map((m) => m.number)).toEqual([31]);
+    expect(github.state.merges[0].commit_message).toBe('Recheck-Gates: docs');
+    expect(gateDispatches(github)).toEqual(['pr-docs.yml']);
+  });
+
+  it('re-checks the source gate for manual runs without agent_result', async () => {
+    const { github, parent } = world();
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    await relay(github, { AGENT_RESULT: '' });
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
   });
 });
 

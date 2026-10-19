@@ -5,8 +5,10 @@ name: PR Stacked Remediation Auto-Merger
 # Agents run with the default GITHUB_TOKEN, and GitHub never starts workflow runs for
 # pushes/labels created with that token (nor `workflow_run` events for runs that were
 # themselves dispatched with it); PRs only get runs held for approval. Every gh-aw agent
-# therefore dispatches this workflow through its `dispatch-workflow` safe output, after its other
-# safe outputs. There is deliberately no `pull_request` trigger: stacked PRs opened with
+# therefore dispatches this workflow from its generated `conclusion` job (imported from
+# .github/workflows/shared/remediation-handoff.md), after its safe outputs and whatever its
+# result, with `agent_result` = success | no-changes | failure | cancelled | skipped |
+# safe-outputs-<result>. There is deliberately no `pull_request` trigger: stacked PRs opened with
 # GITHUB_TOKEN would only create runs held for approval. The relay:
 #   1. squash-merges open stacked remediation PRs into the parent branch, with a
 #      `Recheck-Gates:` trailer naming the repaired gates. With the GitHub App token
@@ -14,7 +16,8 @@ name: PR Stacked Remediation Auto-Merger
 #      Pipeline run it starts re-checks those gates: the relay stops here;
 #   2. otherwise (no App, or nothing merged) it re-checks only the gate(s) the agent repaired on
 #      the new commit itself, carrying the other gate results over, so agents working in
-#      parallel never wait for each other;
+#      parallel never wait for each other. A failed agent or one that changed nothing re-checks
+#      nothing: its gate still fails, so pr-quality fails fast;
 #   3. and updates the `pr-quality` verdict (one final full check runs once every gate passed).
 # It never clears gate labels or marks anything as fixed: only the gates do that.
 
@@ -28,7 +31,7 @@ on:
         required: true
         type: string
       agent_result:
-        description: 'Result of the dispatching agent job (success, failure, cancelled, skipped)'
+        description: 'Outcome of the dispatching agent run: success (a repair was applied), no-changes, failure, cancelled, skipped or safe-outputs-<result>'
         required: false
         type: string
         default: ''
@@ -105,9 +108,14 @@ jobs:
             core.info(`Parent PR: #${parent.number} (${parent.html_url})`);
             const headBefore = parent.head.sha;
 
-            // Gates to re-check: the one the dispatching agent repairs, plus one per merged stacked PR.
+            // Gates to re-check: the one the dispatching agent repaired, plus one per merged stacked PR.
+            // A run that failed or applied no repair (agent_result other than `success`) changed
+            // nothing, so its gate is not re-checked: the verdict below fails fast instead of
+            // spending another remediation attempt on the same commit. Manual runs (no
+            // agent_result) re-check it.
             const repaired = new Set();
-            const sourceGate = quality.repairedGate(process.env.SOURCE);
+            const agentRepaired = ['', 'success'].includes(process.env.AGENT_RESULT || '');
+            const sourceGate = agentRepaired ? quality.repairedGate(process.env.SOURCE) : null;
             if (sourceGate) repaired.add(sourceGate);
 
             // Merges made with the App token raise `synchronize`, so the PR Quality Pipeline re-checks
