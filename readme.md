@@ -8,7 +8,7 @@
 6. **Documentation Drift Verification**: Detects when application code changes without documentation and hands the semantic decision to the documentation agent.
 7. **Autonomous `gh-aw` Remediation Loops**: Failing gates dispatch the matching agent with the concrete findings (bounded attempts); agents propose stacked PRs or metadata fixes but never mark a gate as passed (see [Remediation Chaining](docs/remediation-chaining.md)).
 8. **Automated Consolidation & Per-Gate Recheck**: The remediation relay squashes each stacked PR into the feature branch with a full audit trail and re-checks only the gate that was repaired, carrying the other gates' `gate/<id>` results over. A gate still failing after its repair fails `pr-quality`; once all gates are green, one final full run confirms the combined fixes.
-9. **Semantic Review & Human Merge**: Once the `pr-quality` status is green, GitHub Copilot reviews the PR and a human gives the final approval and merges it. Only stacked remediation PRs are merged automatically (into the feature branch).
+9. **Semantic Review & Human Merge**: Once the `pr-quality` status is green, GitHub Copilot reviews the PR; the PR Review Fixer addresses all of its comments at once in one stacked PR (one automatic round, every gate re-checked, each Copilot thread answered), and, if every comment was applied, Copilot confirms the final commit with one more review. A human then gives the final approval and merges it. Only stacked remediation PRs are merged automatically (into the feature branch).
 
 ### 💡 Why This Framework is Relevant: Solving Review Fatigue
 
@@ -54,7 +54,8 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 - **Test Gate (`pr-test.yml`)**: Polyglot test runner with diff-scoped 80% coverage check (reusable; also `workflow_dispatch`).
 - **Security Scanning (`pr-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable; also `workflow_dispatch`).
 - **Documentation Drift Gate (`pr-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
-- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Dispatches Copilot code review and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
+- **Review & Consolidation Dispatcher (`pr-review-dispatcher.yml`)**: Requests a Copilot code review (once when the gates pass, once more to confirm the review fixes) and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
+- **Copilot Review Intake (`pr-review-intake.yml`)**: When Copilot submits a review, hands all of its open comments to the PR Review Fixer in one batch (see [Copilot review comments](docs/remediation-chaining.md#copilot-review-comments)).
 - **Stacked PR Auto-Merger / Remediation Relay (`pr-stacked-merge.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs only the repaired gate on the new commit. A stacked PR that conflicts with the feature branch is superseded and regenerated once on the current head.
 - **Merge Conflict Detector (`pr-merge-conflicts.yml`)**: Runs on every push, because GitHub never starts `pull_request` runs for conflicting PRs; fails `pr-quality` with resolve instructions for PRs that conflict with `main` (see [Merge conflicts](docs/remediation-chaining.md#merge-conflicts)).
 - **PR Quality Verdict (`pr-quality-verdict.yml`)**: Derives the `pr-quality` status from the `gate/<id>` statuses after a gate is re-checked alone (reusable; also `workflow_dispatch`).
@@ -67,6 +68,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 - **PR Test Generator (`pr-test-generator.md`)**: Dispatched by the test gate (`test-required`) with failing tests and coverage. Drafts missing unit tests and boundary cases in a stacked PR.
 - [Security Fixers (`pr-codeql-fixer.md`, `pr-dependency-fixer.md`, `pr-secret-fixer.md`)](.github/workflows/pr-codeql-fixer.md): Remediates vulnerabilities and alerts via stacked PRs.
 - [Documentation Evaluator & Updater (`pr-doc-updater.md`)](.github/workflows/pr-doc-updater.md): Semantically evaluates PR diffs against documentation criteria (public APIs, schemas, architecture) and authors missing guides via stacked PRs.
+- [PR Review Fixer (`pr-review-fixer.md`)](.github/workflows/pr-review-fixer.md): Dispatched with every open Copilot review comment once the gates pass. Applies or skips each one (with a reason) in a single stacked PR (`review-remediation`); the relay re-checks every gate and answers each Copilot thread.
 
 ### 3. Sample Application: Ferret Heist (`apps/ferret-heist`)
 

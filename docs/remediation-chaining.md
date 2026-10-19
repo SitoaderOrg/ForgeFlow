@@ -76,8 +76,10 @@ flowchart LR
    `pr-quality` turns green.
 5. **Review & merge** — automation stops here. Only stacked remediation PRs are merged
    automatically (into the feature branch); the feature PR itself is never auto-merged. Once
-   `pr-quality` is green, the verdict requests a Copilot review (`pr-review-dispatcher.yml`) and a
-   human gives the final approval and merges.
+   `pr-quality` is green, the verdict requests a Copilot review (`pr-review-dispatcher.yml`). Its
+   comments get one automatic round of fixes, then Copilot confirms the result once more
+   ([Copilot review comments](#copilot-review-comments)); a human gives the final approval and
+   merges.
 
 With four failing gates, the PR is checked once, repaired by four agents, re-checked gate by gate
 (minutes each) and confirmed by one final full run — instead of one full pipeline per repair round.
@@ -94,6 +96,7 @@ With four failing gates, the PR is checked once, repaired by four agents, re-che
 | gh-aw agents (`pr-*.md`) | Triggered only by `workflow_dispatch` with `pr_number` and `findings` inputs (the gate's concrete failure output — linter messages, failing tests and coverage, CodeQL rule/file/line). Safe outputs target the PR explicitly and cannot remove gate labels. They are declarative — a natural-language prompt plus gh-aw frontmatter (no `steps:`/`jobs:` scripts of their own) — and cannot dispatch workflows. Each imports `shared/remediation-handoff.md`, whose deterministic *Hand off to the remediation relay* step in the generated `conclusion` job (which runs after the agent and its safe outputs, whatever their result) dispatches the relay with `agent_result`: `success` when a repair was applied (stacked PR, PR metadata edit or decision label), `no-changes`, the agent job's result (`failure`, `cancelled`, `skipped`) or `safe-outputs-<result>`. |
 | `pr-stacked-merge.yml` | The relay (run name `Remediation relay for <branch>`). Marks draft stacked PRs ready, squash-merges every open `*-remediation` PR into the parent branch, posts an audit comment naming the gate being re-checked, waits for a running pipeline, then re-checks the repaired gates on the new head (carrying the others over) and updates `pr-quality`. Only an `agent_result` of `success` (or a manual run without one) re-checks the dispatching agent's gate; any other result re-checks nothing new, so the still-failing gate fails `pr-quality` fast. With the GitHub App configured it merges with the App token and stops there: the pipeline run started by the merge re-checks the gates named in the commit's `Recheck-Gates` trailer. It does not wait for other agents: each agent's own relay re-checks its gate. A stacked PR that conflicts with the branch is closed as `remediation-superseded` and its gate re-checked, so the fix is regenerated once on the current head ([Merge conflicts](#merge-conflicts)). |
 | `pr-merge-conflicts.yml` | Runs on every push (GitHub never starts `pull_request` runs for conflicting PRs). Flags open PRs into `main` that conflict with it — all of them after a push to `main`, the branch's own PR otherwise — with a `pr-quality` failure and one comment explaining how to resolve. |
+| `pr-review-intake.yml` + `.github/scripts/review.cjs` | Runs when Copilot submits a review (`pull_request_review`, also `workflow_dispatch(pr_number)`). Hands every open Copilot comment to `pr-review-fixer.lock.yml` in one dispatch — once per PR, and only while `pr-quality` is green ([Copilot review comments](#copilot-review-comments)). |
 
 ## Gate → agent mapping
 
@@ -105,6 +108,7 @@ With four failing gates, the PR is checked once, repaired by four agents, re-che
 | Security — CodeQL (`gate/security`) | `codeql-alert` | `pr-codeql-fixer.lock.yml` | Stacked PR (`security-remediation`) |
 | Security — Dependency Review (`gate/security`) | `dependency-alert` | `pr-dependency-fixer.lock.yml` | Stacked PR (`security-remediation`) |
 | Documentation Drift (`gate/docs`) | `docs-required` | `pr-doc-updater.lock.yml` | Stacked PR (`doc-remediation`) or `docs-not-required` decision |
+| — (Copilot code review, after every gate passed) | — | `pr-review-fixer.lock.yml` | One stacked PR (`review-remediation`) for all comments; re-checks **every** gate |
 
 The build gate (`gate/build`) has no agent: a broken build sets `build-failed` and fails
 `pr-quality` once no other repair is in progress. The other gates still run, so their findings are
@@ -228,6 +232,51 @@ Conflicts with `main` are not resolved by an agent: they decide how this change 
 landed on `main`, which is the author's call. For the window between a `main` push and a stale green
 `pr-quality`, enable **Require branches to be up to date before merging** in branch protection.
 
+## Copilot review comments
+
+Once every gate passed, `pr-review-dispatcher.yml` requests a Copilot code review.
+Its inline comments are not left for the author to click through one by one:
+
+1. **Intake** — `pr-review-intake.yml` runs when Copilot submits the review and hands **every** open
+   (unresolved, not outdated) Copilot comment to `pr-review-fixer.lock.yml` in one dispatch, keyed by
+   comment id. It only acts while `pr-quality` is green on the head commit, so it never races the gate
+   agents; a review that arrived earlier (e.g. automatic review on PR open) is handed over by the
+   review dispatcher once the gates pass, and the `pr-quality-verdict.yml` watchdog catches a lost
+   `pull_request_review` event. `pr-quality` goes back to **pending** (`Addressing N Copilot review
+   comment(s)`), and stays pending while the fixer runs, so the PR is not handed to a human mid-fix.
+2. **One stacked PR** — the PR Review Fixer decides each comment, applies the accepted ones (a
+   `suggestion` block as written), runs lint and tests, and opens a single `review-remediation` PR
+   whose body lists one `- applied <id>: …` / `- skipped <id>: <reason>` line per comment. If it
+   skips everything it only comments.
+3. **Relay** — merges it like any other repair, but re-checks **every** gate (a review fix can touch
+   anything), then answers each Copilot thread: applied ones get "Applied in `<sha>`" and are
+   resolved; skipped ones get the reason and stay open for the author.
+4. **Confirmation review** — once the review fix passed every gate **and every Copilot comment was
+   applied** (all Copilot threads resolved), the review dispatcher requests Copilot **once more** on
+   the final commit. The fix commit dismissed any earlier Copilot approval; this review can approve
+   the commit the human merges. Its comments are left to the author: there is no second fix round.
+   If a comment was skipped (its thread is still open), there is no confirmation review: Copilot
+   does not remember earlier rounds and
+   [may repeat comments](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-code-review#requesting-a-re-review-from-copilot)
+   even after they were resolved or downvoted, so it would raise the skipped point again rather than
+   approve. The open comments and the final approval are the author's.
+
+Guard rails: one automatic fix round per PR (any earlier PR Review Fixer run on the branch counts),
+and at most two Copilot reviews requested by the automation: the first one, and one confirmation
+after a merged review fix that left no Copilot thread open (`copilotReviewRequest` in `review.cjs`:
+nothing is requested once Copilot reviewed after the last review fix, while a Copilot comment is
+open, or when no review fix was merged). A review fix that
+conflicts with the branch is superseded like any other stacked PR ([Merge conflicts](#merge-conflicts)):
+every gate is re-checked on the current head and, once they pass, the review dispatcher hands the
+Copilot comments still open (not outdated by the conflicting change) to the PR Review Fixer again —
+the superseded round is given back once; a second conflict is blocked. Copilot code review must be
+enabled for the repository.
+
+**Copilot approvals** (repository Copilot code review settings, public preview): *Allow Copilot to
+approve pull requests* lets the confirmation review approve the final commit. Keep *Allow Copilot
+approvals to count toward merge requirements* **off**, or also require a code-owner/human approval:
+otherwise a Copilot approval alone could satisfy branch protection and skip the human final approval.
+
 ## Recommended: GitHub App for bot pushes
 
 With `GITHUB_TOKEN` only, every bot push to a feature branch leaves an approval-held
@@ -297,8 +346,9 @@ so the tests run the exact code that runs in Actions.
 | `remediation.test.js` | Label helpers, `commentOnce`, `dispatchRemediation` (dispatch, already running, pending stacked PR, budget exhaustion, cancelled runs not counted, superseded stacked PRs refunded, truncation, API errors) |
 | `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome (incl. conflicts with the base), the `sweepStalled` watchdog, `mergeability` polling and `flagBaseConflicts` |
 | `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check, conflicts with `main`), autofix stacked PR and relay hand-off, verdict job |
-| `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR, conflicting stacked PRs (superseded and regenerated once, then blocked; App path) |
+| `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR, conflicting stacked PRs (superseded and regenerated once, then blocked; App path), Copilot review fixes (every gate re-checked, threads answered and resolved, conflicts superseded once, then blocked) |
 | `merge-conflicts.test.js` | `pr-merge-conflicts.yml`: push trigger and permissions, PRs flagged after a push to `main` vs. a feature branch |
+| `review.test.js` | Copilot review handling: `addressCopilotReview` (one batched dispatch, thread filtering, gates must be green, one round per PR, skipped PRs), decision parsing, `copilotReviewRequest` (first review, one confirmation after a merged review fix, never a third; its comments left to the author), `pr-review-intake.yml`, dispatcher and watchdog hand-over, `pr-quality` held pending while the fixer runs |
 | `gates.test.js` | Every gate's handlers (metadata, lint, build, tests, docs, security, review dispatcher), *Record gate result* steps, standalone `verdict` jobs, `pr-quality-verdict.yml` |
 | `agents.test.js` | gh-aw agent contracts: declarative (no scripted steps/jobs), skipped on the default branch, dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, the shared relay hand-off compiled into every `conclusion` job (`agent_result` for repairs, no changes, crashes and failed safe outputs) |
 

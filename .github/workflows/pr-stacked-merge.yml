@@ -24,6 +24,10 @@ name: PR Stacked Remediation Auto-Merger
 #      parallel never wait for each other. A failed agent or one that changed nothing re-checks
 #      nothing: its gate still fails, so pr-quality fails fast;
 #   3. and updates the `pr-quality` verdict (one final full check runs once every gate passed).
+# A `review-remediation` PR (the PR Review Fixer addressing a Copilot code review) re-checks every
+# gate, and the relay answers each Copilot thread it covers: applied ones are resolved, skipped
+# ones get the agent's reason. A conflicting one is superseded like any other: once every gate
+# passed again, the Copilot comments still open are handed to the PR Review Fixer once more.
 # It never clears gate labels or marks anything as fixed: only the gates do that.
 
 run-name: Remediation relay for ${{ inputs.branch }}
@@ -91,7 +95,8 @@ jobs:
             const { owner, repo } = context.repo;
             const defaultBranch = context.payload.repository.default_branch;
             const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
-            const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
+            const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
+            const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation', 'review-remediation'];
             const ACTIVE = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const summary = (text) => core.summary.addRaw(`### Remediation Relay\n\n${text}\n`).write();
@@ -120,8 +125,8 @@ jobs:
             // agent_result) re-check it.
             const repaired = new Set();
             const agentRepaired = ['', 'success'].includes(process.env.AGENT_RESULT || '');
-            const sourceGate = agentRepaired ? quality.repairedGate(process.env.SOURCE) : null;
-            if (sourceGate) repaired.add(sourceGate);
+            const sourceGates = agentRepaired ? quality.repairedGates(process.env.SOURCE) : [];
+            sourceGates.forEach(g => repaired.add(g));
 
             // Merges made with the App token raise `synchronize`, so the PR Quality Pipeline re-checks
             // them natively. Its `pull_request` trigger only listens to PRs targeting the default branch.
@@ -142,6 +147,8 @@ jobs:
             // close it and re-check its gate on the current head: if the gate still fails, it
             // dispatches the same agent again with fresh findings (a superseded PR gives its
             // attempt back). Once per remediation label and branch; a second conflict blocks.
+            // A review fix re-checks every gate; once they pass, the verdict's review dispatcher
+            // hands the Copilot comments still open to the PR Review Fixer again.
             const supersede = async (pr, gates) => {
               const label = pr.labels.map(l => l.name).find(n => REMEDIATION_LABELS.includes(n));
               const closed = await github.paginate(github.rest.pulls.list, {
@@ -171,8 +178,11 @@ jobs:
                   `[#${pr.number} - ${pr.title}](${pr.html_url}) conflicts with \`${parentBranch}\`, which changed ` +
                     'after the fix was generated. Instead of resolving the conflict, it was closed:',
                   '',
-                  `- the **${gateNames}** gate is re-checked on the latest commit;`,
-                  '- if it still fails, its agent regenerates the fix on that commit (one extra attempt).'
+                  ...(label === review.REVIEW_LABEL
+                    ? ['- **every** gate is re-checked on the latest commit;',
+                       '- once they pass, the Copilot comments still open are addressed again on that commit (one extra attempt).']
+                    : [`- the **${gateNames}** gate is re-checked on the latest commit;`,
+                       '- if it still fails, its agent regenerates the fix on that commit (one extra attempt).'])
                 ].join('\n')
               });
               core.info(`🔀 Superseded conflicting stacked PR #${pr.number}; re-checking ${gates.join(', ')}.`);
@@ -180,7 +190,8 @@ jobs:
             };
 
             for (const pr of stacked) {
-              const gates = pr.labels.map(l => quality.repairedGate(l.name)).filter(Boolean);
+              const gates = [...new Set(pr.labels.flatMap(l => quality.repairedGates(l.name)))];
+              const reviewFix = pr.labels.some(l => l.name === review.REVIEW_LABEL);
               try {
                 if (pr.draft) {
                   await github.graphql(
@@ -195,7 +206,7 @@ jobs:
                   pull_number: pr.number,
                   merge_method: 'squash',
                   commit_title: `Merge stacked PR #${pr.number}: ${pr.title}`,
-                  commit_message: quality.recheckTrailer([...gates, ...(sourceGate ? [sourceGate] : [])])
+                  commit_message: quality.recheckTrailer([...gates, ...sourceGates])
                 });
                 merged++;
                 gates.forEach(g => repaired.add(g));
@@ -220,9 +231,16 @@ jobs:
                     `- **Merged Commit**: [\`${result.sha.slice(0, 7)}\`](${commitUrl})`,
                     `- **Target Branch**: \`${parentBranch}\``,
                     '',
-                    `> 💡 *The fix is not trusted until the gates pass: the **${gateNames}** gate re-checks this commit now, and every gate runs once more together before human review.*`
+                    reviewFix
+                      ? '> 💡 *Copilot review fixes can touch anything, so **every gate** re-checks this commit now. Each Copilot comment got a reply: applied ones are resolved, skipped ones say why.*'
+                      : `> 💡 *The fix is not trusted until the gates pass: the **${gateNames}** gate re-checks this commit now, and every gate runs once more together before human review.*`
                   ].join('\n')
                 });
+
+                if (reviewFix) {
+                  await review.answerCopilotReview({ github, context, core, prNumber: parent.number, stacked: pr, sha: result.sha })
+                    .catch(e => core.warning(`Could not answer the Copilot review: ${e.message}`));
+                }
               } catch (e) {
                 core.warning(`Failed to merge stacked PR #${pr.number}: ${e.message}`);
                 // Only a real conflict is regenerated; GitHub may still be computing mergeability.

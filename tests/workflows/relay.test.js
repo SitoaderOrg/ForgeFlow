@@ -818,3 +818,128 @@ describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch'
     expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-docs.yml']);
   });
 });
+
+describe('pr-stacked-merge.yml relay: Copilot review fixes', () => {
+  const SOURCE = 'PR Review Fixer (run 1100)';
+  const reviewPR = (extra = {}) =>
+    makePR({
+      number: 50,
+      branch: 'review-fix/pr-20',
+      base: BRANCH,
+      title: 'fix(review): address Copilot review comments',
+      labels: ['review-remediation'],
+      body: [
+        'Addresses the Copilot review.',
+        '',
+        '## Review decisions',
+        '- applied 9001: guard against an empty list',
+        '- skipped 9002: a matter of taste',
+        '- applied 9999: comment that no longer exists'
+      ].join('\n'),
+      ...extra
+    });
+  const threads = () => ({
+    20: [
+      {
+        id: 'T1',
+        path: 'apps/a.js',
+        line: 3,
+        comments: [
+          {
+            databaseId: 9001,
+            body: 'Empty list?',
+            author: 'copilot-pull-request-reviewer'
+          }
+        ]
+      },
+      {
+        id: 'T2',
+        path: 'apps/b.js',
+        line: 8,
+        comments: [
+          {
+            databaseId: 9002,
+            body: 'Rename this.',
+            author: 'copilot-pull-request-reviewer'
+          }
+        ]
+      }
+    ]
+  });
+
+  it('merges the fix, re-checks every gate and answers each Copilot thread', async () => {
+    const { github, parent } = world({
+      parentLabels: [],
+      stacked: [reviewPR()],
+      reviewThreads: threads()
+    });
+    await seedGates(github, parent.head.sha, ALL_PASSED);
+    await relay(github, { SOURCE });
+
+    const [merge] = github.state.merges;
+    expect(merge.number).toBe(50);
+    expect(merge.commit_message).toBe(
+      'Recheck-Gates: metadata, lint, build, tests, security, docs'
+    );
+    expect(gateDispatches(github).sort()).toEqual(
+      quality.GATES.map((g) => g.workflow).sort()
+    );
+    expect(github.comments(20)[0]).toContain('**every gate** re-checks');
+
+    const replies = github.state.reviewReplies;
+    expect(replies.map((r) => r.comment_id)).toEqual([9001, 9002]);
+    expect(replies[0].body).toContain(`Applied in ${merge.sha.slice(0, 7)}`);
+    expect(replies[1].body).toContain('a matter of taste');
+    const [t1, t2] = github.state.reviewThreads[20];
+    expect(t1.isResolved).toBe(true);
+    expect(t2.isResolved).toBeFalsy();
+  });
+
+  it('re-checks every gate after a review fix with the App token too', async () => {
+    const { github, parent } = world({
+      parentLabels: [],
+      stacked: [reviewPR()],
+      reviewThreads: threads()
+    });
+    await seedGates(github, parent.head.sha, ALL_PASSED);
+    await relay(github, { SOURCE, APP_TOKEN: 'app-token' });
+    expect(github.state.merges[0]).toMatchObject({
+      token: 'app-token',
+      commit_message:
+        'Recheck-Gates: metadata, lint, build, tests, security, docs'
+    });
+    expect(github.state.reviewReplies).toHaveLength(2);
+  });
+
+  it('supersedes a conflicting review fix like any other stacked PR and re-checks every gate', async () => {
+    const pr = reviewPR();
+    pr.mergeable = false;
+    const { github, parent } = world({ parentLabels: [], stacked: [pr] });
+    await seedGates(github, parent.head.sha, ALL_PASSED);
+    await relay(github, { SOURCE });
+    expect(github.state.merges).toEqual([]);
+    expect(github.pr(50).state).toBe('closed');
+    expect(github.labels(50)).toContain(quality.SUPERSEDED_LABEL);
+    expect(github.labels(50)).not.toContain(quality.BLOCKED_LABEL);
+    expect(github.state.deletedRefs).toContain('heads/review-fix/pr-20');
+    expect(gateDispatches(github).sort()).toEqual(
+      quality.GATES.map((g) => g.workflow).sort()
+    );
+    const notice = github.comments(20).find((c) => c.includes('superseded'));
+    expect(notice).toContain(
+      'the Copilot comments still open are addressed again'
+    );
+  });
+
+  it('blocks a review fix that conflicts again after it was regenerated once', async () => {
+    const earlier = reviewPR({ number: 49, state: 'closed' });
+    earlier.labels.push({ name: quality.SUPERSEDED_LABEL });
+    const pr = reviewPR();
+    pr.mergeable = false;
+    const { github } = world({ parentLabels: [], stacked: [earlier, pr] });
+    await relay(github, { SOURCE });
+    expect(github.pr(50).state).toBe('open');
+    expect(github.labels(50)).toContain(quality.BLOCKED_LABEL);
+    expect(github.comments(20)[0]).toContain('already regenerated once');
+  });
+});

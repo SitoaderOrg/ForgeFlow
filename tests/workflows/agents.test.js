@@ -31,7 +31,8 @@ const STACKED_LABELS = [
   'lint-remediation',
   'test-remediation',
   'security-remediation',
-  'doc-remediation'
+  'doc-remediation',
+  'review-remediation'
 ];
 
 const lockFile = (md) => md.replace(/\.md$/, '.lock.yml');

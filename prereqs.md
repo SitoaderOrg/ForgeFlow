@@ -104,4 +104,6 @@ When developing and compiling workflows locally:
 | **Security** | CodeQL analysis | Settings → Code security | SAST Security Gatekeeper |
 | **Security** | Copilot Autofix for CodeQL | Settings → Code security | AI fix suggestions for SAST alerts |
 | **AI / Copilot** | Copilot license & access | Organization / User Settings | Agentic reasoning & remediation |
+| **AI / Copilot** | Copilot code review enabled for the repository | Organization / Repository Copilot settings | Copilot review + PR Review Fixer |
+| **AI / Copilot** | Optional: *Allow Copilot to approve pull requests* on; keep *Allow Copilot approvals to count toward merge requirements* off (or also require a human approval) | Repository Copilot code review settings → Auto-approval | Copilot confirmation review approves the final commit without replacing the human final approval |
 | **Workflows** | `allowed-base-branches: ["*"]` | `.github/workflows/*.md` | Stacked PR target branching |

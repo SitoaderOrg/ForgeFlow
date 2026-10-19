@@ -100,7 +100,7 @@ jobs:
             });
 
             const labels = pr.labels.map(l => l.name);
-            const remediationLabels = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
+            const remediationLabels = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation', 'review-remediation'];
             let skip = false;
             if (pr.state !== 'open') {
               core.notice(`PR #${prNumber} is ${pr.state}; skipping pipeline.`);

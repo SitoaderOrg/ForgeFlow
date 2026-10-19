@@ -27,8 +27,11 @@ const GATES = [
 ];
 
 // Gate repaired by a stacked remediation PR (label) or by its source (agent workflow name or the
-// pipeline's lint auto-fix).
+// pipeline's lint auto-fix). `ALL_GATES`: Copilot review fixes can touch anything.
+const ALL_GATES = '*';
 const REPAIRED_GATE = {
+  'review-remediation': ALL_GATES,
+  'PR Review Fixer': ALL_GATES,
   'lint-remediation': 'lint',
   'test-remediation': 'tests',
   'security-remediation': 'security',
@@ -43,7 +46,7 @@ const REPAIRED_GATE = {
   'PR Documentation Updater': 'docs'
 };
 
-const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation'];
+const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation', 'review-remediation'];
 // Set by the relay on a stacked PR it could not merge: a human has to resolve it.
 const BLOCKED_LABEL = 'remediation-blocked';
 // Set by the relay on a stacked PR it closed after a merge conflict (defined with the retry budget).
@@ -65,7 +68,8 @@ const REMEDIATION_WORKFLOWS = [
   'pr-codeql-fixer.lock.yml',
   'pr-dependency-fixer.lock.yml',
   'pr-secret-fixer.lock.yml',
-  'pr-doc-updater.lock.yml'
+  'pr-doc-updater.lock.yml',
+  'pr-review-fixer.lock.yml'
 ];
 
 const ACTIVE_STATUSES = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
@@ -171,12 +175,20 @@ const truncate = (text, max = 140) => (text.length > max ? `${text.slice(0, max 
 const runUrl = (context) =>
   `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
-/** Gate repaired by a remediation label or agent source (`<workflow name> (run <id>)`). */
-function repairedGate(source) {
+/** Gates repaired by a remediation label or agent source (`<workflow name> (run <id>)`). */
+function repairedGates(source) {
   const name = String(source || '')
     .replace(/\s*\(run \d+\)\s*$/, '')
     .trim();
-  return REPAIRED_GATE[name] || null;
+  const gate = REPAIRED_GATE[name];
+  if (gate === ALL_GATES) return GATES.map((g) => g.id);
+  return gate ? [gate] : [];
+}
+
+/** The single gate repaired by a label or source; null when none (or every gate). */
+function repairedGate(source) {
+  const gates = repairedGates(source);
+  return gates.length === 1 ? gates[0] : null;
 }
 
 /** Latest `gate/<id>` status per gate on a commit (`revision`: PR revision it was recorded for). */
@@ -435,8 +447,10 @@ async function evaluateVerdict({ github, context, core, prNumber, reported, excl
   } else if (pr.mergeable === false) {
     return failBaseConflict({ github, context, core, pr, rev, targetUrl });
   } else {
-    state = 'success';
-    summary = 'All gates passed';
+    // e.g. the PR Review Fixer addressing a Copilot review on this commit.
+    repairing = await remediationInProgress({ github, context, branch: pr.head.ref, excludeRunIds: [context.runId, ...excludeRunIds] });
+    state = repairing.length ? 'pending' : 'success';
+    summary = repairing.length ? `All gates passed; waiting for: ${repairing.map((r) => r.workflow).join(', ')}` : 'All gates passed';
   }
 
   await setQualityStatus({ github, context, sha, state, summary, rev, targetUrl });
@@ -659,6 +673,7 @@ module.exports = {
   setQualityStatus,
   pendingRemediationRuns,
   repairedGate,
+  repairedGates,
   passedLabel,
   getGateStatuses,
   setGateStatus,

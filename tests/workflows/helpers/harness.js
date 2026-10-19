@@ -243,6 +243,7 @@ export function createGitHub(initial = {}) {
           const sha = nextSha();
           pr.state = 'closed';
           pr.merged = true;
+          pr.merged_at = new Date().toISOString();
           const parent = state.pulls.find(
             (p) => p.state === 'open' && p.head.ref === pr.base.ref
           );
@@ -269,7 +270,30 @@ export function createGitHub(initial = {}) {
         if (!pr) throw notFound();
         if (st) pr.state = st;
         return { data: clone(pr) };
-      })
+      }),
+      createReplyForReviewComment: record(
+        'pulls.createReplyForReviewComment',
+        async ({ pull_number, comment_id, body }) => {
+          (state.reviewReplies ||= []).push({ pull_number, comment_id, body });
+          return { data: {} };
+        }
+      ),
+      // Seed `state.reviews[prNumber] = [{ user: { login }, state, submitted_at }]` and
+      // `state.requestedReviewers[prNumber] = [login]`.
+      listReviews: record('pulls.listReviews', async ({ pull_number }) => ({
+        data: clone(state.reviews?.[pull_number] || [])
+      })),
+      listRequestedReviewers: record(
+        'pulls.listRequestedReviewers',
+        async ({ pull_number }) => ({
+          data: {
+            users: (state.requestedReviewers?.[pull_number] || []).map(
+              (login) => ({ login })
+            ),
+            teams: []
+          }
+        })
+      )
     },
     issues: {
       listLabelsOnIssue: record(
@@ -427,6 +451,39 @@ export function createGitHub(initial = {}) {
       if (query.includes('markPullRequestReadyForReview')) {
         const pr = state.pulls.find((p) => p.node_id === variables.id);
         if (pr) pr.draft = false;
+      }
+      // Review threads are `state.reviewThreads[prNumber] = [{ id, isResolved, isOutdated, path,
+      // line, comments: [{ databaseId, body, author }] }]`.
+      if (query.includes('reviewThreads')) {
+        const threads = (state.reviewThreads || {})[variables.number] || [];
+        return {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: threads.map((t) => ({
+                  isResolved: false,
+                  isOutdated: false,
+                  line: null,
+                  ...clone(t),
+                  comments: {
+                    nodes: t.comments.map((c) => ({
+                      url: `https://github.com/${OWNER}/${REPO}/pull/${variables.number}#discussion_r${c.databaseId}`,
+                      ...clone(c),
+                      author: { login: c.author }
+                    }))
+                  }
+                }))
+              }
+            }
+          }
+        };
+      }
+      if (query.includes('resolveReviewThread')) {
+        for (const threads of Object.values(state.reviewThreads || {})) {
+          const thread = threads.find((t) => t.id === variables.id);
+          if (thread) thread.isResolved = true;
+        }
       }
       return {};
     },

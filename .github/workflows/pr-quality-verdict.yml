@@ -6,7 +6,8 @@ name: PR Quality Verdict
 #
 # On a schedule it is also the watchdog: a PR whose pr-quality stayed pending for
 # STALE_VERDICT_MINUTES with no pipeline or relay running (e.g. an agent crashed before
-# handing off to the relay) gets its stuck gates re-checked and a fresh verdict.
+# handing off to the relay) gets its stuck gates re-checked and a fresh verdict. It also hands a
+# Copilot review whose `pull_request_review` event started no intake run to the PR Review Fixer.
 
 on:
   workflow_call:
@@ -76,6 +77,10 @@ jobs:
                 staleMinutes: Number(process.env.STALE_VERDICT_MINUTES)
               });
               const lines = swept.map(s => `- #${s.number}: re-checked ${s.recheck.join(', ') || 'nothing'}; pr-quality ${s.state} (${s.summary})`);
+              // Fallback for a Copilot review whose pull_request_review event started no intake run.
+              const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
+              const reviews = await review.sweepCopilotReviews({ github, context, core });
+              lines.push(...reviews.map(r => `- #${r.number}: handed ${r.comments} Copilot review comment(s) to the PR Review Fixer`));
               await core.summary.addRaw(`### pr-quality watchdog\n\n${lines.join('\n') || 'No stalled PRs.'}\n`).write();
               return;
             }

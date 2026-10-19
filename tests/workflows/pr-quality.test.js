@@ -241,7 +241,7 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
   });
 
   it('lists every remediation agent workflow', () => {
-    expect(quality.REMEDIATION_WORKFLOWS).toHaveLength(7);
+    expect(quality.REMEDIATION_WORKFLOWS).toHaveLength(8);
     expect(quality.DECISION_LABELS).toEqual(['docs-not-required']);
   });
 });
@@ -305,6 +305,15 @@ describe('pr-quality.cjs repairedGate', () => {
     expect(quality.repairedGate('')).toBeNull();
     expect(quality.repairedGate(undefined)).toBeNull();
     expect(quality.repairedGate('PR Review (run 1)')).toBeNull();
+  });
+
+  it('maps Copilot review fixes to every gate (they can touch anything)', () => {
+    const all = quality.GATES.map((g) => g.id);
+    expect(quality.repairedGates('review-remediation')).toEqual(all);
+    expect(quality.repairedGates('PR Review Fixer (run 5)')).toEqual(all);
+    expect(quality.repairedGate('review-remediation')).toBeNull();
+    expect(quality.repairedGates('lint-remediation')).toEqual(['lint']);
+    expect(quality.repairedGates('PR Review (run 1)')).toEqual([]);
   });
 
   it('has a gate workflow file for every gate', () => {
