@@ -20,6 +20,8 @@ describe('pr-pipeline.yml structure', () => {
   const wf = loadWorkflow(FILE);
 
   it('runs on PR updates and on relay re-dispatch with an optional force flag', () => {
+    // Stacked remediation PRs target a feature branch: they must not start held runs.
+    expect(wf.on.pull_request.branches).toEqual(['main']);
     expect(wf.on.pull_request.types).toEqual([
       'opened',
       'synchronize',
@@ -33,12 +35,13 @@ describe('pr-pipeline.yml structure', () => {
     });
   });
 
-  it('serialises runs per PR and only cancels on new pushes', () => {
+  it('serialises runs per PR and only cancels on new human pushes', () => {
     expect(wf.concurrency.group).toBe(
       'pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}'
     );
+    // Bot pushes (auto-fix, relay merges) queue so the pushing run finishes and results carry over.
     expect(wf.concurrency['cancel-in-progress']).toBe(
-      "${{ github.event_name == 'pull_request' }}"
+      "${{ github.event_name == 'pull_request' && github.event.sender.type != 'Bot' }}"
     );
   });
 
@@ -202,7 +205,10 @@ describe('pr-pipeline.yml context job (Check entry point)', () => {
       base_ref: 'main',
       revision: quality.revision(pr),
       skip: 'false',
-      same_repo: 'true'
+      same_repo: 'true',
+      mode: 'full',
+      recheck_before: '',
+      recheck_gates: ''
     });
     const [status] = github.qualityStatuses(pr.head.sha);
     expect(status.state).toBe('pending');
@@ -541,5 +547,257 @@ describe('pr-pipeline.yml verdict job', () => {
     });
     expect(gates.docs.state).toBe('error');
     expect(status.description).toMatch(/^Failed: Docs/);
+  });
+});
+
+describe('pr-pipeline.yml GitHub App token (no approval-held runs)', () => {
+  const wf = loadWorkflow(FILE);
+
+  it('pushes lint auto-fixes with the App token when it is configured', () => {
+    const steps = wf.jobs.autofix.steps;
+    const app = steps.find((s) => s.id === 'app');
+    expect(app.uses).toBe('actions/create-github-app-token@v3');
+    expect(app.if).toBe(
+      "needs.context.outputs.same_repo == 'true' && vars.PR_BOT_CLIENT_ID != ''"
+    );
+    expect(app['continue-on-error']).toBe(true);
+    expect(app.with).toEqual({
+      'client-id': '${{ vars.PR_BOT_CLIENT_ID }}',
+      'private-key': '${{ secrets.PR_BOT_PRIVATE_KEY }}'
+    });
+    const checkout = steps.find((s) => s.name === 'Checkout PR branch');
+    expect(checkout.with.token).toBe(
+      '${{ steps.app.outputs.token || github.token }}'
+    );
+    const recheck = steps.find(
+      (s) => s.name === 'Re-check the auto-fixed commit or start the gates'
+    );
+    expect(recheck.env.APP_PUSH).toBe(
+      "${{ steps.app.outputs.token != '' && needs.context.outputs.base_ref == 'main' }}"
+    );
+  });
+
+  it('runs a repair re-check job instead of the gates for relay merges', () => {
+    const job = wf.jobs.recheck;
+    expect(job.needs).toEqual(['context']);
+    expect(job.if).toBe("needs.context.outputs.mode == 'recheck'");
+    expect(job.concurrency).toEqual({
+      group: 'pr-quality-verdict-${{ needs.context.outputs.pr_number }}',
+      'cancel-in-progress': false
+    });
+    expect(job.permissions).toMatchObject({
+      actions: 'write',
+      statuses: 'write'
+    });
+    expect(wf.jobs.context.outputs).toMatchObject({
+      mode: '${{ steps.pr.outputs.mode }}',
+      recheck_before: '${{ steps.pr.outputs.recheck_before }}',
+      recheck_gates: '${{ steps.pr.outputs.recheck_gates }}'
+    });
+  });
+
+  it('does not re-dispatch after an App-token push: its synchronize event starts the check', async () => {
+    const pr = makePR({ number: 42 });
+    const github = createGitHub({ pulls: [pr] });
+    const { core } = await runScript(autofixScript, {
+      github,
+      env: {
+        PR_NUMBER: '42',
+        HEAD_REF: 'feat/sample',
+        HEAD_SHA: pr.head.sha,
+        PUSHED: 'true',
+        APP_PUSH: 'true',
+        FIX_SHA: 'f1x0000000000000000000000000000000000000'
+      }
+    });
+    expect(github.state.dispatches).toEqual([]);
+    expect(github.comments(42)[0]).toContain('auto-fixed');
+    expect(core.summaryText).toContain('Its push starts the pipeline');
+  });
+});
+
+const recheckScript = getScript(
+  FILE,
+  'recheck',
+  'Re-check repaired gates and publish pr-quality'
+);
+const ALL_PASSED_GATES = Object.fromEntries(
+  quality.GATES.map((g) => [g.id, 'success'])
+);
+
+/** A PR whose `before` commit has gate results and whose head is a chain of `commits`. */
+function repairWorld({ commits, beforeGates = ALL_PASSED_GATES }) {
+  const before = 'b'.repeat(40);
+  const pr = makePR({ number: 60 });
+  const github = createGitHub({ pulls: [pr] });
+  let parent = before;
+  for (const { sha, message } of commits) {
+    github.state.commits[sha] = { message, parents: [parent] };
+    parent = sha;
+  }
+  github.pr(60).head.sha = parent;
+  return { github, pr: github.pr(60), before, beforeGates };
+}
+
+async function seedGateResults(github, sha, states) {
+  for (const [gate, state] of Object.entries(states)) {
+    await quality.setGateStatus({
+      github,
+      context: createContext(),
+      sha,
+      gate,
+      state,
+      description: `${gate} ${state}`,
+      targetUrl: `https://github.com/octo/demo/actions/runs/${gate}`
+    });
+  }
+}
+
+async function resolvePush(
+  world,
+  { senderType = 'Bot', action = 'synchronize' } = {}
+) {
+  const { github, pr, before } = world;
+  const context = createContext({
+    eventName: 'pull_request',
+    ref: `refs/pull/${pr.number}/merge`,
+    runId: 556,
+    payload: {
+      action,
+      before,
+      sender: { login: 'pr-lifecycle-gh-app[bot]', type: senderType },
+      pull_request: { number: pr.number, head: { sha: pr.head.sha } }
+    }
+  });
+  const run = await runScript(contextScript, {
+    github,
+    context,
+    env: { PR_INPUT: '', FORCE: 'false' }
+  });
+  return { ...run, outputs: run.core.outputs };
+}
+
+const MERGE_1 = '1'.repeat(40);
+const MERGE_2 = '2'.repeat(40);
+const relayMerge = (n, gates) =>
+  `Merge stacked PR #${n}: fix\n\n${quality.recheckTrailer(gates)}`;
+
+describe('pr-pipeline.yml context job: relay merge pushes', () => {
+  it('re-checks only the repaired gates of a relay merge pushed by the App', async () => {
+    const world = repairWorld({
+      commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
+    });
+    await seedGateResults(world.github, world.before, {
+      ...ALL_PASSED_GATES,
+      docs: 'failure'
+    });
+    const { outputs, github, core } = await resolvePush(world);
+    expect(outputs).toMatchObject({
+      skip: 'true',
+      mode: 'recheck',
+      recheck_before: world.before,
+      recheck_gates: 'docs',
+      head_sha: MERGE_1
+    });
+    expect(core.notices.join()).toContain('re-checking docs');
+    expect(github.qualityStatuses(MERGE_1)).toEqual([]);
+  });
+
+  it('folds in an earlier relay merge whose own run never recorded the gates', async () => {
+    const world = repairWorld({
+      commits: [
+        { sha: MERGE_1, message: relayMerge(31, ['lint']) },
+        { sha: MERGE_2, message: relayMerge(32, ['docs']) }
+      ]
+    });
+    await seedGateResults(world.github, world.before, ALL_PASSED_GATES);
+    world.before = MERGE_1;
+    const { outputs } = await resolvePush(world);
+    expect(outputs).toMatchObject({
+      mode: 'recheck',
+      recheck_before: 'b'.repeat(40),
+      recheck_gates: 'lint,docs'
+    });
+  });
+
+  it.each([
+    [
+      'a human pushes a commit with the trailer',
+      { senderType: 'User' },
+      [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
+    ],
+    [
+      'the App pushes a lint auto-fix',
+      {},
+      [
+        {
+          sha: MERGE_1,
+          message: 'style: auto-fix lint and formatting [pr-autofix]'
+        }
+      ]
+    ],
+    [
+      'a relay merge lands together with another commit',
+      {},
+      [
+        { sha: MERGE_1, message: 'feat: more work' },
+        { sha: MERGE_2, message: relayMerge(32, ['docs']) }
+      ]
+    ]
+  ])('runs the full check when %s', async (_, opts, commits) => {
+    const world = repairWorld({ commits });
+    await seedGateResults(world.github, world.before, ALL_PASSED_GATES);
+    const { outputs, github } = await resolvePush(world, opts);
+    expect(outputs).toMatchObject({ skip: 'false', mode: 'full' });
+    expect(github.qualityStatuses(world.pr.head.sha)[0].state).toBe('pending');
+  });
+
+  it('runs the full check after a force-push (history not ahead of before)', async () => {
+    const world = repairWorld({
+      commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
+    });
+    world.before = 'f'.repeat(40);
+    const { outputs } = await resolvePush(world);
+    expect(outputs.mode).toBe('full');
+  });
+});
+
+describe('pr-pipeline.yml recheck job', () => {
+  it('re-checks the repaired gate, carries the others over and keeps pr-quality pending', async () => {
+    const world = repairWorld({
+      commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
+    });
+    const { github, before } = world;
+    await seedGateResults(github, before, {
+      ...ALL_PASSED_GATES,
+      docs: 'failure'
+    });
+    const { core } = await runScript(recheckScript, {
+      github,
+      context: createContext({ runId: 557 }),
+      env: {
+        PR_NUMBER: '60',
+        HEAD_REF: 'feat/sample',
+        HEAD_SHA: MERGE_1,
+        BEFORE: before,
+        GATES: 'docs'
+      }
+    });
+    expect(github.state.dispatches.map((d) => d.workflow_id)).toEqual([
+      'pr-docs.yml'
+    ]);
+    const gates = await quality.getGateStatuses({
+      github,
+      context: createContext(),
+      sha: MERGE_1
+    });
+    expect(gates.docs.state).toBe('pending');
+    expect(gates.lint).toMatchObject({
+      state: 'success',
+      carriedFrom: before.slice(0, 7)
+    });
+    expect(github.qualityStatuses(MERGE_1)[0].state).toBe('pending');
+    expect(core.summaryText).toContain('Re-checking: Docs');
+    expect(core.summaryText).toContain('Carried over: Metadata, Lint');
   });
 });

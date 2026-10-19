@@ -174,6 +174,8 @@ export function createGitHub(initial = {}) {
     graphql: [],
     deletedRefs: [],
     merges: [],
+    commits: {},
+    token: 'github-token',
     mergeErrors: {},
     missingWorkflows: [],
     dispatchError: null,
@@ -212,7 +214,7 @@ export function createGitHub(initial = {}) {
       ),
       merge: record(
         'pulls.merge',
-        async ({ pull_number, merge_method, commit_title }) => {
+        async ({ pull_number, merge_method, commit_title, commit_message }) => {
           if (state.mergeErrors[pull_number]) {
             throw Object.assign(new Error(state.mergeErrors[pull_number]), {
               status: 405
@@ -231,12 +233,20 @@ export function createGitHub(initial = {}) {
           const parent = state.pulls.find(
             (p) => p.state === 'open' && p.head.ref === pr.base.ref
           );
+          state.commits[sha] = {
+            message: [commit_title, commit_message]
+              .filter(Boolean)
+              .join('\n\n'),
+            parents: parent ? [parent.head.sha] : []
+          };
           if (parent) parent.head.sha = sha;
           state.merges.push({
             number: pr.number,
             merge_method,
             commit_title,
-            sha
+            commit_message,
+            sha,
+            token: state.token
           });
           return { data: { sha, merged: true } };
         }
@@ -321,6 +331,43 @@ export function createGitHub(initial = {}) {
       )
     },
     repos: {
+      // Commits are `state.commits[sha] = { message, parents }`; history follows first parents.
+      compareCommitsWithBasehead: record(
+        'repos.compareCommitsWithBasehead',
+        async ({ basehead }) => {
+          const [base, head] = basehead.split('...');
+          const commits = [];
+          let sha = head;
+          while (sha && sha !== base) {
+            const commit = state.commits[sha];
+            if (!commit) {
+              return {
+                data: { status: 'diverged', commits: clone(commits) }
+              };
+            }
+            commits.unshift({ sha, commit: { message: commit.message } });
+            sha = commit.parents[0];
+          }
+          if (!sha) return { data: { status: 'diverged', commits: [] } };
+          return {
+            data: {
+              status: commits.length ? 'ahead' : 'identical',
+              commits: clone(commits)
+            }
+          };
+        }
+      ),
+      getCommit: record('repos.getCommit', async ({ ref }) => {
+        const commit = state.commits[ref];
+        if (!commit) throw notFound();
+        return {
+          data: {
+            sha: ref,
+            commit: { message: commit.message },
+            parents: commit.parents.map((p) => ({ sha: p }))
+          }
+        };
+      }),
       getCombinedStatusForRef: record(
         'repos.getCombinedStatusForRef',
         async ({ ref }) => ({
@@ -348,7 +395,7 @@ export function createGitHub(initial = {}) {
     }
   };
 
-  return {
+  const client = {
     rest,
     state,
     async paginate(method, args) {
@@ -376,6 +423,27 @@ export function createGitHub(initial = {}) {
         (s) => s.context === quality.STATUS_CONTEXT
       )
   };
+
+  // Client authenticated with another token (`getOctokit(token)`): same fake, calls record `state.token`.
+  const withToken = (token, api) =>
+    Object.fromEntries(
+      Object.entries(api).map(([key, value]) => [
+        key,
+        typeof value === 'function'
+          ? async (args) => {
+              const previous = state.token;
+              state.token = token;
+              try {
+                return await value(args);
+              } finally {
+                state.token = previous;
+              }
+            }
+          : withToken(token, value)
+      ])
+    );
+  client.as = (token) => ({ ...client, rest: withToken(token, rest) });
+  return client;
 }
 
 /** Store a `pr-quality` status for the PR's current revision, as the pipeline does. */
@@ -496,9 +564,18 @@ export async function runScript(
       'context',
       'core',
       'setTimeout',
+      'getOctokit',
       script
     );
-    const result = await fn(scriptRequire, github, context, core, fakeTimeout);
+    const getOctokit = (token) => github.as(token);
+    const result = await fn(
+      scriptRequire,
+      github,
+      context,
+      core,
+      fakeTimeout,
+      getOctokit
+    );
     return { result, core, github, sleeps };
   } finally {
     for (const [key, value] of Object.entries(saved)) {

@@ -13,7 +13,10 @@ name: PR Quality Pipeline
 #            are merged automatically. A human approves and merges the feature PR into main.
 
 on:
+  # Feature PRs target main. Stacked remediation PRs target a feature branch and are consolidated
+  # by pr-stacked-merge.yml, so they must not start (approval-held) runs here.
   pull_request:
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   # Re-entry point after the lint auto-fix commit and for the final all-gates check once every
   # gate is green (pr-quality.cjs). Commits made with GITHUB_TOKEN do not raise `synchronize`
@@ -31,10 +34,11 @@ on:
         default: false
 
 # New pushes cancel a running check; dispatched re-checks queue behind it and are
-# de-duplicated by revision instead.
+# de-duplicated by revision instead. Bot pushes (lint auto-fix, relay merges) queue as well, so
+# the run that pushed finishes and a repair re-check can carry over the previous results.
 concurrency:
   group: pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.sender.type != 'Bot' }}
 
 permissions:
   contents: read
@@ -61,6 +65,9 @@ jobs:
       revision: ${{ steps.pr.outputs.revision }}
       skip: ${{ steps.pr.outputs.skip }}
       same_repo: ${{ steps.pr.outputs.same_repo }}
+      mode: ${{ steps.pr.outputs.mode }}
+      recheck_before: ${{ steps.pr.outputs.recheck_before }}
+      recheck_gates: ${{ steps.pr.outputs.recheck_gates }}
     steps:
       - name: Checkout shared scripts
         uses: actions/checkout@v4
@@ -124,9 +131,24 @@ jobs:
               }
             }
 
+            const rev = quality.revision(pr);
+
+            // Relay merges pushed with the GitHub App token raise `synchronize` themselves: re-check
+            // only the repaired gates and carry the others over (see pr-stacked-merge.yml).
+            let mode = skip ? 'skip' : 'full';
+            let repair = null;
+            if (!skip && context.eventName === 'pull_request' && context.payload.action === 'synchronize' &&
+                context.payload.sender && context.payload.sender.type === 'Bot') {
+              repair = await quality.repairPush({ github, context, before: context.payload.before, after: pr.head.sha });
+              if (repair) {
+                mode = 'recheck';
+                skip = true;
+                core.notice(`Relay merge into ${pr.head.ref}: re-checking ${repair.gates.join(', ') || 'stale'} gate(s), carrying the rest over from ${repair.before.slice(0, 7)}.`);
+              }
+            }
+
             // Check each revision once: skip when it already has a final verdict
             // (e.g. a relay re-dispatch racing a `pull_request` run for the same commit).
-            const rev = quality.revision(pr);
             if (!skip) {
               const forced = process.env.FORCE === 'true' || Number(process.env.GITHUB_RUN_ATTEMPT) > 1;
               const existing = await quality.getQualityStatus({ github, context, sha: pr.head.sha });
@@ -153,12 +175,17 @@ jobs:
             core.setOutput('revision', rev);
             core.setOutput('skip', String(skip));
             core.setOutput('same_repo', String(sameRepo));
+            core.setOutput('mode', mode);
+            core.setOutput('recheck_before', repair ? repair.before : '');
+            core.setOutput('recheck_gates', repair ? repair.gates.join(',') : '');
             core.info(`PR #${prNumber}: ${pr.head.ref} (${pr.head.sha}) -> ${pr.base.ref}, revision ${rev}`);
 
   # Stage 1: Deterministic lint auto-fix (~1m). ESLint --fix and Prettier repair most lint
   # findings in seconds, so the PR Lint Fixer agent is only needed for what is left. A fix is
-  # pushed to the PR branch and the pipeline re-dispatched on the new commit; otherwise every
-  # gate is marked pending on the head commit and the gates start.
+  # pushed to the PR branch with the GitHub App token (PR_BOT_CLIENT_ID / PR_BOT_PRIVATE_KEY), whose
+  # `synchronize` event starts the check of the new commit; without the App, the push uses
+  # GITHUB_TOKEN and the pipeline is re-dispatched instead. Otherwise every gate is marked pending
+  # on the head commit and the gates start.
   autofix:
     name: 'Stage 1: Lint auto-fix'
     needs: [context]
@@ -173,13 +200,23 @@ jobs:
     outputs:
       pushed: ${{ steps.fix.outputs.pushed }}
     steps:
+      - name: Mint GitHub App token
+        id: app
+        if: needs.context.outputs.same_repo == 'true' && vars.PR_BOT_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PR_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
+
       - name: Checkout PR branch
-        # Fork PRs (also when dispatched) cannot be pushed to with GITHUB_TOKEN.
+        # Fork PRs (also when dispatched) cannot be pushed to.
         if: needs.context.outputs.same_repo == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.context.outputs.head_ref }}
           fetch-depth: 0
+          token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Auto-fix lint & formatting in changed files
         id: fix
@@ -241,19 +278,24 @@ jobs:
           HEAD_SHA: ${{ needs.context.outputs.head_sha }}
           PUSHED: ${{ steps.fix.outputs.pushed }}
           FIX_SHA: ${{ steps.fix.outputs.sha }}
+          # The App push only starts a run when the PR targets a branch `on.pull_request` listens to.
+          APP_PUSH: ${{ steps.app.outputs.token != '' && needs.context.outputs.base_ref == 'main' }}
         with:
           script: |
             const quality = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/pr-quality.cjs`);
             const prNumber = Number(process.env.PR_NUMBER);
             if (process.env.PUSHED === 'true') {
-              // Pushes made with GITHUB_TOKEN do not raise `synchronize`: re-dispatch on the new commit.
-              await github.rest.actions.createWorkflowDispatch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'pr-pipeline.yml',
-                ref: process.env.HEAD_REF,
-                inputs: { pr_number: String(prNumber) }
-              });
+              const appPush = process.env.APP_PUSH === 'true';
+              if (!appPush) {
+                // GITHUB_TOKEN pushes only create approval-held runs: re-dispatch on the new commit.
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: 'pr-pipeline.yml',
+                  ref: process.env.HEAD_REF,
+                  inputs: { pr_number: String(prNumber) }
+                });
+              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -261,7 +303,8 @@ jobs:
                 body: `### 🧹 Lint & formatting auto-fixed\n\nESLint \`--fix\` and Prettier were applied to the files changed in this PR ` +
                   `(commit ${process.env.FIX_SHA.slice(0, 7)}). The quality gates now run on that commit.`
               });
-              await core.summary.addRaw(`### 🧹 Auto-fixed lint in ${process.env.FIX_SHA}\n\nThe pipeline was re-dispatched on the fixed commit.\n`).write();
+              const next = appPush ? 'Its push starts the pipeline on the fixed commit.' : 'The pipeline was re-dispatched on the fixed commit.';
+              await core.summary.addRaw(`### 🧹 Auto-fixed lint in ${process.env.FIX_SHA}\n\n${next}\n`).write();
               return;
             }
             await quality.startGates({ github, context, core, prNumber, sha: process.env.HEAD_SHA });
@@ -422,3 +465,58 @@ jobs:
                 failure: 'No remediation agent could repair the failing gates; manual changes are required.'
               }[verdict.state] || '') + '\n'
             ).write();
+  # Repair re-check: the push consisted only of relay merges (stacked remediation PRs merged with
+  # the GitHub App token). Only the repaired gates are re-checked on the new commit; the others
+  # keep their result from the commit before the merge. Replaces the relay's own re-check, so a
+  # repair costs exactly one pipeline run and no approval-held runs.
+  recheck:
+    name: 'Re-check repaired gates'
+    needs: [context]
+    if: needs.context.outputs.mode == 'recheck'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-quality-verdict-${{ needs.context.outputs.pr_number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
+      statuses: write
+    steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Re-check repaired gates and publish pr-quality
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.context.outputs.pr_number }}
+          HEAD_REF: ${{ needs.context.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          BEFORE: ${{ needs.context.outputs.recheck_before }}
+          GATES: ${{ needs.context.outputs.recheck_gates }}
+        with:
+          script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
+            const prNumber = Number(process.env.PR_NUMBER);
+            const plan = await quality.recheckGates({
+              github, context, core,
+              prNumber,
+              branch: process.env.HEAD_REF,
+              before: process.env.BEFORE,
+              sha: process.env.HEAD_SHA,
+              repaired: process.env.GATES.split(',').filter(Boolean),
+              reason: 'stacked PR merge'
+            });
+            const verdict = await quality.evaluateVerdict({ github, context, core, prNumber });
+            const names = (ids) => ids.map((id) => quality.GATES.find((g) => g.id === id).name).join(', ') || 'none';
+            await core.summary.addRaw([
+              `### 🔁 Re-checked after a stacked PR merge`,
+              '',
+              `- Commit: \`${process.env.HEAD_SHA}\` (results carried from \`${process.env.BEFORE.slice(0, 7)}\`)`,
+              `- Re-checking: ${names(plan.recheck)}`,
+              `- Carried over: ${names(plan.carried)}`,
+              `- pr-quality: **${verdict.state}** — ${verdict.summary}`
+            ].join('\n') + '\n').write();

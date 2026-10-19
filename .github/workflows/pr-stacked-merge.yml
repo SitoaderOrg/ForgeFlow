@@ -3,16 +3,22 @@ name: PR Stacked Remediation Auto-Merger
 # Remediation relay (the "Recheck" step of Check -> Repair -> Recheck -> Review & merge).
 #
 # Agents run with the default GITHUB_TOKEN, and GitHub never starts workflow runs for
-# PRs/pushes/labels created with that token (nor `workflow_run` events for runs that
-# were themselves dispatched with it). Every gh-aw agent therefore dispatches this
-# workflow through its `dispatch-workflow` safe output, after its other safe outputs. The relay:
-#   1. squash-merges open stacked remediation PRs into the parent branch;
-#   2. re-checks only the gate(s) the agent repaired on the new commit, carrying the other
-#      gate results over, so agents working in parallel never wait for each other;
-#   3. updates the `pr-quality` verdict (one final full check runs once every gate passed).
+# pushes/labels created with that token (nor `workflow_run` events for runs that were
+# themselves dispatched with it); PRs only get runs held for approval. Every gh-aw agent
+# therefore dispatches this workflow through its `dispatch-workflow` safe output, after its other
+# safe outputs. There is deliberately no `pull_request` trigger: stacked PRs opened with
+# GITHUB_TOKEN would only create runs held for approval. The relay:
+#   1. squash-merges open stacked remediation PRs into the parent branch, with a
+#      `Recheck-Gates:` trailer naming the repaired gates. With the GitHub App token
+#      (PR_BOT_CLIENT_ID / PR_BOT_PRIVATE_KEY) the merge raises `synchronize`, and the PR Quality
+#      Pipeline run it starts re-checks those gates: the relay stops here;
+#   2. otherwise (no App, or nothing merged) it re-checks only the gate(s) the agent repaired on
+#      the new commit itself, carrying the other gate results over, so agents working in
+#      parallel never wait for each other;
+#   3. and updates the `pr-quality` verdict (one final full check runs once every gate passed).
 # It never clears gate labels or marks anything as fixed: only the gates do that.
 
-run-name: Remediation relay for ${{ inputs.branch || github.event.pull_request.base.ref }}
+run-name: Remediation relay for ${{ inputs.branch }}
 
 on:
   workflow_dispatch:
@@ -31,11 +37,8 @@ on:
         required: false
         type: string
         default: ''
-  # Still honoured when stacked PRs are opened with a PAT (GH_AW_CI_TRIGGER_TOKEN)
-  pull_request:
-    types: [opened, reopened, labeled]
 concurrency:
-  group: pr-stacked-merge-${{ inputs.branch || github.event.pull_request.base.ref }}
+  group: pr-stacked-merge-${{ inputs.branch }}
   cancel-in-progress: false
 
 permissions:
@@ -50,12 +53,6 @@ jobs:
     name: Auto-Merge Remediation PRs & Recheck
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'lint-remediation') ||
-      contains(github.event.pull_request.labels.*.name, 'test-remediation') ||
-      contains(github.event.pull_request.labels.*.name, 'security-remediation') ||
-      contains(github.event.pull_request.labels.*.name, 'doc-remediation')
 
     steps:
       - name: Checkout shared scripts
@@ -63,13 +60,24 @@ jobs:
         with:
           sparse-checkout: .github/scripts
 
+      - name: Mint GitHub App token
+        id: app
+        if: vars.PR_BOT_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PR_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
+
       - name: Consolidate Stacked PRs & Recheck
-        uses: actions/github-script@v7
+        # v9 injects `getOctokit` for the App-token client.
+        uses: actions/github-script@v9
         env:
           INPUT_BRANCH: ${{ inputs.branch }}
           AGENT_RESULT: ${{ inputs.agent_result }}
           SOURCE: ${{ inputs.source }}
           PIPELINE_WAIT_MINUTES: ${{ vars.PIPELINE_WAIT_MINUTES || '30' }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -80,9 +88,7 @@ jobs:
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const summary = (text) => core.summary.addRaw(`### Remediation Relay\n\n${text}\n`).write();
 
-            const parentBranch = context.eventName === 'pull_request'
-              ? context.payload.pull_request.base.ref
-              : process.env.INPUT_BRANCH;
+            const parentBranch = process.env.INPUT_BRANCH;
 
             if (!parentBranch || parentBranch === defaultBranch) {
               core.info(`Nothing to consolidate for branch '${parentBranch}'.`);
@@ -104,6 +110,11 @@ jobs:
             const sourceGate = quality.repairedGate(process.env.SOURCE);
             if (sourceGate) repaired.add(sourceGate);
 
+            // Merges made with the App token raise `synchronize`, so the PR Quality Pipeline re-checks
+            // them natively. Its `pull_request` trigger only listens to PRs targeting the default branch.
+            const appMerge = Boolean(process.env.APP_TOKEN) && parent.base.ref === defaultBranch;
+            const merger = appMerge ? getOctokit(process.env.APP_TOKEN) : github;
+
             // 1. Merge every open stacked remediation PR that targets the parent branch.
             //    Gate labels stay on the parent PR: only a passing gate removes them.
             const stacked = (await github.paginate(github.rest.pulls.list, {
@@ -121,14 +132,15 @@ jobs:
                   core.info(`Marked stacked PR #${pr.number} ready for review.`);
                 }
 
-                const { data: result } = await github.rest.pulls.merge({
+                const gates = pr.labels.map(l => quality.repairedGate(l.name)).filter(Boolean);
+                const { data: result } = await merger.rest.pulls.merge({
                   owner, repo,
                   pull_number: pr.number,
                   merge_method: 'squash',
-                  commit_title: `Merge stacked PR #${pr.number}: ${pr.title}`
+                  commit_title: `Merge stacked PR #${pr.number}: ${pr.title}`,
+                  commit_message: quality.recheckTrailer([...gates, ...(sourceGate ? [sourceGate] : [])])
                 });
                 merged++;
-                const gates = pr.labels.map(l => quality.repairedGate(l.name)).filter(Boolean);
                 gates.forEach(g => repaired.add(g));
                 const gateNames = gates.map(g => quality.GATES.find(x => x.id === g).name).join(', ') || 'affected';
                 core.info(`✅ Merged stacked PR #${pr.number} into '${parentBranch}' (${result.sha}).`);
@@ -165,6 +177,16 @@ jobs:
                   body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${e.message}\n\nPlease review and merge it manually.`
                 });
               }
+            }
+
+            if (merged && appMerge) {
+              await summary([
+                `- Parent PR: #${parent.number}`,
+                `- Stacked PRs merged: ${merged} (GitHub App token)`,
+                `- Repaired by: ${process.env.SOURCE || 'stacked PR'}${process.env.AGENT_RESULT ? ` (${process.env.AGENT_RESULT})` : ''}`,
+                `- Re-check: the PR Quality Pipeline run started by the merge re-checks ${[...repaired].join(', ') || 'the affected gates'}`
+              ].join('\n'));
+              return;
             }
 
             // 2. A pipeline still running on this branch is about to record fresh gate results.
