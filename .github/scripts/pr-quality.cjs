@@ -498,6 +498,66 @@ async function sweepStalled({ github, context, core, staleMinutes = 30, now = Da
   return swept;
 }
 
+// ---------------------------------------------------------------------------
+// Repair commits (stacked PRs merged by the relay with the GitHub App token)
+// ---------------------------------------------------------------------------
+
+const RECHECK_TRAILER = 'Recheck-Gates';
+const RECHECK_TRAILER_RE = new RegExp(`^${RECHECK_TRAILER}:[ \\t]*(.*)$`, 'm');
+
+/** Commit message trailer naming the gates a relay merge repaired. */
+function recheckTrailer(gates) {
+  const ids = [...new Set(gates)].filter((id) => gateById(id));
+  return `${RECHECK_TRAILER}: ${ids.join(', ')}`;
+}
+
+/** Gates named by a commit's `Recheck-Gates` trailer, or null when it is not a relay merge. */
+function parseRecheckTrailer(message) {
+  const match = RECHECK_TRAILER_RE.exec(message || '');
+  if (!match) return null;
+  return match[1]
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => gateById(id));
+}
+
+/**
+ * Classify a `synchronize` push. When every pushed commit is a relay merge, return the gates to
+ * re-check and the commit whose gate results carry over; otherwise null (full check).
+ * Earlier relay merges whose own pipeline run never recorded every gate (e.g. it was replaced
+ * by this push) are folded in, so their repairs are re-checked too.
+ */
+async function repairPush({ github, context, before, after, limit = 20 }) {
+  const { owner, repo } = context.repo;
+  if (!before || !after || /^0+$/.test(before)) return null;
+  let compare;
+  try {
+    ({ data: compare } = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${before}...${after}` }));
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
+  if (compare.status !== 'ahead' || !(compare.commits || []).length) return null;
+  const gates = new Set();
+  for (const commit of compare.commits) {
+    const repaired = parseRecheckTrailer(commit.commit && commit.commit.message);
+    if (!repaired) return null;
+    repaired.forEach((id) => gates.add(id));
+  }
+
+  let base = before;
+  for (let i = 0; i < limit; i++) {
+    const statuses = await getGateStatuses({ github, context, sha: base });
+    if (GATES.every((g) => statuses[g.id])) break;
+    const { data: commit } = await github.rest.repos.getCommit({ owner, repo, ref: base });
+    const repaired = parseRecheckTrailer(commit.commit && commit.commit.message);
+    if (!repaired || !(commit.parents || []).length) break;
+    repaired.forEach((id) => gates.add(id));
+    base = commit.parents[0].sha;
+  }
+  return { before: base, gates: GATES.map((g) => g.id).filter((id) => gates.has(id)) };
+}
+
 module.exports = {
   STATUS_CONTEXT,
   DECISION_LABELS,
@@ -520,5 +580,8 @@ module.exports = {
   remediationInProgress,
   recheckGates,
   evaluateVerdict,
-  sweepStalled
+  sweepStalled,
+  recheckTrailer,
+  parseRecheckTrailer,
+  repairPush
 };

@@ -963,3 +963,40 @@ describe('pr-quality.cjs sweepStalled (watchdog)', () => {
     );
   });
 });
+
+describe('pr-quality.cjs Recheck-Gates trailer', () => {
+  it('names known gates once, in the given order', () => {
+    expect(quality.recheckTrailer(['docs', 'lint', 'docs', 'bogus'])).toBe(
+      'Recheck-Gates: docs, lint'
+    );
+  });
+
+  it('parses the trailer from a commit message and ignores unknown gates', () => {
+    expect(
+      quality.parseRecheckTrailer(
+        'Merge stacked PR #3: fix\r\n\r\nRecheck-Gates: tests, nope ,security\r\n'
+      )
+    ).toEqual(['tests', 'security']);
+    expect(quality.parseRecheckTrailer('Recheck-Gates:')).toEqual([]);
+  });
+
+  it.each([undefined, '', 'feat: add thing', 'style: auto-fix [pr-autofix]'])(
+    'returns null for a commit that is not a relay merge (%j)',
+    (message) => {
+      expect(quality.parseRecheckTrailer(message)).toBeNull();
+    }
+  );
+
+  it('treats a new branch (zero before SHA) as a full check', async () => {
+    const github = createGitHub();
+    expect(
+      await quality.repairPush({
+        github,
+        context: createContext(),
+        before: '0'.repeat(40),
+        after: '1'.repeat(40)
+      })
+    ).toBeNull();
+    expect(github.calls('repos.compareCommitsWithBasehead')).toEqual([]);
+  });
+});
