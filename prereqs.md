@@ -69,12 +69,18 @@ Navigate to **Settings → Secrets and variables → Actions**:
 
 ---
 
-## 5. Branch Protection for `main` (Optional)
+## 5. Branch Protection for `main` (Recommended)
+
+GitHub does not block merging on failed checks by default: without a ruleset, a red pipeline is only a warning and the PR can still be merged.
 
 Navigate to **Settings → Rules → Rulesets** (or **Settings → Branches**) and target `main`:
 
-- **Require status checks to pass**: add `pr-quality`
+- **Enforcement status**: **Active**, with an empty **Bypass list** (otherwise admins still get "Merge without waiting for requirements")
+- **Require status checks to pass**: add `pr-quality` with source **GitHub Actions**
   - Check: **Require branches to be up to date before merging**
+  - Leave **Do not require status checks on creation** unchecked
+  - Require only `pr-quality`, not the individual stage jobs (`Stage 2: Build`, …). GitHub treats a skipped job as passing, so when an earlier stage fails the skipped stages would not block the merge. `pr-quality` is a commit status published by the verdict (and by gate/relay re-checks) that is `success` only when every gate passed on the head commit; if it is never published, the required check stays pending and the merge stays blocked.
+  - `pr-quality` is always posted with the workflow `GITHUB_TOKEN`, so pinning the source to **GitHub Actions** prevents another app or token from spoofing it. If the name does not appear in the search, type it exactly and add it.
 - **Require a pull request before merging**: at least 1 approval
   - Check: **Dismiss stale pull request approvals when new commits are pushed**
   - Check: **Require approval of the most recent reviewable push**
@@ -110,7 +116,7 @@ When developing and compiling workflows locally:
 | **Actions** | Read and write permissions | Settings → Actions → General | Auto-merging & labeling PRs |
 | **Actions** | Allow Actions to create & approve PRs | Settings → Actions → General | Stacked remediation PRs |
 | **Actions** | `PR_BOT_CLIENT_ID` variable + `PR_BOT_PRIVATE_KEY` secret (GitHub App) | Settings → Secrets and variables → Actions | No "Action required" runs after bot pushes (recommended) |
-| **Branches** | Require `pr-quality` status + "Require branches to be up to date before merging" on `main` | Settings → Rules → Rulesets (or Branches) | No merge on a stale or conflicting verdict (optional) |
+| **Branches** | Require `pr-quality` status (source: GitHub Actions) + "Require branches to be up to date before merging" on `main`, enforcement Active, empty bypass list | Settings → Rules → Rulesets (or Branches) | No merge on a failed, pending, stale or conflicting verdict (recommended) |
 | **Branches** | Require PR + 1 approval, dismiss stale approvals, require approval of the most recent push on `main` | Settings → Rules → Rulesets (or Branches) | Human approval of the merged commit (optional) |
 | **Branches** | Require conversation resolution, block force pushes & deletions on `main` | Settings → Rules → Rulesets (or Branches) | Protected `main` (optional) |
 | **Security** | Dependency graph & alerts | Settings → Code security | Gate: Security (Dependency Review) |
