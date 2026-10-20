@@ -249,7 +249,7 @@ async function copilotReviewRequest({ github, context, prNumber }) {
  * run takes over), and after `timeoutMs` without a review (the watchdog takes over).
  * @returns {Promise<{result: 'reviewed'|'not-open'|'head-changed'|'timeout', address?: string, comments?: number}>}
  */
-async function awaitCopilotReview({ github, context, core, prNumber, headSha, sleep, timeoutMs = 300000, intervalMs = 20000 }) {
+async function awaitCopilotReview({ github, context, core, prNumber, headSha, sleep, timeoutMs = 900000, intervalMs = 20000 }) {
   const { owner, repo } = context.repo;
   const polls = Math.max(1, Math.ceil(timeoutMs / intervalMs));
   for (let poll = 1; ; poll++) {

@@ -203,28 +203,28 @@ jobs:
       # Only the first review: comments of the confirmation review are left to the author.
       - name: Wait for the Copilot review
         if: steps.copilot.outputs.request == 'initial' && steps.request.outputs.copilot_requested == 'true'
-        timeout-minutes: 15
+        timeout-minutes: 35
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-          REVIEW_WAIT_MINUTES: ${{ vars.REVIEW_WAIT_MINUTES || '5' }}
+          REVIEW_WAIT_MINUTES: ${{ vars.REVIEW_WAIT_MINUTES || '15' }}
         with:
           script: |
             const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
-            const minutes = Number(process.env.REVIEW_WAIT_MINUTES) || 5;
+            const minutes = Math.min(Number(process.env.REVIEW_WAIT_MINUTES) || 15, 30);
             const { result, address, comments } = await review.awaitCopilotReview({
               github, context, core,
               prNumber: Number(process.env.PR_NUMBER),
               headSha: process.env.HEAD_SHA,
-              timeoutMs: Math.min(minutes, 10) * 60000,
+              timeoutMs: minutes * 60000,
               sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
             });
             const detail = {
               reviewed: `Copilot reviewed the commit; hand-over: ${address}${comments ? ` (${comments} comment(s))` : ''}.`,
               'not-open': 'The PR was closed while waiting.',
               'head-changed': 'A new commit was pushed while waiting; its pipeline run takes over.',
-              timeout: `No Copilot review within ${Math.min(minutes, 10)} minute(s); the pr-quality watchdog hands it over later.`
+              timeout: `No Copilot review within ${minutes} minute(s); the pr-quality watchdog hands it over later.`
             }[result];
             core.info(detail);
             await core.summary.addRaw(`### Copilot review\n\n${detail}\n`).write();

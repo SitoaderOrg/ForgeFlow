@@ -581,12 +581,12 @@ describe('Copilot review wiring', () => {
         env: {
           PR_NUMBER: '20',
           HEAD_SHA: pr.head.sha,
-          REVIEW_WAIT_MINUTES: '5'
+          REVIEW_WAIT_MINUTES: '15'
         }
       }
     );
-    // 5 minutes at 20 s intervals: 15 checks.
-    expect(sleeps).toHaveLength(14);
+    // 15 minutes at 20 s intervals: 45 checks.
+    expect(sleeps).toHaveLength(44);
     expect(github.state.dispatches).toEqual([]);
     expect(core.summaryText).toContain(
       'the pr-quality watchdog hands it over later'

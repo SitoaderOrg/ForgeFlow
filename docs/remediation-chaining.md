@@ -272,7 +272,7 @@ Its inline comments are not left for the author to click through one by one:
    agents; a review that arrived earlier (e.g. automatic review on PR open) is handed over by the
    review-request workflow once the gates pass. Because Copilot is the actor of the review event, the
    intake run is held for approval; so after requesting the first review, `review-request.yml` checks
-   every 20 seconds, for up to `REVIEW_WAIT_MINUTES` (default 5, at most 10), for a Copilot review of the
+   every 20 seconds, for up to `REVIEW_WAIT_MINUTES` (default 15, at most 30), for a Copilot review of the
    head commit and hands it over as soon as it arrives. It stops early on a new commit or a closed PR,
    and the `verdict.yml` watchdog hands over a review that arrives later. `pr-quality` goes back to **pending** (`Addressing N Copilot review
    comment(s)`), and stays pending while the fixer runs, so the PR is not handed to a human mid-fix.
