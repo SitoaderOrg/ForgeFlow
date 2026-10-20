@@ -61,6 +61,8 @@ jobs:
       pull-requests: read
       issues: write
       statuses: write
+      # fullCheckAfterRepair lists the agent runs still repairing the PR.
+      actions: read
     outputs:
       pr_number: ${{ steps.pr.outputs.pr_number }}
       head_ref: ${{ steps.pr.outputs.head_ref }}

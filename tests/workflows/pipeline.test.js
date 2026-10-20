@@ -733,6 +733,13 @@ describe('pipeline.yml context job: relay merge pushes', () => {
       })
     );
 
+  it('may list the agent runs still repairing the branch (fullCheckAfterRepair)', () => {
+    // Without actions: read the context job fails with "Resource not accessible by integration".
+    expect(loadWorkflow(FILE).jobs.context.permissions.actions).toMatch(
+      /^(read|write)$/
+    );
+  });
+
   it('re-checks only the repaired gates of a relay merge pushed by the App', async () => {
     const world = repairWorld({
       commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
