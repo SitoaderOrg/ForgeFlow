@@ -69,7 +69,21 @@ Navigate to **Settings → Secrets and variables → Actions**:
 
 ---
 
-## 5. Local Developer Tooling
+## 5. Branch Protection for `main` (Optional)
+
+Navigate to **Settings → Rules → Rulesets** (or **Settings → Branches**) and target `main`:
+
+- **Require status checks to pass**: add `pr-quality`
+  - Check: **Require branches to be up to date before merging**
+- **Require a pull request before merging**: at least 1 approval
+  - Check: **Dismiss stale pull request approvals when new commits are pushed**
+  - Check: **Require approval of the most recent reviewable push**
+- **Require conversation resolution before merging**
+- **Block force pushes** and **Restrict deletions**
+
+---
+
+## 6. Local Developer Tooling
 
 When developing and compiling workflows locally:
 
@@ -89,18 +103,20 @@ When developing and compiling workflows locally:
 
 ---
 
-## 6. Checklist Summary
+## 7. Checklist Summary
 
 | Area | Setting | Path in GitHub UI | Required For |
 | :--- | :--- | :--- | :--- |
 | **Actions** | Read and write permissions | Settings → Actions → General | Auto-merging & labeling PRs |
 | **Actions** | Allow Actions to create & approve PRs | Settings → Actions → General | Stacked remediation PRs |
 | **Actions** | `PR_BOT_CLIENT_ID` variable + `PR_BOT_PRIVATE_KEY` secret (GitHub App) | Settings → Secrets and variables → Actions | No "Action required" runs after bot pushes (recommended) |
-| **Branches** | Require `pr-quality` status + "Require branches to be up to date before merging" on `main` | Settings → Branches (or Rulesets) | No merge on a stale or conflicting verdict (recommended) |
+| **Branches** | Require `pr-quality` status + "Require branches to be up to date before merging" on `main` | Settings → Rules → Rulesets (or Branches) | No merge on a stale or conflicting verdict (optional) |
+| **Branches** | Require PR + 1 approval, dismiss stale approvals, require approval of the most recent push on `main` | Settings → Rules → Rulesets (or Branches) | Human approval of the merged commit (optional) |
+| **Branches** | Require conversation resolution, block force pushes & deletions on `main` | Settings → Rules → Rulesets (or Branches) | Protected `main` (optional) |
 | **Security** | Dependency graph & alerts | Settings → Code security | Gate: Security (Dependency Review) |
 | **Security** | Automatic dependency submission | Settings → Code security | Build-time dependency detection |
 | **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |
-| **Security** | Secret scanning & push protection | Settings → Code security | Gate: Security (secret scanning) |
+| **Security** | Secret scanning & push protection | Settings → Code security | Blocks secrets at `git push`; `fix-secrets.md` (manual run). PR-diff secrets are gated by GITLEAKS in the lint stage |
 | **Security** | CodeQL analysis | Settings → Code security | Gate: Security (CodeQL) |
 | **Security** | Copilot Autofix for CodeQL | Settings → Code security | AI fix suggestions for SAST alerts |
 | **AI / Copilot** | Copilot license & access | Organization / User Settings | Agentic reasoning & remediation |
