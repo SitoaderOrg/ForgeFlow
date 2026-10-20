@@ -601,6 +601,35 @@ async function mergeability({ github, context, prNumber, sleep, attempts = 5, de
   }
 }
 
+// The commit a stacked remediation PR was built on. The lint auto-fix records it in the PR body;
+// gh-aw stamps its PRs with the agent run, whose `head_sha` is the commit it was dispatched on.
+const STACKED_BASE_MARKER = /<!-- remediation-base: ([0-9a-f]{40}) -->/;
+const GH_AW_RUN_MARKER = /<!-- gh-aw-agentic-workflow:[^>]*\bid: (\d+)/;
+const stackedBaseMarker = (sha) => `<!-- remediation-base: ${sha} -->`;
+
+/**
+ * Whether the commit a stacked PR was built on is still in the parent branch's history:
+ * 'intact', 'rebased' (the author rebased or force-pushed: merging it could bring back
+ * commits the author removed) or 'unknown' (no recorded base).
+ */
+async function stackedBase({ github, context, pr, head }) {
+  const { owner, repo } = context.repo;
+  let base = (STACKED_BASE_MARKER.exec(pr.body || '') || [])[1];
+  const runId = !base && (GH_AW_RUN_MARKER.exec(pr.body || '') || [])[1];
+  if (runId) {
+    try {
+      ({
+        data: { head_sha: base }
+      } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: Number(runId) }));
+    } catch (e) {
+      if (e.status !== 404) throw e;
+    }
+  }
+  if (!base) return { state: 'unknown', base: null };
+  const { data } = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${base}...${head}` });
+  return { state: ['identical', 'ahead'].includes(data.status) ? 'intact' : 'rebased', base };
+}
+
 /**
  * Fail `pr-quality` for a PR that conflicts with its base branch. Resolving it means deciding
  * how this change combines with what landed on the base, so it is left to the author: no gate
@@ -687,6 +716,8 @@ module.exports = {
   parseRecheckTrailer,
   repairPush,
   mergeability,
+  stackedBase,
+  stackedBaseMarker,
   failBaseConflict,
   isBaseConflict,
   flagBaseConflicts

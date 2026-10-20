@@ -755,7 +755,9 @@ describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch'
     expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-test.yml']);
     const gates = await gatesOn(github, github.pr(20).head.sha);
     expect(gates.lint.state).toBe('pending');
-    expect(core.summaryText).toContain('Superseded after a merge conflict');
+    expect(core.summaryText).toContain(
+      'Superseded after a merge conflict or a rebase/force-push'
+    );
   });
 
   it('waits for GitHub to compute mergeability before deciding', async () => {
@@ -816,6 +818,78 @@ describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch'
       { number: 32, token: 'app-token', commit_message: 'Recheck-Gates: docs' }
     ]);
     expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-docs.yml']);
+  });
+});
+
+describe('pr-stacked-merge.yml relay: stacked PRs built before a rebase or force-push', () => {
+  const GONE = 'f'.repeat(40);
+  // gh-aw stamps its PRs with the agent run; the run's head_sha is the commit it was built on.
+  const agentPR = (number, runId, label = 'lint-remediation') =>
+    stackedPR(number, label, {
+      body: `Fix.\n\n<!-- gh-aw-agentic-workflow: PR Lint Fixer, engine: copilot, id: ${runId}, workflow_id: pr-lint-fixer -->`
+    });
+  const agentRun = (id, head_sha) =>
+    makeRun({
+      id,
+      workflow: 'pr-lint-fixer.lock.yml',
+      branch: BRANCH,
+      head_sha
+    });
+
+  it('merges a fix built on a commit still in the branch', async () => {
+    const { github, parent } = world({ stacked: [agentPR(31, 501)] });
+    github.state.runs.push(agentRun(501, parent.head.sha));
+    await relay(github);
+    expect(github.state.merges.map((m) => m.number)).toEqual([31]);
+  });
+
+  it('supersedes a fix built on a commit the author rebased away, even without a conflict', async () => {
+    const { github, parent } = world({ stacked: [agentPR(31, 501)] });
+    github.state.runs.push(agentRun(501, GONE));
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      lint: 'failure'
+    });
+    await relay(github);
+
+    expect(github.state.merges).toHaveLength(0);
+    expect(github.pr(31).state).toBe('closed');
+    expect(github.labels(31)).toContain(quality.SUPERSEDED_LABEL);
+    expect(github.comments(31)[0]).toContain('rebased or force-pushed');
+    expect(github.comments(20).join()).toContain(
+      'superseded after a rebase or force-push'
+    );
+    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+  });
+
+  it('uses the base recorded by the lint auto-fix', async () => {
+    const pr = stackedPR(31, 'lint-remediation', {
+      body: `Auto-fix.\n\n${quality.stackedBaseMarker(GONE)}`
+    });
+    const { github } = world({ stacked: [pr] });
+    await relay(github, { SOURCE: 'Lint auto-fix (run 77)' });
+    expect(github.labels(31)).toContain(quality.SUPERSEDED_LABEL);
+  });
+
+  it('blocks a fix built before a rebase that was already regenerated once', async () => {
+    const earlier = stackedPR(30, 'lint-remediation', { state: 'closed' });
+    earlier.labels.push({ name: quality.SUPERSEDED_LABEL });
+    const { github } = world({ stacked: [earlier, agentPR(31, 501)] });
+    github.state.runs.push(agentRun(501, GONE));
+    await relay(github);
+    expect(github.state.merges).toHaveLength(0);
+    expect(github.pr(31).state).toBe('open');
+    expect(github.labels(31)).toContain(quality.BLOCKED_LABEL);
+    expect(github.comments(20)[0]).toContain('no longer in `feat/sample`');
+  });
+
+  it('merges as before when the base is unknown', async () => {
+    // No marker, or the agent run is gone: nothing to compare against.
+    const { github } = world({
+      stacked: [agentPR(31, 999), stackedPR(32, 'doc-remediation')]
+    });
+    await relay(github);
+    expect(github.state.merges.map((m) => m.number)).toEqual([31, 32]);
   });
 });
 

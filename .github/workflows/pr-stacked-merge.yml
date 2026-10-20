@@ -18,7 +18,9 @@ name: PR Stacked Remediation Auto-Merger
 #      Pipeline run it starts re-checks those gates: the relay stops here;
 #      A stacked PR that conflicts with the parent branch is closed as superseded instead
 #      (`remediation-superseded`) and its gate re-checked on the current head: if the gate still
-#      fails, its agent regenerates the fix there (once per label and branch; then it is blocked);
+#      fails, its agent regenerates the fix there (once per label and branch; then it is blocked).
+#      So is a stacked PR built on a commit that is no longer in the parent branch (the author
+#      rebased or force-pushed): it would merge cleanly but bring back what the rebase removed;
 #   2. otherwise (no App, or nothing merged) it re-checks only the gate(s) the agent repaired on
 #      the new commit itself, carrying the other gate results over, so agents working in
 #      parallel never wait for each other. A failed agent or one that changed nothing re-checks
@@ -149,20 +151,23 @@ jobs:
             // attempt back). Once per remediation label and branch; a second conflict blocks.
             // A review fix re-checks every gate; once they pass, the verdict's review dispatcher
             // hands the Copilot comments still open to the PR Review Fixer again.
-            const supersede = async (pr, gates) => {
+            const supersede = async (pr, gates, why = 'conflict') => {
               const label = pr.labels.map(l => l.name).find(n => REMEDIATION_LABELS.includes(n));
               const closed = await github.paginate(github.rest.pulls.list, {
                 owner, repo, state: 'closed', base: parentBranch, per_page: 100
               });
               const names = (p) => p.labels.map(l => l.name);
               if (closed.some(p => names(p).includes(quality.SUPERSEDED_LABEL) && names(p).includes(label))) {
-                core.warning(`A '${label}' PR was already regenerated after a conflict on '${parentBranch}'.`);
+                core.warning(`A '${label}' PR was already regenerated on '${parentBranch}'.`);
                 return false;
               }
+              const cause = why === 'rebased'
+                ? `was built on a commit that is no longer in \`${parentBranch}\` (the branch was rebased or force-pushed), so merging it could bring back changes removed there`
+                : `conflicts with \`${parentBranch}\`, which changed after it was generated`;
               await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: [quality.SUPERSEDED_LABEL] });
               await github.rest.issues.createComment({
                 owner, repo, issue_number: pr.number,
-                body: `Superseded: this fix conflicts with \`${parentBranch}\`, which changed after it was generated. ` +
+                body: `Superseded: this fix ${cause}. ` +
                   `The gate is re-checked on the latest commit and the fix regenerated there if it is still needed.`
               });
               await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });
@@ -173,10 +178,11 @@ jobs:
               await github.rest.issues.createComment({
                 owner, repo, issue_number: parent.number,
                 body: [
-                  '### 🔀 Stacked remediation PR superseded after a merge conflict',
+                  why === 'rebased'
+                    ? '### 🔀 Stacked remediation PR superseded after a rebase or force-push'
+                    : '### 🔀 Stacked remediation PR superseded after a merge conflict',
                   '',
-                  `[#${pr.number} - ${pr.title}](${pr.html_url}) conflicts with \`${parentBranch}\`, which changed ` +
-                    'after the fix was generated. Instead of resolving the conflict, it was closed:',
+                  `[#${pr.number} - ${pr.title}](${pr.html_url}) ${cause}. Instead of merging it, it was closed:`,
                   '',
                   ...(label === review.REVIEW_LABEL
                     ? ['- **every** gate is re-checked on the latest commit;',
@@ -185,13 +191,37 @@ jobs:
                        '- if it still fails, its agent regenerates the fix on that commit (one extra attempt).'])
                 ].join('\n')
               });
-              core.info(`🔀 Superseded conflicting stacked PR #${pr.number}; re-checking ${gates.join(', ')}.`);
+              core.info(`🔀 Superseded stacked PR #${pr.number} (${why}); re-checking ${gates.join(', ')}.`);
               return true;
             };
+
+            // A human has to merge it: stop counting it as repair in progress.
+            const block = async (pr, reason) => {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: pr.number, labels: [quality.BLOCKED_LABEL]
+              }).catch(err => core.warning(`Could not label stacked PR #${pr.number}: ${err.message}`));
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: parent.number,
+                body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${reason}\n\nPlease review and merge it manually.`
+              });
+            };
+            const regenerate = (pr, gates, why) =>
+              supersede(pr, gates, why).catch(err => { core.warning(`Could not supersede #${pr.number}: ${err.message}`); return false; });
 
             for (const pr of stacked) {
               const gates = [...new Set(pr.labels.flatMap(l => quality.repairedGates(l.name)))];
               const reviewFix = pr.labels.some(l => l.name === review.REVIEW_LABEL);
+
+              // A fix built on a commit the author rebased away merges "cleanly" but would bring back
+              // what the rebase removed: regenerate it on the current head, like a conflict.
+              const { state: baseState } = await quality.stackedBase({ github, context, pr, head: headBefore })
+                .catch(e => { core.warning(`Could not check the base of stacked PR #${pr.number}: ${e.message}`); return { state: 'unknown' }; });
+              if (baseState === 'rebased') {
+                if (!(await regenerate(pr, gates, 'rebased'))) {
+                  await block(pr, `It was built on a commit that is no longer in \`${parentBranch}\` (rebased or force-pushed), and its fix was already regenerated once.`);
+                }
+                continue;
+              }
               try {
                 if (pr.draft) {
                   await github.graphql(
@@ -245,20 +275,10 @@ jobs:
                 core.warning(`Failed to merge stacked PR #${pr.number}: ${e.message}`);
                 // Only a real conflict is regenerated; GitHub may still be computing mergeability.
                 const { state: mergeState } = await quality.mergeability({ github, context, prNumber: pr.number, sleep, delayMs: 5000 });
-                const regenerated = mergeState === 'conflict' &&
-                  await supersede(pr, gates).catch(err => { core.warning(`Could not supersede #${pr.number}: ${err.message}`); return false; });
-                if (regenerated) continue;
-                // A human has to resolve it: stop counting it as repair in progress.
-                await github.rest.issues.addLabels({
-                  owner, repo, issue_number: pr.number, labels: [quality.BLOCKED_LABEL]
-                }).catch(err => core.warning(`Could not label stacked PR #${pr.number}: ${err.message}`));
-                const reason = mergeState === 'conflict'
+                if (mergeState === 'conflict' && await regenerate(pr, gates, 'conflict')) continue;
+                await block(pr, mergeState === 'conflict'
                   ? `It conflicts with \`${parentBranch}\` again after its fix was already regenerated once.`
-                  : e.message;
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: parent.number,
-                  body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${reason}\n\nPlease review and merge it manually.`
-                });
+                  : e.message);
               }
             }
 
@@ -314,7 +334,7 @@ jobs:
             await summary([
               `- Parent PR: #${parent.number}`,
               `- Stacked PRs merged: ${merged}`,
-              ...(superseded.size ? [`- Superseded after a merge conflict (regenerated if still needed): ${gateNames([...superseded])}`] : []),
+              ...(superseded.size ? [`- Superseded after a merge conflict or a rebase/force-push (regenerated if still needed): ${gateNames([...superseded])}`] : []),
               `- Repaired by: ${process.env.SOURCE || 'stacked PR'}${process.env.AGENT_RESULT ? ` (${process.env.AGENT_RESULT})` : ''}`,
               `- Re-checking: ${gateNames(plan.recheck)}`,
               `- Carried over: ${gateNames(plan.carried)}`,

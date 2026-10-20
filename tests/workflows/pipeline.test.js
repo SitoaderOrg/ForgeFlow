@@ -397,6 +397,8 @@ describe('pr-pipeline.yml autofix job', () => {
     });
     expect(stacked.body).toContain('- `src/a.js`');
     expect(stacked.body).toContain('pr-stacked-merge.yml');
+    // The relay checks this commit is still in the branch before merging.
+    expect(stacked.body).toContain(quality.stackedBaseMarker(pr.head.sha));
     expect(github.labels(stacked.number)).toEqual(['lint-remediation']);
 
     // Same hand-off as the agents' conclusion job; the gates wait for the merged fix.
@@ -450,6 +452,10 @@ describe('pr-pipeline.yml autofix job', () => {
     });
     expect(github.calls('pulls.create')).toEqual([]);
     expect(github.comments(43)[0]).toContain('stacked PR #44');
+    // The force-push rebuilt the fix on the new head; its recorded base follows.
+    expect(github.pr(44).body).toContain(
+      quality.stackedBaseMarker(pr.head.sha)
+    );
     expect(github.state.dispatches.map((d) => d.workflow_id)).toEqual([
       'pr-stacked-merge.yml'
     ]);

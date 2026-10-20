@@ -1122,3 +1122,49 @@ describe('pr-quality.cjs merge conflicts with the base branch', () => {
     expect(quality.isBaseConflict(null)).toBe(false);
   });
 });
+
+describe('pr-quality.cjs stackedBase', () => {
+  const A = 'a'.repeat(40);
+  const B = 'b'.repeat(40);
+  const C = 'c'.repeat(40);
+  // A <- B is the branch; C is a commit the author rebased away.
+  const setup = (body, runs = []) => {
+    const github = createGitHub({
+      commits: { [B]: { message: 'next', parents: [A] } },
+      runs
+    });
+    const pr = { number: 31, body };
+    return { github, context: createContext(), pr, head: B };
+  };
+  const agentBody = (id) =>
+    `<!-- gh-aw-agentic-workflow: PR Lint Fixer, engine: copilot, id: ${id}, workflow_id: x -->`;
+
+  it('reads the base from the remediation-base marker', async () => {
+    const w = setup(quality.stackedBaseMarker(A));
+    expect(await quality.stackedBase(w)).toEqual({ state: 'intact', base: A });
+    expect(w.github.calls('actions.getWorkflowRun')).toEqual([]);
+  });
+
+  it('reads the base from the gh-aw agent run', async () => {
+    const run = { ...makeRun({ id: 501, workflow: 'x' }), head_sha: C };
+    const w = setup(agentBody(501), [run]);
+    expect(await quality.stackedBase(w)).toEqual({
+      state: 'rebased',
+      base: C
+    });
+  });
+
+  it('is unknown without a marker or when the agent run is gone', async () => {
+    expect((await quality.stackedBase(setup('plain body'))).state).toBe(
+      'unknown'
+    );
+    expect((await quality.stackedBase(setup(agentBody(999)))).state).toBe(
+      'unknown'
+    );
+  });
+
+  it('is intact when the base is the branch head', async () => {
+    const w = setup(quality.stackedBaseMarker(B));
+    expect((await quality.stackedBase(w)).state).toBe('intact');
+  });
+});

@@ -116,13 +116,15 @@ export function makeRun({
   status = 'completed',
   conclusion = 'success',
   jobs = [],
-  title
+  title,
+  head_sha
 }) {
   return {
     id,
     workflow_id: workflow,
     display_title: title ?? workflow,
     head_branch: branch,
+    head_sha,
     event,
     status,
     conclusion,
@@ -265,12 +267,17 @@ export function createGitHub(initial = {}) {
           return { data: { sha, merged: true } };
         }
       ),
-      update: record('pulls.update', async ({ pull_number, state: st }) => {
-        const pr = findPull(pull_number);
-        if (!pr) throw notFound();
-        if (st) pr.state = st;
-        return { data: clone(pr) };
-      }),
+      update: record(
+        'pulls.update',
+        async ({ pull_number, state: st, body, title }) => {
+          const pr = findPull(pull_number);
+          if (!pr) throw notFound();
+          if (st) pr.state = st;
+          if (body !== undefined) pr.body = body;
+          if (title !== undefined) pr.title = title;
+          return { data: clone(pr) };
+        }
+      ),
       createReplyForReviewComment: record(
         'pulls.createReplyForReviewComment',
         async ({ pull_number, comment_id, body }) => {
@@ -338,6 +345,11 @@ export function createGitHub(initial = {}) {
       }))
     },
     actions: {
+      getWorkflowRun: record('actions.getWorkflowRun', async ({ run_id }) => {
+        const run = state.runs.find((r) => r.id === Number(run_id));
+        if (!run) throw notFound();
+        return { data: clone(run) };
+      }),
       listWorkflowRuns: record(
         'actions.listWorkflowRuns',
         async ({ workflow_id, branch, event }) => {
