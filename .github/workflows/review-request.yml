@@ -93,7 +93,7 @@ jobs:
           echo "Active labels:"
           echo "$LABELS"
 
-          BLOCKING_LABELS=("needs-metadata" "lint-failed" "build-failed" "test-required" "docs-required" "codeql-alert" "dependency-alert" "secret-alert")
+          BLOCKING_LABELS=("needs-metadata" "lint-failed" "build-failed" "test-required" "docs-required" "codeql-alert" "dependency-alert")
           IS_BLOCKED=false
 
           for b_label in "${BLOCKING_LABELS[@]}"; do

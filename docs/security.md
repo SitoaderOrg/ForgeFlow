@@ -13,12 +13,10 @@ flowchart TD
     subgraph GitHub_Code_Security [GitHub Code Security Engines]
         SecGate --> DepReview[Dependency Review Action\nChecks PR diff for CVEs / license issues]
         SecGate --> CodeQL[CodeQL SAST Analysis\nScans code for security vulnerabilities]
-        SecGate --> SecScan[Secret Protection & Scanning\nChecks for exposed credentials & tokens]
     end
 
     DepReview -->|❌ High/Crit CVE| AddDepLabel[Apply 'dependency-alert' Label]
     CodeQL -->|❌ Code Vulnerability| AddCodeqlLabel[Apply 'codeql-alert' Label]
-    SecScan -->|❌ Hardcoded Secret| AddSecretLabel[Apply 'secret-alert' Label]
 
     AddDepLabel --> DepFixer[Autonomous Dependency Fixer\n.github/workflows/fix-dependencies.md]
     DepFixer --> BumpDep[Bump to Minimum Secure Versions in Manifest]
@@ -28,11 +26,7 @@ flowchart TD
     CodeqlFixer --> AutofixCheck[Query Copilot Autofix or Synthesize Fix]
     CodeqlFixer --> StackedPRCodeql[Create Stacked PR: security-remediation]
 
-    AddSecretLabel --> SecretFixer[Autonomous Secret Fixer\n.github/workflows/fix-secrets.md]
-    SecretFixer --> ScrubSecret[Scrub Secrets & Add Env Var Lookups]
-    SecretFixer --> StackedPRSecret[Create Stacked PR: security-remediation]
-
-    StackedPRDep & StackedPRCodeql & StackedPRSecret --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/relay.yml\nSquashes commit & posts audit link\nGates clear security labels on recheck]
+    StackedPRDep & StackedPRCodeql --> AutoMerge[Auto-Merged into Feature Branch\n.github/workflows/relay.yml\nSquashes commit & posts audit link\nGates clear security labels on recheck]
 
     AutoMerge --> Recheck([Feature Branch Updated & Security gate re-checked alone])
 ```
@@ -59,7 +53,7 @@ The deterministic security gate leverages native GitHub Code Security features:
 - **GitHub Secret Protection & Scanning**:
   - Repositories configure native GitHub Push Protection to reject hardcoded secrets server-side at `git push`.
   - Secrets introduced by the PR diff are caught by Super-Linter's **GITLEAKS** linter in the lint stage.
-  - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. The **`secret-alert`** label and `fix-secrets.md` remain available for manual dispatch.
+  - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. `fix-secrets.md` remains available for a manual run (`workflow_dispatch` with `pr_number`).
 - **Autonomous Label Management**:
   - Each label is independent: if only one check fails, only its specific alert label is attached.
   - The remediation relay auto-merges the stacked PR into the feature branch and re-runs only the security gate on the new commit; the security gate clears the labels only if the re-check passes.
@@ -84,14 +78,14 @@ gitGraph
 ```
 
 ### 2a. Fix: Dependencies (`.github/workflows/fix-dependencies.md`)
-- **Trigger**: Activates on the **`dependency-alert`** label.
+- **Trigger**: Dispatched by the security gate when Dependency Review fails (the gate also adds the **`dependency-alert`** label).
 - **Batched Remediation**: Reads Dependency Review failure logs and updates all vulnerable packages across manifests in a single stacked PR.
 - **Itemized Commit-Style Structure**:
   - The PR body details each package bump with a distinct commit title (e.g. `fix(deps): bump <package> from <old> to <new> to resolve <CVE>`), CVE/GHSA advisory details, and version deltas.
   - Opens the stacked PR against the developer's feature branch and adds a notification comment on the parent PR.
 
 ### 2b. Fix: CodeQL alerts (`.github/workflows/fix-codeql.md`)
-- **Trigger**: Activates on the **`codeql-alert`** label.
+- **Trigger**: Dispatched by the security gate with the CodeQL findings (the gate also adds the **`codeql-alert`** label).
 - **Copilot Autofix Integration**:
   - Queries `gh api repos/{owner}/{repo}/code-scanning/alerts/<alert-number>/autofix` and PR review suggestions for an existing Copilot Autofix recommendation.
   - If a valid Copilot Autofix suggestion exists, it incorporates the patch into the remediation.
@@ -101,7 +95,7 @@ gitGraph
   - The PR body documents each vulnerability resolved with a distinct commit title (e.g. `fix(security): sanitize input to prevent path traversal in <file>`), CWE number, sink, and defensive pattern.
 
 ### 2c. Fix: Secrets (`.github/workflows/fix-secrets.md`)
-- **Trigger**: Activates on the **`secret-alert`** label.
+- **Trigger**: Manual only: run it with `workflow_dispatch` and the `pr_number` on the PR head branch. No gate dispatches it (see above).
 - **Secret Scrubbing**:
   - Identifies exposed secrets from secret scanning alerts.
   - Scrubs hardcoded credentials from source files and replaces them with standard environment variable lookups (`process.env.SECRET_NAME`, `os.environ.get(...)`).

@@ -558,12 +558,7 @@ describe('gate-security.yml (Security gate)', () => {
     'passes with dependency review %s and CodeQL %s and clears alerts',
     async (dep, codeql) => {
       const { github } = world({
-        labels: [
-          'dependency-alert',
-          'codeql-alert',
-          'security-alert',
-          'lint-failed'
-        ]
+        labels: ['dependency-alert', 'codeql-alert', 'lint-failed']
       });
       const { core } = await run(github, {
         DEP_REVIEW_RESULT: dep,

@@ -75,7 +75,7 @@ Instead of pinging the developer to manually review and merge 3–4 separate sta
 ## 2. Review: request (`.github/workflows/review-request.yml`)
 
 Once all automated checks pass and all stacked PRs are settled:
-- **Verifies All Gates Passed**: Confirms zero blocking labels (`needs-metadata`, `lint-failed`, `build-failed`, `test-required`, `docs-required`, `codeql-alert`, `dependency-alert`, `secret-alert`).
+- **Verifies All Gates Passed**: Confirms zero blocking labels (`needs-metadata`, `lint-failed`, `build-failed`, `test-required`, `docs-required`, `codeql-alert`, `dependency-alert`).
 - **Requests GitHub Copilot Code Review**: Automatically dispatches `@copilot` to perform deep architectural and semantic review — once when the gates first pass, and once more to confirm the review fixes when every comment was applied.
 - **Posts Consolidated Summary**:
   - Itemizes every auto-merged remediation PR and commit with direct links.

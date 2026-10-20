@@ -287,10 +287,9 @@ jobs:
               await helpers.removeLabel({ github, context, core, prNumber, label: 'codeql-alert' });
             }
 
-            // GitHub Secret Scanning alerts are repository-wide and require a token with
-            // secret-scanning read access (not available to GITHUB_TOKEN); secrets inside the
-            // PR diff are caught by the GITLEAKS linter in the lint stage.
-            await helpers.removeLabel({ github, context, core, prNumber, label: 'security-alert' });
+            // No secret check here: GitHub Secret Scanning alerts are repository-wide and need a
+            // token with secret-scanning read access (not available to GITHUB_TOKEN); secrets inside
+            // the PR diff are caught by the GITLEAKS linter in the lint stage.
 
             const hasFailure = depReviewResult === 'failure' || codeqlResult === 'failure';
             if (hasFailure) {

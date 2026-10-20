@@ -24,8 +24,7 @@ const GATE_LABELS = [
   'test-required',
   'docs-required',
   'codeql-alert',
-  'dependency-alert',
-  'security-alert'
+  'dependency-alert'
 ];
 const STACKED_LABELS = [
   'lint-remediation',
