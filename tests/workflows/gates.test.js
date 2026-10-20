@@ -693,6 +693,29 @@ describe('scan-codeql.yml (the only CodeQL configuration)', () => {
     ).run;
     expect(detect).toContain('add_lang actions none');
     expect(detect).toContain('add_lang javascript-typescript none');
+    expect(detect).toContain('add_lang rust none');
+  });
+
+  it('builds Kotlin, which CodeQL cannot analyze without a build', () => {
+    const detect = scan.jobs.languages.steps.find(
+      (s) => s.name === 'Detect languages'
+    ).run;
+    expect(detect).toMatch(
+      /if has '\\\.kt\$'; then\s+add_lang java-kotlin autobuild\s+elif has '\\\.java\$'; then\s+add_lang java-kotlin none/
+    );
+  });
+
+  it('reports source files CodeQL cannot analyze instead of passing silently', () => {
+    const detect = scan.jobs.languages.steps.find(
+      (s) => s.name === 'Detect languages'
+    ).run;
+    expect(detect).toContain('::notice title=Not scanned by CodeQL::');
+    expect(detect).toMatch(/\\\.\(php\|scala\|.*\|sh\|.*\|sql\|/);
+  });
+
+  it('uses CodeQL Action v4', () => {
+    for (const s of steps.filter((s) => s.uses?.includes('codeql-action')))
+      expect(s.uses).toMatch(/@v4$/);
   });
 });
 

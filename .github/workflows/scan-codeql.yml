@@ -61,18 +61,38 @@ jobs:
           add_lang() {
             MATRIX=$(echo "$MATRIX" | jq -c --arg l "$1" --arg m "$2" '. + [{"language": $l, "build-mode": $m}]')
           }
-          # Interpreted languages are analysed without a build; compiled ones use autobuild.
-          echo "$FILES" | grep -qE '^\.github/(workflows/[^/]+|actions/.+/action)\.ya?ml$' && add_lang actions none
-          echo "$FILES" | grep -qE '\.(js|jsx|ts|tsx|mjs|cjs)$' && add_lang javascript-typescript none
-          echo "$FILES" | grep -qE '\.py$' && add_lang python none
-          echo "$FILES" | grep -qE '\.rb$' && add_lang ruby none
-          echo "$FILES" | grep -qE '\.(java|kt)$' && add_lang java-kotlin none
-          echo "$FILES" | grep -qE '\.cs$' && add_lang csharp none
-          echo "$FILES" | grep -qE '\.go$' && add_lang go autobuild
-          echo "$FILES" | grep -qE '\.(c|cpp|cc|cxx|h|hpp)$' && add_lang c-cpp none
-          echo "$FILES" | grep -qE '\.swift$' && add_lang swift autobuild
+          has() { echo "$FILES" | grep -qiE "$1"; }
+          # Analysed without a build where CodeQL supports it; otherwise autobuild.
+          has '^\.github/(workflows/[^/]+|actions/.+/action)\.ya?ml$' && add_lang actions none
+          has '\.(js|jsx|ts|tsx|mjs|cjs)$' && add_lang javascript-typescript none
+          has '\.py$' && add_lang python none
+          has '\.rb$' && add_lang ruby none
+          # Without a build CodeQL analyses Java only, so Kotlin code needs autobuild.
+          if has '\.kt$'; then
+            add_lang java-kotlin autobuild
+          elif has '\.java$'; then
+            add_lang java-kotlin none
+          fi
+          has '\.cs$' && add_lang csharp none
+          has '\.go$' && add_lang go autobuild
+          has '\.rs$' && add_lang rust none
+          has '\.(c|cpp|cc|cxx|h|hpp)$' && add_lang c-cpp none
+          has '\.swift$' && add_lang swift autobuild
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "CodeQL matrix: $MATRIX"
+
+          # Source code CodeQL cannot analyze: report it rather than pass silently.
+          UNCOVERED=$(echo "$FILES" \
+            | grep -iE '\.(php|scala|sc|dart|ex|exs|erl|lua|pl|pm|r|hs|clj|cljs|groovy|sh|bash|zsh|ps1|psm1|bat|cmd|sql|svelte|erb|jinja|j2)$' \
+            | sed -E 's/.*\.//' | tr '[:upper:]' '[:lower:]' | sort | uniq -c \
+            | awk '{ printf "%s%s .%s", (NR > 1 ? ", " : ""), $1, $2 }' || true)
+          if [ -n "$UNCOVERED" ]; then
+            echo "::notice title=Not scanned by CodeQL::$UNCOVERED file(s) are in languages CodeQL does not analyze."
+            {
+              echo "### Not scanned by CodeQL"
+              echo "$UNCOVERED file(s) are in languages CodeQL does not analyze; Dependency Review and the lint gate still apply."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   analyze:
     name: CodeQL (${{ matrix.language }})
@@ -91,7 +111,7 @@ jobs:
           fetch-depth: 0
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -104,10 +124,10 @@ jobs:
 
       - name: Autobuild
         if: matrix.build-mode == 'autobuild'
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: '/language:${{ matrix.language }}'
           output: sarif-results
