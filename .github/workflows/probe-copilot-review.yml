@@ -1,0 +1,42 @@
+name: 'Probe: Copilot review completed'
+run-name: 'Probe: Copilot review completed · ${{ github.event.workflow_run.head_branch }}'
+
+# Temporary experiment: does `workflow_run` fire when Copilot's dynamic code review workflow
+# ("Copilot", dynamic/agents/copilot-pull-request-reviewer) completes, and is the run held for
+# approval? Logs only; remove once answered.
+
+on:
+  workflow_run:
+    workflows: [Copilot]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log triggering run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            core.info(JSON.stringify({
+              actor: context.actor,
+              triggering_actor: process.env.GITHUB_TRIGGERING_ACTOR,
+              run_id: run.id,
+              run_name: run.name,
+              path: run.path,
+              event: run.event,
+              conclusion: run.conclusion,
+              head_branch: run.head_branch,
+              head_sha: run.head_sha,
+              run_actor: run.actor && run.actor.login,
+              pull_requests: (run.pull_requests || []).map((p) => p.number)
+            }, null, 2));
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner, repo: context.repo.repo, commit_sha: run.head_sha
+            });
+            core.info(`PRs for head_sha: ${prs.map((p) => `#${p.number} (${p.state}, head ${p.head.sha})`).join(', ') || 'none'}`);
