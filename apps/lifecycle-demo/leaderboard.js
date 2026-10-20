@@ -1,7 +1,10 @@
 // Non-deployed lifecycle exercise: nothing in the game imports this module.
 
 export function escapePlayerLabel(name) {
-  return name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;');
+  return name
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /** Return a score-descending export without modifying the caller's entries. */
