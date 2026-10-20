@@ -1,0 +1,190 @@
+name: 'Gate: Docs drift'
+run-name: 'Gate: Docs drift · PR #${{ inputs.pr_number }}'
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      base_ref:
+        required: true
+        type: string
+      from_pipeline:
+        description: 'Called by the pipeline, which publishes the verdict itself'
+        required: false
+        type: boolean
+        default: true
+  # Re-run this gate alone; head/base refs are resolved from the PR.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: write
+  statuses: write
+
+env:
+  MAX_REMEDIATION_ATTEMPTS: ${{ vars.MAX_REMEDIATION_ATTEMPTS || '1' }}
+
+jobs:
+  docs-drift:
+    name: Verify Documentation Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+        with:
+          script: |
+            // workflow_call passes the refs from the pipeline; workflow_dispatch passes only pr_number.
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(process.env.PR_NUMBER)
+            });
+            if (context.eventName === 'workflow_dispatch' && context.ref !== `refs/heads/${pr.head.ref}`) {
+              core.setFailed(`Dispatch ref '${context.ref}' does not match PR head branch '${pr.head.ref}'. Re-run with --ref ${pr.head.ref}.`);
+              return;
+            }
+            core.setOutput('head_ref', process.env.HEAD_REF || pr.head.ref);
+            core.setOutput('head_sha', process.env.HEAD_SHA || pr.head.sha);
+            core.setOutput('base_ref', process.env.BASE_REF || pr.base.ref);
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Documentation Drift
+        id: drift
+        env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          git fetch --no-tags origin "$HEAD_SHA" 2>/dev/null || true
+          CHANGED=$(git diff --name-only --diff-filter=d "origin/$BASE_REF...$HEAD_SHA")
+          echo "Changed files:"; echo "$CHANGED"
+
+          # Source = application code (tests, CI config, lockfiles and docs excluded)
+          SOURCE=$(echo "$CHANGED" \
+            | grep -E '\.(js|jsx|ts|tsx|mjs|cjs|py|go|java|kt|cs|rb|rs|php|swift|c|cpp|h|hpp)$' \
+            | grep -vE '(^|/)(tests?|spec|__tests__)/|\.(test|spec)\.[a-z]+$|_test\.go$|^\.github/|(^|/)[^/]*\.config\.[a-z]+$' || true)
+          DOCS=$(echo "$CHANGED" | grep -E '\.md$' | grep -vE '^\.github/' || true)
+
+          {
+            echo "source<<EOF"; echo "$SOURCE"; echo "EOF"
+            echo "docs<<EOF"; echo "$DOCS"; echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -z "$SOURCE" ]; then
+            echo "result=no-source-changes" >> "$GITHUB_OUTPUT"
+          elif [ -n "$DOCS" ]; then
+            echo "result=docs-present" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=docs-missing" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout shared scripts
+        if: always()
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          path: .gate-scripts
+
+      - name: Evaluate Gate & Trigger Documentation Agent
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          RESULT: ${{ steps.drift.outputs.result }}
+          SOURCE_FILES: ${{ steps.drift.outputs.source }}
+          DOC_FILES: ${{ steps.drift.outputs.docs }}
+        with:
+          script: |
+            const helpers = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/remediation.cjs`);
+            const prNumber = Number(process.env.PR_NUMBER);
+            const result = process.env.RESULT;
+            const labels = await helpers.getLabels({ github, context, prNumber });
+
+            // The docs fixer records a semantic "no docs needed" decision
+            // with the docs-not-required label so the gate does not loop.
+            if (result === 'docs-missing' && !labels.includes('docs-not-required')) {
+              await helpers.addLabel({ github, context, core, prNumber, label: 'docs-required' });
+              const status = await helpers.dispatchRemediation({
+                github, context, core, prNumber,
+                headRef: process.env.HEAD_REF,
+                workflow: 'fix-docs.lock.yml',
+                stackedLabel: 'doc-remediation',
+                findings: `Source files changed without any Markdown documentation updates:\n${process.env.SOURCE_FILES}`
+              });
+              await core.summary.addRaw(
+                '### ❌ Documentation Drift Detected\n\n' +
+                'Application code changed without documentation:\n\n```\n' + process.env.SOURCE_FILES + '\n```\n\n' +
+                `> 📚 **Autonomous Remediation**: Added \`docs-required\`. Docs fixer dispatch status: **${status}**. ` +
+                'The agent semantically evaluates the diff and either opens a stacked docs PR or marks the PR `docs-not-required`.\n'
+              ).write();
+              core.setFailed('Documentation drift: source code changed without documentation updates.');
+              return;
+            }
+
+            await helpers.removeLabel({ github, context, core, prNumber, label: 'docs-required' });
+            const reason = {
+              'no-source-changes': 'No application source changes detected.',
+              'docs-present': `Documentation updated alongside code:\n\n\`\`\`\n${process.env.DOC_FILES}\n\`\`\``,
+              'docs-missing': 'The docs fixer determined no documentation is required (`docs-not-required`).'
+            }[result] || result;
+            await core.summary.addRaw(`### ✅ Gate: Docs drift passed\n\n${reason}\n`).write();
+
+      - name: Record gate result
+        if: always() && steps.pr.outcome == 'success'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha || github.sha }}
+          GATE_RESULT: ${{ job.status }}
+        with:
+          script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.gate-scripts/.github/scripts/pr-quality.cjs`);
+            await quality.recordGate({
+              github, context, core, gate: 'docs',
+              prNumber: Number(process.env.PR_NUMBER),
+              sha: process.env.HEAD_SHA,
+              result: process.env.GATE_RESULT
+            });
+
+  # Re-checked alone after a repair: update the pr-quality verdict.
+  verdict:
+    name: Update pr-quality verdict
+    needs: [docs-drift]
+    if: ${{ always() && !inputs.from_pipeline }}
+    uses: ./.github/workflows/verdict.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      gate: docs
+      gate_result: ${{ needs.docs-drift.result }}
+      sha: ${{ github.sha }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
+      statuses: write

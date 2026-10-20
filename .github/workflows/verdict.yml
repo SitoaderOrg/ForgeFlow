@@ -1,0 +1,93 @@
+name: Verdict & watchdog
+run-name: ${{ github.event_name == 'schedule' && 'Verdict & watchdog · sweep' || format('Verdict & watchdog · PR #{0}', inputs.pr_number) }}
+
+# Derives the `pr-quality` commit status of a PR from the `gate/<id>` statuses of its head
+# commit (see .github/scripts/pr-quality.cjs). Called by a gate that was re-checked alone
+# after a repair; the full pipeline publishes its own verdict.
+#
+# On a schedule it is also the watchdog: a PR whose pr-quality stayed pending for
+# STALE_VERDICT_MINUTES with no pipeline or relay running (e.g. an agent crashed before
+# handing off to the relay) gets its stuck gates re-checked and a fresh verdict. It also hands a
+# Copilot review whose `pull_request_review` event started no intake run to the review-comments fixer.
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      gate:
+        description: 'Gate that just finished (marked as errored if it never recorded a result)'
+        required: false
+        type: string
+        default: ''
+      gate_result:
+        required: false
+        type: string
+        default: ''
+      sha:
+        description: 'Commit the gate checked'
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: string
+  schedule:
+    - cron: '*/15 * * * *'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: write
+  statuses: write
+
+jobs:
+  verdict:
+    name: Publish pr-quality status
+    runs-on: ubuntu-latest
+    # Gates finishing at the same time must not publish conflicting verdicts.
+    concurrency:
+      group: verdict-${{ inputs.pr_number || 'watchdog' }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Publish pr-quality status
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GATE: ${{ inputs.gate }}
+          GATE_RESULT: ${{ inputs.gate_result }}
+          GATE_SHA: ${{ inputs.sha }}
+          STALE_VERDICT_MINUTES: ${{ vars.STALE_VERDICT_MINUTES || '30' }}
+        with:
+          script: |
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
+            const { GATE, GATE_RESULT, GATE_SHA } = process.env;
+            if (!process.env.PR_NUMBER) {
+              const swept = await quality.sweepStalled({
+                github, context, core,
+                staleMinutes: Number(process.env.STALE_VERDICT_MINUTES)
+              });
+              const lines = swept.map(s => `- #${s.number}: re-checked ${s.recheck.join(', ') || 'nothing'}; pr-quality ${s.state} (${s.summary})`);
+              // Fallback for a Copilot review whose pull_request_review event started no intake run.
+              const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
+              const reviews = await review.sweepCopilotReviews({ github, context, core });
+              lines.push(...reviews.map(r => `- #${r.number}: handed ${r.comments} Copilot review comment(s) to the review-comments fixer`));
+              await core.summary.addRaw(`### pr-quality watchdog\n\n${lines.join('\n') || 'No stalled PRs.'}\n`).write();
+              return;
+            }
+            const verdict = await quality.evaluateVerdict({
+              github, context, core,
+              prNumber: Number(process.env.PR_NUMBER),
+              reported: GATE && GATE_SHA ? { sha: GATE_SHA, results: { [GATE]: GATE_RESULT } } : undefined
+            });
+            await core.summary.addRaw(`### pr-quality: ${verdict.state}\n\n${verdict.summary}\n`).write();

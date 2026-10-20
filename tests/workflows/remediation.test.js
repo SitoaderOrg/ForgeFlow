@@ -8,7 +8,7 @@ import {
   remediation
 } from './helpers/harness.js';
 
-const WF = 'pr-lint-fixer.lock.yml';
+const WF = 'fix-lint.lock.yml';
 
 function setup({ pr = makePR({ number: 7 }), runs = [], pulls = [] } = {}) {
   const github = createGitHub({ pulls: [pr, ...pulls], runs });
@@ -107,7 +107,7 @@ describe('remediation.cjs dispatchRemediation', () => {
         }),
         makeRun({
           id: 2,
-          workflow: 'pr-test-generator.lock.yml',
+          workflow: 'fix-tests.lock.yml',
           branch: 'feat/sample',
           status: 'in_progress'
         }),

@@ -186,14 +186,11 @@ describe.each(AGENTS)('%s', (md) => {
 
 describe('agent / gate wiring', () => {
   const gateDispatches = {
-    'pr-gatekeeper.yml': ['pr-validation.lock.yml'],
-    'pr-lint.yml': ['pr-lint-fixer.lock.yml'],
-    'pr-test.yml': ['pr-test-generator.lock.yml'],
-    'pr-docs.yml': ['pr-doc-updater.lock.yml'],
-    'pr-security.yml': [
-      'pr-dependency-fixer.lock.yml',
-      'pr-codeql-fixer.lock.yml'
-    ]
+    'gate-metadata.yml': ['fix-metadata.lock.yml'],
+    'gate-lint.yml': ['fix-lint.lock.yml'],
+    'gate-tests.yml': ['fix-tests.lock.yml'],
+    'gate-docs.yml': ['fix-docs.lock.yml'],
+    'gate-security.yml': ['fix-dependencies.lock.yml', 'fix-codeql.lock.yml']
   };
 
   it.each(Object.entries(gateDispatches))(
@@ -216,11 +213,11 @@ describe('agent / gate wiring', () => {
   );
 
   it.each([
-    'pr-gatekeeper.yml',
-    'pr-lint.yml',
-    'pr-test.yml',
-    'pr-docs.yml',
-    'pr-security.yml'
+    'gate-metadata.yml',
+    'gate-lint.yml',
+    'gate-tests.yml',
+    'gate-docs.yml',
+    'gate-security.yml'
   ])(
     '%s defaults to a remediation budget of 1 (fail after one repair)',
     (gate) => {
@@ -238,11 +235,11 @@ describe('agent / gate wiring', () => {
         readWorkflow(f)
       )
     );
-    expect(mergers).toEqual(['pr-stacked-merge.yml']);
+    expect(mergers).toEqual(['relay.yml']);
   });
 
-  it('relay, pipeline and dispatcher agree on the stacked remediation labels', () => {
-    for (const file of ['pr-stacked-merge.yml', 'pr-pipeline.yml']) {
+  it('relay, pipeline and review request agree on the stacked remediation labels', () => {
+    for (const file of ['relay.yml', 'pipeline.yml']) {
       const text = readWorkflow(file);
       for (const label of STACKED_LABELS) expect(text).toContain(`'${label}'`);
     }
@@ -250,7 +247,7 @@ describe('agent / gate wiring', () => {
 });
 
 describe('shared remediation hand-off', () => {
-  const RELAY_SOURCE = 'PR Lint Fixer (run 123456)';
+  const RELAY_SOURCE = 'Fix: Lint & format (run 123456)';
   const handoff = async (env) => {
     const github = createGitHub();
     const core = createCore();
@@ -314,7 +311,7 @@ describe('shared remediation hand-off', () => {
     const { dispatches, core } = await handoff(env);
     expect(dispatches).toEqual([
       expect.objectContaining({
-        workflow_id: 'pr-stacked-merge.yml',
+        workflow_id: 'relay.yml',
         ref: DEFAULT_BRANCH,
         inputs: {
           branch: 'feat/sample',
@@ -333,9 +330,7 @@ describe('shared remediation hand-off', () => {
     expect(handoffStep.env.BRANCH).toBe('${{ github.ref_name }}');
     expect(quality.repairedGate(RELAY_SOURCE)).toBe('lint');
     expect(
-      Object.keys(
-        loadWorkflow('pr-stacked-merge.yml').on.workflow_dispatch.inputs
-      )
+      Object.keys(loadWorkflow('relay.yml').on.workflow_dispatch.inputs)
     ).toEqual(['branch', 'agent_result', 'source']);
   });
 

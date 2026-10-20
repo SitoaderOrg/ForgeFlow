@@ -18,12 +18,12 @@ const STATUS_CONTEXT = 'pr-quality';
 
 /** Quality gates in pipeline order. `workflow` re-runs one gate alone on the PR branch. */
 const GATES = [
-  { id: 'metadata', name: 'Metadata', workflow: 'pr-gatekeeper.yml' },
-  { id: 'lint', name: 'Lint', workflow: 'pr-lint.yml' },
-  { id: 'build', name: 'Build', workflow: 'pr-build.yml' },
-  { id: 'tests', name: 'Tests', workflow: 'pr-test.yml' },
-  { id: 'security', name: 'Security', workflow: 'pr-security.yml' },
-  { id: 'docs', name: 'Docs', workflow: 'pr-docs.yml' }
+  { id: 'metadata', name: 'Metadata', workflow: 'gate-metadata.yml' },
+  { id: 'lint', name: 'Lint', workflow: 'gate-lint.yml' },
+  { id: 'build', name: 'Build', workflow: 'gate-build.yml' },
+  { id: 'tests', name: 'Tests', workflow: 'gate-tests.yml' },
+  { id: 'security', name: 'Security', workflow: 'gate-security.yml' },
+  { id: 'docs', name: 'Docs', workflow: 'gate-docs.yml' }
 ];
 
 // Gate repaired by a stacked remediation PR (label) or by its source (agent workflow name or the
@@ -31,19 +31,19 @@ const GATES = [
 const ALL_GATES = '*';
 const REPAIRED_GATE = {
   'review-remediation': ALL_GATES,
-  'PR Review Fixer': ALL_GATES,
+  'Fix: Copilot review comments': ALL_GATES,
   'lint-remediation': 'lint',
   'test-remediation': 'tests',
   'security-remediation': 'security',
   'doc-remediation': 'docs',
   'Lint auto-fix': 'lint',
-  'PR Validation': 'metadata',
-  'PR Lint Fixer': 'lint',
-  'PR Test Generator': 'tests',
-  'PR CodeQL Fixer': 'security',
-  'PR Dependency Fixer': 'security',
-  'PR Secret Fixer': 'security',
-  'PR Documentation Updater': 'docs'
+  'Fix: PR metadata': 'metadata',
+  'Fix: Lint & format': 'lint',
+  'Fix: Tests': 'tests',
+  'Fix: CodeQL alerts': 'security',
+  'Fix: Dependencies': 'security',
+  'Fix: Secrets': 'security',
+  'Fix: Docs': 'docs'
 };
 
 const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation', 'review-remediation'];
@@ -53,23 +53,23 @@ const BLOCKED_LABEL = 'remediation-blocked';
 const { SUPERSEDED_LABEL } = require(path.join(__dirname, 'remediation.cjs'));
 // Gates whose result depends on PR metadata / decision labels, not only on the commit.
 const METADATA_GATES = ['metadata', 'docs'];
-const RELAY_WORKFLOW = 'pr-stacked-merge.yml';
-const PIPELINE_WORKFLOW = 'pr-pipeline.yml';
-const REVIEW_WORKFLOW = 'pr-review-dispatcher.yml';
+const RELAY_WORKFLOW = 'relay.yml';
+const PIPELINE_WORKFLOW = 'pipeline.yml';
+const REVIEW_WORKFLOW = 'review-request.yml';
 const CARRIED = /^carried from ([0-9a-f]{7}): /;
 
 // Labels written by agents that record a gate decision (and therefore change the outcome).
 const DECISION_LABELS = ['docs-not-required'];
 
 const REMEDIATION_WORKFLOWS = [
-  'pr-validation.lock.yml',
-  'pr-lint-fixer.lock.yml',
-  'pr-test-generator.lock.yml',
-  'pr-codeql-fixer.lock.yml',
-  'pr-dependency-fixer.lock.yml',
-  'pr-secret-fixer.lock.yml',
-  'pr-doc-updater.lock.yml',
-  'pr-review-fixer.lock.yml'
+  'fix-metadata.lock.yml',
+  'fix-lint.lock.yml',
+  'fix-tests.lock.yml',
+  'fix-codeql.lock.yml',
+  'fix-dependencies.lock.yml',
+  'fix-secrets.lock.yml',
+  'fix-docs.lock.yml',
+  'fix-review-comments.lock.yml'
 ];
 
 const ACTIVE_STATUSES = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
@@ -447,7 +447,7 @@ async function evaluateVerdict({ github, context, core, prNumber, reported, excl
   } else if (pr.mergeable === false) {
     return failBaseConflict({ github, context, core, pr, rev, targetUrl });
   } else {
-    // e.g. the PR Review Fixer addressing a Copilot review on this commit.
+    // e.g. the review-comments fixer addressing a Copilot review on this commit.
     repairing = await remediationInProgress({ github, context, branch: pr.head.ref, excludeRunIds: [context.runId, ...excludeRunIds] });
     state = repairing.length ? 'pending' : 'success';
     summary = repairing.length ? `All gates passed; waiting for: ${repairing.map((r) => r.workflow).join(', ')}` : 'All gates passed';

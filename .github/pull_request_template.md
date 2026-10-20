@@ -19,8 +19,8 @@
 
 ---
 
-### 📋 PR Quality Guidelines & Gatekeeper Expectations
-To help your PR pass automated CI gatekeepers smoothly, please ensure:
+### 📋 PR Quality Guidelines & Gate Expectations
+To help your PR pass automated CI gates smoothly, please ensure:
 1. **Branch Naming**: Must start with a prefix: `feat/`, `fix/`, `chore/`, `docs/`, `test/`, `refactor/`, or `ci/` (e.g., `feat/add-user-auth`).
 2. **PR Title**: Follows [Conventional Commits](https://www.conventionalcommits.org/):
    - Format: `<type>(<scope>): <subject>` or `<type>: <subject>`

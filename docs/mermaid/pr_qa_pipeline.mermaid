@@ -1,27 +1,27 @@
 flowchart TD
-    PR[Pull Request Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
+    PR[Pull Request Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pipeline.yml]
     Pipeline --> Autofix[0. Autofix\neslint --fix + prettier --write\non changed files]
     Autofix -->|fixes pushed| Pipeline
 
     subgraph Gates ["All Gates in Parallel ~1-2m (each records a gate status + passed label)"]
-        Autofix -->|nothing to fix| Gate[1. Metadata\nPR Gatekeeper]
+        Autofix -->|nothing to fix| Gate[1. Metadata\nGate: PR metadata]
         Autofix --> Lint[2. Lint\nESLint / Prettier / Super-Linter]
         Autofix --> Build[3. Build\nNode/TS, Go, Rust, Java, .NET]
         Autofix --> Tests[4. Tests & Coverage\nDiff-scoped >= 80%]
         Autofix --> Security[5. Security\nCodeQL SAST, Dep Review, Secrets]
-        Autofix --> DocEval[6. Docs Drift\npr-docs.yml + gh-aw evaluator]
+        Autofix --> DocEval[6. Docs Drift\ngate-docs.yml + gh-aw evaluator]
     end
 
     subgraph Remediation ["Parallel Remediation: one agent per failed gate"]
-        Gate -->|needs-metadata| FixMeta[🤖 PR Validation Agent\nDirect API Update]
-        Lint -->|lint-failed| FixLint[🤖 PR Lint Fixer]
-        Tests -->|test-required| AgentTest[🤖 PR Test Generator]
+        Gate -->|needs-metadata| FixMeta[🤖 Fix: PR metadata\nDirect API Update]
+        Lint -->|lint-failed| FixLint[🤖 Fix: Lint & format]
+        Tests -->|test-required| AgentTest[🤖 Fix: Tests]
         Security -->|alerts| AgentSec[🤖 PR Security Fixers]
         DocEval -->|docs-required| AgentDoc[🤖 PR Doc Updater]
         Build -->|build-failed| BlockBuild[❌ No agent: manual fix]
         FixLint & AgentTest & AgentSec & AgentDoc --> StackedPRs[Stacked PRs targeting feature branch]
-        StackedPRs & FixMeta --> Relay[7. Remediation Relay\npr-stacked-merge.yml\nSquash-merge & audit comment]
-        Relay -->|re-check only the repaired gate,\ncarry the other results over| Recheck[Standalone gate run\ne.g. pr-lint.yml]
+        StackedPRs & FixMeta --> Relay[7. Relay: merge stacked fixes\nrelay.yml\nSquash-merge & audit comment]
+        Relay -->|re-check only the repaired gate,\ncarry the other results over| Recheck[Standalone gate run\ne.g. gate-lint.yml]
     end
 
     Gates --> Verdict{pr-quality verdict}
@@ -31,7 +31,7 @@ flowchart TD
     Verdict -->|all green on this commit| Dispatcher
 
     subgraph Code_Review [Review & Final Sign-Off]
-        Dispatcher[8. PR Review Dispatcher\nPost consolidated summary] --> CopilotReview[GitHub Copilot Code Review\nAI semantic & architecture review\n1-click commit suggestions]
+        Dispatcher[8. Review: request\nPost consolidated summary] --> CopilotReview[GitHub Copilot Code Review\nAI semantic & architecture review\n1-click commit suggestions]
         CopilotReview --> HumanReview[Human Peer Review & Sign-Off\nSingle review session for all changes]
     end
 

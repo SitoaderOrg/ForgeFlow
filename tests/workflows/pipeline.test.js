@@ -12,11 +12,11 @@ import {
   seedQualityStatus
 } from './helpers/harness.js';
 
-const FILE = 'pr-pipeline.yml';
+const FILE = 'pipeline.yml';
 const contextScript = getScript(FILE, 'context', 'Resolve pull request');
 const verdictScript = getScript(FILE, 'verdict', 'Publish pr-quality status');
 
-describe('pr-pipeline.yml structure', () => {
+describe('pipeline.yml structure', () => {
   const wf = loadWorkflow(FILE);
 
   it('runs on PR updates and on relay re-dispatch with an optional force flag', () => {
@@ -37,7 +37,7 @@ describe('pr-pipeline.yml structure', () => {
 
   it('serialises runs per PR and only cancels on new human pushes', () => {
     expect(wf.concurrency.group).toBe(
-      'pr-pipeline-${{ github.event.pull_request.number || inputs.pr_number }}'
+      'pipeline-${{ github.event.pull_request.number || inputs.pr_number }}'
     );
     // Bot pushes (auto-fix, relay merges) queue so the pushing run finishes and results carry over.
     expect(wf.concurrency['cancel-in-progress']).toBe(
@@ -45,7 +45,7 @@ describe('pr-pipeline.yml structure', () => {
     );
   });
 
-  const GATE_JOBS = ['gatekeeper', 'lint', 'build', 'test', 'security', 'docs'];
+  const GATE_JOBS = ['metadata', 'lint', 'build', 'tests', 'security', 'docs'];
 
   it('auto-fixes lint first, then runs every gate in parallel', () => {
     expect(wf.jobs.autofix.needs).toEqual(['context']);
@@ -102,7 +102,7 @@ describe('pr-pipeline.yml structure', () => {
     expect(verdict.if).toContain("needs.context.outputs.skip != 'true'");
     expect(verdict.if).toContain("needs.autofix.outputs.stacked != 'true'");
     expect(verdict.concurrency).toEqual({
-      group: 'pr-quality-verdict-${{ needs.context.outputs.pr_number }}',
+      group: 'verdict-${{ needs.context.outputs.pr_number }}',
       'cancel-in-progress': false
     });
     expect(verdict.permissions.statuses).toBe('write');
@@ -152,7 +152,7 @@ async function resolve(pr, { env = {}, ...opts } = {}) {
   return { ...run, outputs: run.core.outputs };
 }
 
-describe('pr-pipeline.yml context job: stale runs', () => {
+describe('pipeline.yml context job: stale runs', () => {
   const OLD = '1'.repeat(40);
 
   it('skips a dispatched run whose commit is no longer the PR head and re-dispatches', async () => {
@@ -168,7 +168,7 @@ describe('pr-pipeline.yml context job: stale runs', () => {
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pr-pipeline.yml',
+        workflow_id: 'pipeline.yml',
         ref: 'feat/sample',
         inputs: { pr_number: '20', force: 'true' }
       }
@@ -203,7 +203,7 @@ describe('pr-pipeline.yml context job: stale runs', () => {
   });
 });
 
-describe('pr-pipeline.yml context job (Check entry point)', () => {
+describe('pipeline.yml context job (Check entry point)', () => {
   it('resolves a new revision and marks it pending', async () => {
     const pr = makePR({ number: 20 });
     const { outputs, github } = await resolve(pr);
@@ -313,7 +313,7 @@ describe('pr-pipeline.yml context job (Check entry point)', () => {
 
   it.each([
     ['title', { title: 'fix(app): corrected title' }],
-    ['body', { body: 'Rewritten description by pr-validation.' }],
+    ['body', { body: 'Rewritten description by fix-metadata.' }],
     ['decision label', { labels: [{ name: 'docs-not-required' }] }]
   ])('re-checks the same commit when the %s changed', async (_, change) => {
     const pr = makePR({ number: 28 });
@@ -377,7 +377,7 @@ const autofixEnv = (pr, extra = {}) => ({
   ...extra
 });
 
-describe('pr-pipeline.yml autofix job', () => {
+describe('pipeline.yml autofix job', () => {
   it('proposes the auto-fix as a stacked lint PR and hands off to the relay', async () => {
     const pr = makePR({ number: 40 });
     const github = createGitHub({ pulls: [pr] });
@@ -396,7 +396,7 @@ describe('pr-pipeline.yml autofix job', () => {
       title: 'style(lint): auto-fix lint and formatting [pr-autofix]'
     });
     expect(stacked.body).toContain('- `src/a.js`');
-    expect(stacked.body).toContain('pr-stacked-merge.yml');
+    expect(stacked.body).toContain('relay.yml');
     // The relay checks this commit is still in the branch before merging.
     expect(stacked.body).toContain(quality.stackedBaseMarker(pr.head.sha));
     expect(github.labels(stacked.number)).toEqual(['lint-remediation']);
@@ -406,7 +406,7 @@ describe('pr-pipeline.yml autofix job', () => {
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pr-stacked-merge.yml',
+        workflow_id: 'relay.yml',
         ref: 'main',
         inputs: {
           branch: 'feat/sample',
@@ -457,7 +457,7 @@ describe('pr-pipeline.yml autofix job', () => {
       quality.stackedBaseMarker(pr.head.sha)
     );
     expect(github.state.dispatches.map((d) => d.workflow_id)).toEqual([
-      'pr-stacked-merge.yml'
+      'relay.yml'
     ]);
   });
 
@@ -487,12 +487,12 @@ describe('pr-pipeline.yml autofix job', () => {
   });
 });
 
-const ALL_GATES = ['gatekeeper', 'lint', 'build', 'test', 'security', 'docs'];
+const ALL_GATES = ['metadata', 'lint', 'build', 'tests', 'security', 'docs'];
 const JOB_GATE = {
-  gatekeeper: 'metadata',
+  metadata: 'metadata',
   lint: 'lint',
   build: 'build',
-  test: 'tests',
+  tests: 'tests',
   security: 'security',
   docs: 'docs'
 };
@@ -538,7 +538,7 @@ async function verdict({ results = {}, recorded, runs = [] } = {}) {
   return { status, core, github, gates, rev: quality.revision(pr) };
 }
 
-describe('pr-pipeline.yml verdict job', () => {
+describe('pipeline.yml verdict job', () => {
   it('reports success only when every gate passed and requests review', async () => {
     const { status, core, rev, github } = await verdict();
     expect(status.state).toBe('success');
@@ -551,7 +551,7 @@ describe('pr-pipeline.yml verdict job', () => {
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pr-review-dispatcher.yml',
+        workflow_id: 'review-request.yml',
         ref: 'main',
         inputs: { pr_number: '50' }
       }
@@ -560,11 +560,11 @@ describe('pr-pipeline.yml verdict job', () => {
 
   it('stays pending while the dispatched agents repair failing gates', async () => {
     const { status, core, github } = await verdict({
-      results: { lint: 'failure', test: 'failure' },
+      results: { lint: 'failure', tests: 'failure' },
       runs: [
         makeAgentRun({
           id: 1,
-          workflow: 'pr-lint-fixer.lock.yml',
+          workflow: 'fix-lint.lock.yml',
           branch: 'feat/sample',
           phase: 'queued'
         })
@@ -625,7 +625,7 @@ describe('pr-pipeline.yml verdict job', () => {
   });
 });
 
-describe('pr-pipeline.yml GitHub App token (no approval-held runs)', () => {
+describe('pipeline.yml GitHub App token (no approval-held runs)', () => {
   const wf = loadWorkflow(FILE);
 
   it('never pushes to the feature branch from the autofix job (the relay merges the fix)', () => {
@@ -641,7 +641,7 @@ describe('pr-pipeline.yml GitHub App token (no approval-held runs)', () => {
     expect(job.needs).toEqual(['context']);
     expect(job.if).toBe("needs.context.outputs.mode == 'recheck'");
     expect(job.concurrency).toEqual({
-      group: 'pr-quality-verdict-${{ needs.context.outputs.pr_number }}',
+      group: 'verdict-${{ needs.context.outputs.pr_number }}',
       'cancel-in-progress': false
     });
     expect(job.permissions).toMatchObject({
@@ -722,7 +722,7 @@ const MERGE_2 = '2'.repeat(40);
 const relayMerge = (n, gates) =>
   `Merge stacked PR #${n}: fix\n\n${quality.recheckTrailer(gates)}`;
 
-describe('pr-pipeline.yml context job: relay merge pushes', () => {
+describe('pipeline.yml context job: relay merge pushes', () => {
   it('re-checks only the repaired gates of a relay merge pushed by the App', async () => {
     const world = repairWorld({
       commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
@@ -824,7 +824,7 @@ describe('pr-pipeline.yml context job: relay merge pushes', () => {
   });
 });
 
-describe('pr-pipeline.yml recheck job', () => {
+describe('pipeline.yml recheck job', () => {
   it('re-checks the repaired gate, carries the others over and keeps pr-quality pending', async () => {
     const world = repairWorld({
       commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
@@ -846,7 +846,7 @@ describe('pr-pipeline.yml recheck job', () => {
       }
     });
     expect(github.state.dispatches.map((d) => d.workflow_id)).toEqual([
-      'pr-docs.yml'
+      'gate-docs.yml'
     ]);
     const gates = await quality.getGateStatuses({
       github,
@@ -864,7 +864,7 @@ describe('pr-pipeline.yml recheck job', () => {
   });
 });
 
-describe('pr-pipeline.yml context job: merge conflicts with main', () => {
+describe('pipeline.yml context job: merge conflicts with main', () => {
   it('fails pr-quality and checks nothing for a PR that conflicts with its base', async () => {
     const pr = makePR({ number: 20 });
     pr.mergeable = false;

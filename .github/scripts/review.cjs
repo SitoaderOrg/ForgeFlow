@@ -1,7 +1,7 @@
 // Copilot code review -> one stacked fix (used via actions/github-script).
 //
-// Once every gate passed, the review dispatcher requests a Copilot code review. Its inline
-// comments are handed to the PR Review Fixer agent in one batch, which addresses them all in a
+// Once every gate passed, the review-request workflow requests a Copilot code review. Its inline
+// comments are handed to the review-comments fixer in one batch, which addresses them all in a
 // single stacked PR (`review-remediation`). The relay merges it like any other repair, re-checks
 // every gate (a review fix can touch anything) and answers each Copilot thread: applied comments
 // are resolved, skipped ones get the agent's reason. One automatic round per PR: once the fixes
@@ -14,7 +14,7 @@ const quality = () => require(path.join(__dirname, 'pr-quality.cjs'));
 const remediation = () => require(path.join(__dirname, 'remediation.cjs'));
 
 const REVIEW_LABEL = 'review-remediation';
-const REVIEW_FIXER = 'pr-review-fixer.lock.yml';
+const REVIEW_FIXER = 'fix-review-comments.lock.yml';
 const MAX_COMMENT_LENGTH = 1200;
 const MAX_REASON_LENGTH = 500;
 
@@ -75,9 +75,9 @@ function reviewFindings(threads) {
 }
 
 /**
- * Hand the open Copilot review comments of a PR to the PR Review Fixer, all in one batch.
+ * Hand the open Copilot review comments of a PR to the review-comments fixer, all in one batch.
  * Only once every gate passed on the head commit (so it never races the gate agents), and
- * only once per PR: any earlier PR Review Fixer run on the branch means the round happened,
+ * only once per PR: any earlier review-comments fixer run on the branch means the round happened,
  * unless the relay superseded its stacked PR after a merge conflict.
  * @returns {Promise<{result: string, comments: number}>}
  */
@@ -187,7 +187,7 @@ async function answerCopilotReview({ github, context, core, prNumber, stacked, s
     const body =
       d.decision === 'applied'
         ? `✅ Applied in ${sha.slice(0, 7)} (stacked PR #${stacked.number}).${d.reason ? ` ${d.reason}` : ''}`
-        : `⏭️ Not applied by the PR Review Fixer (stacked PR #${stacked.number}): ${d.reason || 'no reason given'}. Left for the author.`;
+        : `⏭️ Not applied by the review-comments fixer (stacked PR #${stacked.number}): ${d.reason || 'no reason given'}. Left for the author.`;
     try {
       await github.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: d.commentId, body });
       if (d.decision === 'applied') await github.graphql(RESOLVE_MUTATION, { id: thread.id });
@@ -201,7 +201,7 @@ async function answerCopilotReview({ github, context, core, prNumber, stacked, s
 }
 
 /**
- * Whether the review dispatcher should request a Copilot review now (the gates just passed):
+ * Whether the review-request workflow should request a Copilot review now (the gates just passed):
  * - `initial`: Copilot never reviewed the PR; its comments get the one automatic fix round;
  * - `confirmation`: a review fix was merged, every Copilot comment is resolved (all applied) and
  *   Copilot has not reviewed since. This review can approve the final commit (the fix commit

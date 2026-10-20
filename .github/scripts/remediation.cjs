@@ -1,4 +1,4 @@
-// Shared helpers used by the PR gatekeeper workflows (via actions/github-script).
+// Shared helpers used by the PR gate workflows (via actions/github-script).
 //
 // Events created with the default GITHUB_TOKEN (labels, pushes, PRs) do NOT trigger
 // new workflow runs. `workflow_dispatch` is the exception, so every gate hands work

@@ -1,6 +1,6 @@
 # Prerequisites & Configuration Guide
 
-To ensure all gatekeepers, GitHub Actions, and autonomous `gh-aw` remediation loops run smoothly without unexpected errors or fallback issues, verify the following configurations in your repository.
+To ensure all gates, GitHub Actions, and autonomous `gh-aw` remediation loops run smoothly without unexpected errors or fallback issues, verify the following configurations in your repository.
 
 ---
 
@@ -11,7 +11,7 @@ Navigate to **Settings → Actions → General**:
 ### A. Workflow Permissions
 - Select: **Read and write permissions**
 - Check: **Allow GitHub Actions to create and approve pull requests**
-  > **Why**: Without this setting, remediation agents (`pr-test-generator`, `pr-doc-updater`, `pr-codeql-fixer`, etc.) cannot open stacked remediation pull requests. Instead, they fall back to creating issues with the diff preview.
+  > **Why**: Without this setting, remediation agents (`fix-tests`, `fix-docs`, `fix-codeql`, etc.) cannot open stacked remediation pull requests. Instead, they fall back to creating issues with the diff preview.
 
 ---
 
@@ -22,22 +22,22 @@ Navigate to **Settings → Code security and analysis**:
 ### Dependency Management
 - **Dependency Graph**: Enabled
 - **Automatic dependency submission**: Enabled
-  > **Why**: Detects build-time and dynamic dependencies resolved during compilation, ensuring complete coverage for the Dependency Review gatekeeper.
+  > **Why**: Detects build-time and dynamic dependencies resolved during compilation, ensuring complete coverage for the Dependency Review gate.
 - **Dependabot alerts**: Enabled
-  > **Why**: Powers the vulnerability database checked by `pr-security.yml` (Dependency Review) during PR checks.
+  > **Why**: Powers the vulnerability database checked by `gate-security.yml` (Dependency Review) during PR checks.
 - **Dependabot malware alerts**: Enabled
   > **Why**: Flags malicious packages and software supply-chain compromises.
 - **Dependabot security updates**: Enabled (optional)
-  > **How it works alongside our flow**: Dependabot patches *existing* dependencies on `main` over time, while our `pr-dependency-fixer.md` autonomously intercepts and patches vulnerable packages *inside the active PR diff* before they reach `main`. They are fully complementary with zero conflicts.
+  > **How it works alongside our flow**: Dependabot patches *existing* dependencies on `main` over time, while our `fix-dependencies.md` autonomously intercepts and patches vulnerable packages *inside the active PR diff* before they reach `main`. They are fully complementary with zero conflicts.
 
 ### Static Analysis & Secret Protection
 - **CodeQL analysis**: Set up (Default or Advanced setup)
-  > **Why**: Enables SAST static code scanning in `pr-security.yml` and feeds alerts to `pr-codeql-fixer.md`.
+  > **Why**: Enables SAST static code scanning in `gate-security.yml` and feeds alerts to `fix-codeql.md`.
 - **Copilot Autofix for CodeQL**: Enabled (optional but recommended)
-  > **Why**: Generates AI-powered code fix suggestions on CodeQL alerts, which `pr-codeql-fixer.md` directly inspects and leverages to assemble defensive patches in stacked remediation PRs.
+  > **Why**: Generates AI-powered code fix suggestions on CodeQL alerts, which `fix-codeql.md` directly inspects and leverages to assemble defensive patches in stacked remediation PRs.
 - **Secret scanning**: Enabled
 - **Push protection**: Enabled
-  > **Why**: Prevents secret leaks and feeds detections to `pr-secret-fixer.md`.
+  > **Why**: Prevents secret leaks and feeds detections to `fix-secrets.md`.
 
 ---
 
@@ -55,7 +55,7 @@ All `gh-aw` workflows use GitHub Copilot as their default reasoning engine via G
 Navigate to **Settings → Secrets and variables → Actions**:
 
 ### Variables (Repository Variables)
-- `COVERAGE_THRESHOLD`: (Default: `80`) Minimum line coverage percentage enforced by `pr-test.yml`. Can be adjusted as needed (e.g. `70` or `85`).
+- `COVERAGE_THRESHOLD`: (Default: `80`) Minimum line coverage percentage enforced by `gate-tests.yml`. Can be adjusted as needed (e.g. `70` or `85`).
 - `CODEQL_MIN_SECURITY_SEVERITY`: (Default: `4.0`) Minimum CodeQL `security-severity` that fails the security gate.
 - `GH_AW_AGENT_MODEL`: (Default: `gpt-4.1`) Copilot model used by all remediation agents (e.g. `gpt-5.3-codex`, `gpt-4.1`).
 - `MAX_REMEDIATION_ATTEMPTS`: (Default: `1`) How many times a gate may dispatch the same remediation agent for one PR branch. With `1`, a gate that still fails after its repair fails `pr-quality` and asks for manual intervention.
@@ -97,13 +97,13 @@ When developing and compiling workflows locally:
 | **Actions** | Allow Actions to create & approve PRs | Settings → Actions → General | Stacked remediation PRs |
 | **Actions** | `PR_BOT_CLIENT_ID` variable + `PR_BOT_PRIVATE_KEY` secret (GitHub App) | Settings → Secrets and variables → Actions | No "Action required" runs after bot pushes (recommended) |
 | **Branches** | Require `pr-quality` status + "Require branches to be up to date before merging" on `main` | Settings → Branches (or Rulesets) | No merge on a stale or conflicting verdict (recommended) |
-| **Security** | Dependency graph & alerts | Settings → Code security | Dependency Review Gatekeeper |
+| **Security** | Dependency graph & alerts | Settings → Code security | Gate: Security (Dependency Review) |
 | **Security** | Automatic dependency submission | Settings → Code security | Build-time dependency detection |
 | **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |
-| **Security** | Secret scanning & push protection | Settings → Code security | Secret Scanning Gatekeeper |
-| **Security** | CodeQL analysis | Settings → Code security | SAST Security Gatekeeper |
+| **Security** | Secret scanning & push protection | Settings → Code security | Gate: Security (secret scanning) |
+| **Security** | CodeQL analysis | Settings → Code security | Gate: Security (CodeQL) |
 | **Security** | Copilot Autofix for CodeQL | Settings → Code security | AI fix suggestions for SAST alerts |
 | **AI / Copilot** | Copilot license & access | Organization / User Settings | Agentic reasoning & remediation |
-| **AI / Copilot** | Copilot code review enabled for the repository | Organization / Repository Copilot settings | Copilot review + PR Review Fixer |
+| **AI / Copilot** | Copilot code review enabled for the repository | Organization / Repository Copilot settings | Copilot review + Fix: Copilot review comments |
 | **AI / Copilot** | Optional: *Allow Copilot to approve pull requests* on; keep *Allow Copilot approvals to count toward merge requirements* off (or also require a human approval) | Repository Copilot code review settings → Auto-approval | Copilot confirmation review approves the final commit without replacing the human final approval |
 | **Workflows** | `allowed-base-branches: ["*"]` | `.github/workflows/*.md` | Stacked PR target branching |

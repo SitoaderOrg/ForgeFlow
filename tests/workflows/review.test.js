@@ -17,7 +17,7 @@ import {
   seedQualityStatus
 } from './helpers/harness.js';
 
-// Copilot code review -> PR Review Fixer -> one stacked PR (.github/scripts/review.cjs).
+// Copilot code review -> Fix: Copilot review comments -> one stacked PR (.github/scripts/review.cjs).
 
 const review = createRequire(import.meta.url)(
   path.join(SCRIPTS_DIR, 'review.cjs')
@@ -57,7 +57,7 @@ const fixerDispatches = (github) =>
   github.state.dispatches.filter((d) => d.workflow_id === review.REVIEW_FIXER);
 
 describe('review.cjs addressCopilotReview', () => {
-  it('hands every open Copilot comment to the PR Review Fixer in one dispatch', async () => {
+  it('hands every open Copilot comment to the review-comments fixer in one dispatch', async () => {
     const { github, pr } = await world();
     expect(await address(github)).toEqual({
       result: 'dispatched',
@@ -249,12 +249,12 @@ describe('review.cjs answerCopilotReview', () => {
   });
 });
 
-describe('pr-review-intake.yml', () => {
-  const wf = loadWorkflow('pr-review-intake.yml');
+describe('review-intake.yml', () => {
+  const wf = loadWorkflow('review-intake.yml');
   const script = getScript(
-    'pr-review-intake.yml',
+    'review-intake.yml',
     'intake',
-    'Hand the review to the PR Review Fixer'
+    'Hand the review to the review-comments fixer'
   );
 
   it('runs when Copilot submits a review, or by hand', () => {
@@ -269,7 +269,7 @@ describe('pr-review-intake.yml', () => {
     });
   });
 
-  it('dispatches the PR Review Fixer', async () => {
+  it('dispatches the review-comments fixer', async () => {
     const { github } = await world();
     const { core } = await runScript(script, {
       github,
@@ -381,13 +381,13 @@ describe('review.cjs copilotReviewRequest', () => {
 });
 
 describe('Copilot review wiring', () => {
-  it('the review dispatcher requests Copilot at most twice and hands over earlier reviews', async () => {
-    const text = readWorkflow('pr-review-dispatcher.yml');
+  it('the review-request workflow requests Copilot at most twice and hands over earlier reviews', async () => {
+    const text = readWorkflow('review-request.yml');
     expect(text).toContain(
       'COPILOT_REQUEST: ${{ steps.copilot.outputs.request }}'
     );
     expect(text).toContain('confirmation review');
-    const wf = loadWorkflow('pr-review-dispatcher.yml');
+    const wf = loadWorkflow('review-request.yml');
     expect(wf.permissions).toMatchObject({
       actions: 'write',
       statuses: 'write'
@@ -396,8 +396,8 @@ describe('Copilot review wiring', () => {
     const { github } = await world();
     const { core } = await runScript(
       getScript(
-        'pr-review-dispatcher.yml',
-        'review-dispatcher',
+        'review-request.yml',
+        'review-request',
         'Decide on a Copilot review'
       ),
       { github, env: { PR_NUMBER: '20' } }
@@ -406,8 +406,8 @@ describe('Copilot review wiring', () => {
 
     await runScript(
       getScript(
-        'pr-review-dispatcher.yml',
-        'review-dispatcher',
+        'review-request.yml',
+        'review-request',
         'Address an earlier Copilot review'
       ),
       { github, env: { PR_NUMBER: '20' } }
@@ -418,11 +418,7 @@ describe('Copilot review wiring', () => {
   it('the watchdog hands over Copilot reviews whose event was lost', async () => {
     const { github } = await world();
     const { core } = await runScript(
-      getScript(
-        'pr-quality-verdict.yml',
-        'verdict',
-        'Publish pr-quality status'
-      ),
+      getScript('verdict.yml', 'verdict', 'Publish pr-quality status'),
       {
         github,
         context: createContext({ eventName: 'schedule' }),
@@ -437,7 +433,7 @@ describe('Copilot review wiring', () => {
     );
     expect(fixerDispatches(github)).toHaveLength(1);
     expect(core.summaryText).toContain(
-      '#20: handed 2 Copilot review comment(s) to the PR Review Fixer'
+      '#20: handed 2 Copilot review comment(s) to the review-comments fixer'
     );
   });
 
@@ -465,10 +461,12 @@ describe('Copilot review wiring', () => {
       prNumber: 20
     });
     expect(verdict.state).toBe('pending');
-    expect(verdict.summary).toContain('waiting for: pr-review-fixer.lock.yml');
+    expect(verdict.summary).toContain(
+      'waiting for: fix-review-comments.lock.yml'
+    );
     expect(
       github.state.dispatches.some(
-        (d) => d.workflow_id === 'pr-review-dispatcher.yml'
+        (d) => d.workflow_id === 'review-request.yml'
       )
     ).toBe(false);
   });

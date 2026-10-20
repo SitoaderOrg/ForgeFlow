@@ -1,36 +1,36 @@
 flowchart TD
-    Start([PR Created / Synchronized]) --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
+    Start([PR Created / Synchronized]) --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pipeline.yml]
     Pipeline --> Autofix[Autofix job\neslint --fix / prettier --write\nstacked PR lint-remediation]
     Autofix -->|files fixed: relay squash-merges,\nthen the fixed commit is checked| Pipeline
 
     subgraph Parallel [All Gates in Parallel ~1-2m]
-        Autofix --> Gate[Metadata\n.github/workflows/pr-gatekeeper.yml]
-        Autofix --> Lint[Lint\n.github/workflows/pr-lint.yml]
-        Autofix --> Build[Build\n.github/workflows/pr-build.yml]
-        Autofix --> Test[Tests & Coverage\n.github/workflows/pr-test.yml]
-        Autofix --> Sec[Security\n.github/workflows/pr-security.yml]
-        Autofix --> DocEval[Docs Drift\n.github/workflows/pr-docs.yml]
+        Autofix --> Gate[Metadata\n.github/workflows/gate-metadata.yml]
+        Autofix --> Lint[Lint\n.github/workflows/gate-lint.yml]
+        Autofix --> Build[Build\n.github/workflows/gate-build.yml]
+        Autofix --> Test[Tests & Coverage\n.github/workflows/gate-tests.yml]
+        Autofix --> Sec[Security\n.github/workflows/gate-security.yml]
+        Autofix --> DocEval[Docs Drift\n.github/workflows/gate-docs.yml]
     end
 
     %% Direct fix loop (no stacked PR)
-    Gate -->|needs-metadata| AgentMeta[🤖 PR Validation Agent\nUpdates title & description via API]
+    Gate -->|needs-metadata| AgentMeta[🤖 Fix: PR metadata\nUpdates title & description via API]
 
     %% Stacked PR remediation loops (auto-merged), dispatched at the same time
-    Lint -->|lint-failed| AgentLint[🤖 PR Lint Fixer\nOpens Stacked PR]
-    Test -->|test-required| AgentTest[🤖 PR Test Generator\nOpens Stacked PR]
+    Lint -->|lint-failed| AgentLint[🤖 Fix: Lint & format\nOpens Stacked PR]
+    Test -->|test-required| AgentTest[🤖 Fix: Tests\nOpens Stacked PR]
     Sec -->|codeql-alert / dependency-alert| AgentSec[🤖 PR Security Fixers\nOpens Stacked PR]
-    DocEval -->|docs-required| AgentDoc[🤖 PR Documentation Updater\nOpens Stacked PR]
+    DocEval -->|docs-required| AgentDoc[🤖 Fix: Docs\nOpens Stacked PR]
 
     AgentLint & AgentTest & AgentSec & AgentDoc --> StackedPR[Stacked PR on Feature Branch\nTagged: lint/test/doc/security-remediation]
-    StackedPR --> AutoMerge[Remediation Relay\n.github/workflows/pr-stacked-merge.yml\nSquash, delete branch, post audit link]
+    StackedPR --> AutoMerge[Relay: merge stacked fixes\n.github/workflows/relay.yml\nSquash, delete branch, post audit link]
     AgentMeta --> AutoMerge
     AutoMerge --> Recheck[Re-check only the repaired gate\nother gate results carried over]
 
-    Parallel & Recheck --> Verdict{pr-quality-verdict}
+    Parallel & Recheck --> Verdict{verdict}
     Verdict -->|other repairs in flight| Wait([pending])
     Verdict -->|repaired gate still fails| Fail([❌ failure + comment])
     Verdict -->|all green, some carried| Final[One final full pipeline run] --> Pipeline
-    Verdict -->|all green on this commit| Stage4[PR Review Dispatcher\n.github/workflows/pr-review-dispatcher.yml]
+    Verdict -->|all green on this commit| Stage4[Review: request\n.github/workflows/review-request.yml]
     Stage4 --> PostSummary[Post Consolidated Summary on PR\nAudit links to all auto-merged fixes]
     Stage4 --> AICodeReview[Request GitHub Copilot Code Review\nAI architectural & semantic analysis]
     AICodeReview --> HumanReview[Developer Final Sign-Off & Review\nSingle review session for all changes]

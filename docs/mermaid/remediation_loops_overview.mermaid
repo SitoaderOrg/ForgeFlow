@@ -25,4 +25,4 @@ flowchart LR
     G --> V
     V -->|all green, some carried over| AF
     V -->|still failing, nothing repairing| Fail[❌ Fail with error]
-    V -->|all green on this commit| Dispatcher[Review Dispatcher] --> Review[Developer Final Sign-Off & Merge]
+    V -->|all green on this commit| Dispatcher[Review: request] --> Review[Developer Final Sign-Off & Merge]

@@ -12,7 +12,7 @@ import {
   runScript
 } from './helpers/harness.js';
 
-const FILE = 'pr-stacked-merge.yml';
+const FILE = 'relay.yml';
 const script = getScript(
   FILE,
   'auto-merge-stacked',
@@ -48,7 +48,7 @@ function relay(github, env = {}, opts = {}) {
     env: {
       INPUT_BRANCH: BRANCH,
       AGENT_RESULT: 'success',
-      SOURCE: 'PR Lint Fixer (run 1000)',
+      SOURCE: 'Fix: Lint & format (run 1000)',
       PIPELINE_WAIT_MINUTES: '30',
       ...env
     },
@@ -57,11 +57,13 @@ function relay(github, env = {}, opts = {}) {
 }
 
 const pipelineDispatches = (github) =>
-  github.state.dispatches.filter((d) => d.workflow_id === 'pr-pipeline.yml');
+  github.state.dispatches.filter((d) => d.workflow_id === 'pipeline.yml');
 const gateDispatches = (github) =>
   github.state.dispatches
     .filter((d) =>
-      /^pr-(gatekeeper|lint|build|test|security|docs)\.yml$/.test(d.workflow_id)
+      /^gate-(metadata|lint|build|tests|security|docs)\.yml$/.test(
+        d.workflow_id
+      )
     )
     .map((d) => d.workflow_id);
 
@@ -92,11 +94,13 @@ async function seedGates(github, sha, states) {
 const gatesOn = (github, sha) =>
   quality.getGateStatuses({ github, context: createContext(), sha });
 
-describe('pr-stacked-merge.yml structure', () => {
+describe('relay.yml structure', () => {
   const wf = loadWorkflow(FILE);
 
   it('names each run after the branch so the verdict can see relays in flight', () => {
-    expect(wf['run-name']).toBe('Remediation relay for ${{ inputs.branch }}');
+    expect(wf['run-name']).toBe(
+      'Relay: merge stacked fixes · ${{ inputs.branch }}'
+    );
     expect(wf.permissions.statuses).toBe('write');
   });
 
@@ -110,7 +114,7 @@ describe('pr-stacked-merge.yml structure', () => {
   });
 
   it('runs one relay at a time per parent branch without cancelling', () => {
-    expect(wf.concurrency.group).toBe('pr-stacked-merge-${{ inputs.branch }}');
+    expect(wf.concurrency.group).toBe('relay-${{ inputs.branch }}');
     expect(wf.concurrency['cancel-in-progress']).toBe(false);
   });
 
@@ -123,7 +127,7 @@ describe('pr-stacked-merge.yml structure', () => {
   });
 });
 
-describe('pr-stacked-merge.yml relay: nothing to do', () => {
+describe('relay.yml relay: nothing to do', () => {
   it.each(['', 'main'])('ignores branch %j', async (branch) => {
     const { github } = world();
     await relay(github, { INPUT_BRANCH: branch });
@@ -138,7 +142,7 @@ describe('pr-stacked-merge.yml relay: nothing to do', () => {
   });
 });
 
-describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => {
+describe('relay.yml relay: Repair (stacked PR consolidation)', () => {
   it('squash-merges labelled stacked PRs and re-checks only the repaired gates', async () => {
     const { github, parent } = world({
       stacked: [
@@ -186,11 +190,11 @@ describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => 
     const newSha = github.pr(20).head.sha;
     expect(newSha).not.toBe(oldSha);
     expect(pipelineDispatches(github)).toEqual([]);
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-docs.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml', 'gate-docs.yml']);
     expect(github.state.dispatches[0]).toEqual({
       owner: 'octo',
       repo: 'demo',
-      workflow_id: 'pr-lint.yml',
+      workflow_id: 'gate-lint.yml',
       ref: BRANCH,
       inputs: { pr_number: '20' }
     });
@@ -241,14 +245,14 @@ describe('pr-stacked-merge.yml relay: Repair (stacked PR consolidation)', () => 
   });
 });
 
-describe('pr-stacked-merge.yml relay: parallel repairs', () => {
+describe('relay.yml relay: parallel repairs', () => {
   it('does not wait for other agents still repairing their own gates', async () => {
     const { github, parent } = world({
       stacked: [stackedPR(31)],
       runs: [
         makeAgentRun({
           id: 2000,
-          workflow: 'pr-test-generator.lock.yml',
+          workflow: 'fix-tests.lock.yml',
           branch: BRANCH
         })
       ]
@@ -262,7 +266,7 @@ describe('pr-stacked-merge.yml relay: parallel repairs', () => {
 
     const { core } = await relay(github);
 
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
     const gates = await gatesOn(github, github.pr(20).head.sha);
     expect(gates.tests).toMatchObject({
       state: 'failure',
@@ -289,10 +293,10 @@ describe('pr-stacked-merge.yml relay: parallel repairs', () => {
 
     github.state.pulls.push(stackedPR(32, 'test-remediation'));
     github.state.dispatches = [];
-    await relay(github, { SOURCE: 'PR Test Generator (run 1001)' });
+    await relay(github, { SOURCE: 'Fix: Tests (run 1001)' });
 
     const c = github.pr(20).head.sha;
-    expect(gateDispatches(github)).toEqual(['pr-test.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-tests.yml']);
     const gates = await gatesOn(github, c);
     expect(gates.lint).toMatchObject({
       state: 'success',
@@ -311,10 +315,10 @@ describe('pr-stacked-merge.yml relay: parallel repairs', () => {
       lint: 'pending',
       docs: 'failure'
     });
-    await relay(github, { SOURCE: 'PR Documentation Updater (run 1)' });
+    await relay(github, { SOURCE: 'Fix: Docs (run 1)' });
     expect(gateDispatches(github).sort()).toEqual([
-      'pr-docs.yml',
-      'pr-lint.yml'
+      'gate-docs.yml',
+      'gate-lint.yml'
     ]);
   });
 
@@ -325,16 +329,16 @@ describe('pr-stacked-merge.yml relay: parallel repairs', () => {
   });
 });
 
-describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
-  it('re-checks the Metadata gate after PR Validation rewrote the PR', async () => {
+describe('relay.yml relay: repairs without a new commit', () => {
+  it('re-checks the Metadata gate after Fix: PR metadata rewrote the PR', async () => {
     const { github, parent } = world({ parentLabels: ['needs-metadata'] });
     await seedGates(github, parent.head.sha, {
       ...ALL_PASSED,
       metadata: 'failure'
     });
     parent.title = 'feat(app): add a sample feature';
-    await relay(github, { SOURCE: 'PR Validation (run 1000)' });
-    expect(gateDispatches(github)).toEqual(['pr-gatekeeper.yml']);
+    await relay(github, { SOURCE: 'Fix: PR metadata (run 1000)' });
+    expect(gateDispatches(github)).toEqual(['gate-metadata.yml']);
     expect((await gatesOn(github, parent.head.sha)).metadata.state).toBe(
       'pending'
     );
@@ -347,8 +351,8 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
       docs: 'failure'
     });
     parent.labels.push({ name: 'docs-not-required' });
-    await relay(github, { SOURCE: 'PR Documentation Updater (run 7)' });
-    expect(gateDispatches(github)).toEqual(['pr-docs.yml']);
+    await relay(github, { SOURCE: 'Fix: Docs (run 7)' });
+    expect(gateDispatches(github)).toEqual(['gate-docs.yml']);
   });
 
   it('keeps a gate that is already being re-checked on the head commit', async () => {
@@ -356,7 +360,7 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
       runs: [
         makeRun({
           id: 77,
-          workflow: 'pr-docs.yml',
+          workflow: 'gate-docs.yml',
           branch: BRANCH,
           status: 'in_progress',
           conclusion: null
@@ -378,7 +382,7 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
       docs: 'pending'
     });
     await relay(github, { SOURCE: '' });
-    expect(gateDispatches(github)).toEqual(['pr-docs.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-docs.yml']);
   });
 
   it('reports a final failure once nothing repairs a failing gate any more', async () => {
@@ -397,7 +401,7 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
     );
     expect(comment).toContain('**Build**: build failure');
     expect(comment).toContain(
-      'gh workflow run pr-pipeline.yml --ref feat/sample -f pr_number=20 -f force=true'
+      'gh workflow run pipeline.yml --ref feat/sample -f pr_number=20 -f force=true'
     );
     expect(core.summaryText).toContain('pr-quality: **failure**');
   });
@@ -407,19 +411,19 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
       runs: [
         makeRun({
           id: 5000,
-          workflow: 'pr-stacked-merge.yml',
+          workflow: 'relay.yml',
           branch: 'main',
           status: 'in_progress',
           conclusion: null,
-          title: `Remediation relay for ${BRANCH}`
+          title: `Relay: merge stacked fixes · ${BRANCH}`
         }),
         makeRun({
           id: 4242,
-          workflow: 'pr-stacked-merge.yml',
+          workflow: 'relay.yml',
           branch: 'main',
           status: 'in_progress',
           conclusion: null,
-          title: `Remediation relay for ${BRANCH}`
+          title: `Relay: merge stacked fixes · ${BRANCH}`
         })
       ]
     });
@@ -433,7 +437,7 @@ describe('pr-stacked-merge.yml relay: repairs without a new commit', () => {
   });
 });
 
-describe('pr-stacked-merge.yml relay: agent runs that repaired nothing', () => {
+describe('relay.yml relay: agent runs that repaired nothing', () => {
   it.each(['failure', 'no-changes', 'skipped', 'safe-outputs-failure'])(
     'fails pr-quality fast without re-checking the gate (agent_result %s)',
     async (agentResult) => {
@@ -456,7 +460,7 @@ describe('pr-stacked-merge.yml relay: agent runs that repaired nothing', () => {
       runs: [
         makeAgentRun({
           id: 2000,
-          workflow: 'pr-test-generator.lock.yml',
+          workflow: 'fix-tests.lock.yml',
           branch: BRANCH
         })
       ]
@@ -484,7 +488,7 @@ describe('pr-stacked-merge.yml relay: agent runs that repaired nothing', () => {
     await relay(github, { AGENT_RESULT: 'failure' });
     expect(github.state.merges.map((m) => m.number)).toEqual([31]);
     expect(github.state.merges[0].commit_message).toBe('Recheck-Gates: docs');
-    expect(gateDispatches(github)).toEqual(['pr-docs.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-docs.yml']);
   });
 
   it('re-checks the source gate for manual runs without agent_result', async () => {
@@ -494,17 +498,17 @@ describe('pr-stacked-merge.yml relay: agent runs that repaired nothing', () => {
       lint: 'failure'
     });
     await relay(github, { AGENT_RESULT: '' });
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
   });
 });
 
-describe('pr-stacked-merge.yml relay: waiting for a running pipeline', () => {
+describe('relay.yml relay: waiting for a running pipeline', () => {
   it('waits for a running pipeline before deciding', async () => {
     const { github } = world({
       runs: [
         makeRun({
           id: 3000,
-          workflow: 'pr-pipeline.yml',
+          workflow: 'pipeline.yml',
           branch: BRANCH,
           status: 'in_progress',
           conclusion: null
@@ -521,7 +525,7 @@ describe('pr-stacked-merge.yml relay: waiting for a running pipeline', () => {
       }
     );
     expect(sleeps).toEqual([30000, 30000, 30000]);
-    expect(gateDispatches(github)).toContain('pr-lint.yml');
+    expect(gateDispatches(github)).toContain('gate-lint.yml');
   });
 
   it('decides anyway when the pipeline exceeds PIPELINE_WAIT_MINUTES', async () => {
@@ -529,7 +533,7 @@ describe('pr-stacked-merge.yml relay: waiting for a running pipeline', () => {
       runs: [
         makeRun({
           id: 3000,
-          workflow: 'pr-pipeline.yml',
+          workflow: 'pipeline.yml',
           branch: BRANCH,
           status: 'queued',
           conclusion: null
@@ -541,11 +545,11 @@ describe('pr-stacked-merge.yml relay: waiting for a running pipeline', () => {
     });
     expect(sleeps).toEqual([]);
     expect(core.warnings.join()).toContain('still running after -1 minutes');
-    expect(gateDispatches(github)).toContain('pr-lint.yml');
+    expect(gateDispatches(github)).toContain('gate-lint.yml');
   });
 });
 
-describe('pr-stacked-merge.yml relay: lost hand-offs', () => {
+describe('relay.yml relay: lost hand-offs', () => {
   it('re-checks a docs-not-required decision whose own relay never ran', async () => {
     const { github, parent } = world({
       parentLabels: ['docs-required'],
@@ -576,16 +580,16 @@ describe('pr-stacked-merge.yml relay: lost hand-offs', () => {
     await relay(github);
 
     expect(gateDispatches(github).sort()).toEqual([
-      'pr-docs.yml',
-      'pr-gatekeeper.yml',
-      'pr-lint.yml'
+      'gate-docs.yml',
+      'gate-lint.yml',
+      'gate-metadata.yml'
     ]);
     const gates = await gatesOn(github, github.pr(20).head.sha);
     expect(gates.build.carriedFrom).toBe(before.slice(0, 7));
   });
 });
 
-describe('pr-stacked-merge.yml relay: GitHub App token', () => {
+describe('relay.yml relay: GitHub App token', () => {
   const wf = loadWorkflow(FILE);
 
   it('mints the App token when configured and hands it to the relay script', () => {
@@ -609,7 +613,7 @@ describe('pr-stacked-merge.yml relay: GitHub App token', () => {
     await seedGates(github, oldSha, { ...ALL_PASSED, docs: 'failure' });
     const { core } = await relay(github, {
       APP_TOKEN: 'app-token',
-      SOURCE: 'PR Documentation Updater (run 1001)'
+      SOURCE: 'Fix: Docs (run 1001)'
     });
     expect(github.state.merges).toMatchObject([
       {
@@ -647,7 +651,7 @@ describe('pr-stacked-merge.yml relay: GitHub App token', () => {
     });
     await relay(github, { APP_TOKEN: 'app-token' });
     expect(github.state.merges).toEqual([]);
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
   });
 
   it('re-checks by itself when the parent PR does not target the default branch', async () => {
@@ -658,7 +662,7 @@ describe('pr-stacked-merge.yml relay: GitHub App token', () => {
     expect(github.state.merges).toMatchObject([
       { number: 31, token: 'github-token' }
     ]);
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
   });
 
   it('merges with GITHUB_TOKEN and re-checks by itself without the App', async () => {
@@ -672,11 +676,11 @@ describe('pr-stacked-merge.yml relay: GitHub App token', () => {
         commit_message: 'Recheck-Gates: lint'
       }
     ]);
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
   });
 });
 
-describe('pr-stacked-merge.yml relay: lint auto-fix stacked PR', () => {
+describe('relay.yml relay: lint auto-fix stacked PR', () => {
   const autofixPR = () =>
     makePR({
       number: 45,
@@ -715,7 +719,7 @@ describe('pr-stacked-merge.yml relay: lint auto-fix stacked PR', () => {
   });
 });
 
-describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch', () => {
+describe('relay.yml relay: stacked PRs that conflict with the branch', () => {
   const conflicting = (number, label = 'lint-remediation') => {
     const pr = stackedPR(number, label);
     pr.mergeable = false;
@@ -732,7 +736,7 @@ describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch'
       tests: 'failure'
     });
     const { core } = await relay(github, {
-      SOURCE: 'PR Test Generator (run 1000)'
+      SOURCE: 'Fix: Tests (run 1000)'
     });
 
     expect(github.state.merges.map((m) => m.number)).toEqual([32]);
@@ -752,7 +756,7 @@ describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch'
     );
 
     // Lint is re-checked on the new head: if it still fails, the lint gate dispatches its agent again.
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-test.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml', 'gate-tests.yml']);
     const gates = await gatesOn(github, github.pr(20).head.sha);
     expect(gates.lint.state).toBe('pending');
     expect(core.summaryText).toContain(
@@ -812,26 +816,26 @@ describe('pr-stacked-merge.yml relay: stacked PRs that conflict with the branch'
     });
     await relay(github, {
       APP_TOKEN: 'app-token',
-      SOURCE: 'PR Documentation Updater (run 1001)'
+      SOURCE: 'Fix: Docs (run 1001)'
     });
     expect(github.state.merges).toMatchObject([
       { number: 32, token: 'app-token', commit_message: 'Recheck-Gates: docs' }
     ]);
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml', 'pr-docs.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml', 'gate-docs.yml']);
   });
 });
 
-describe('pr-stacked-merge.yml relay: stacked PRs built before a rebase or force-push', () => {
+describe('relay.yml relay: stacked PRs built before a rebase or force-push', () => {
   const GONE = 'f'.repeat(40);
   // gh-aw stamps its PRs with the agent run; the run's head_sha is the commit it was built on.
   const agentPR = (number, runId, label = 'lint-remediation') =>
     stackedPR(number, label, {
-      body: `Fix.\n\n<!-- gh-aw-agentic-workflow: PR Lint Fixer, engine: copilot, id: ${runId}, workflow_id: pr-lint-fixer -->`
+      body: `Fix.\n\n<!-- gh-aw-agentic-workflow: Fix: Lint & format, engine: copilot, id: ${runId}, workflow_id: fix-lint -->`
     });
   const agentRun = (id, head_sha) =>
     makeRun({
       id,
-      workflow: 'pr-lint-fixer.lock.yml',
+      workflow: 'fix-lint.lock.yml',
       branch: BRANCH,
       head_sha
     });
@@ -859,7 +863,7 @@ describe('pr-stacked-merge.yml relay: stacked PRs built before a rebase or force
     expect(github.comments(20).join()).toContain(
       'superseded after a rebase or force-push'
     );
-    expect(gateDispatches(github)).toEqual(['pr-lint.yml']);
+    expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
   });
 
   it('uses the base recorded by the lint auto-fix', async () => {
@@ -893,8 +897,8 @@ describe('pr-stacked-merge.yml relay: stacked PRs built before a rebase or force
   });
 });
 
-describe('pr-stacked-merge.yml relay: Copilot review fixes', () => {
-  const SOURCE = 'PR Review Fixer (run 1100)';
+describe('relay.yml relay: Copilot review fixes', () => {
+  const SOURCE = 'Fix: Copilot review comments (run 1100)';
   const reviewPR = (extra = {}) =>
     makePR({
       number: 50,

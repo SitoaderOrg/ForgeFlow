@@ -157,7 +157,7 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
 
   it('returns nothing when no agent is running', async () => {
     const github = createGitHub({
-      runs: [makeRun({ id: 1, workflow: 'pr-lint-fixer.lock.yml', branch })]
+      runs: [makeRun({ id: 1, workflow: 'fix-lint.lock.yml', branch })]
     });
     expect(await pending(github)).toEqual([]);
   });
@@ -167,21 +167,21 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
       runs: [
         makeAgentRun({
           id: 1,
-          workflow: 'pr-lint-fixer.lock.yml',
+          workflow: 'fix-lint.lock.yml',
           branch,
           phase: 'queued'
         }),
         makeAgentRun({
           id: 2,
-          workflow: 'pr-test-generator.lock.yml',
+          workflow: 'fix-tests.lock.yml',
           branch,
           phase: 'agent'
         })
       ]
     });
     expect((await pending(github)).map((p) => [p.workflow, p.id])).toEqual([
-      ['pr-lint-fixer.lock.yml', 1],
-      ['pr-test-generator.lock.yml', 2]
+      ['fix-lint.lock.yml', 1],
+      ['fix-tests.lock.yml', 2]
     ]);
   });
 
@@ -190,7 +190,7 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
       runs: [
         makeAgentRun({
           id: 1,
-          workflow: 'pr-doc-updater.lock.yml',
+          workflow: 'fix-docs.lock.yml',
           branch,
           phase: 'conclusion'
         })
@@ -202,7 +202,7 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
   it('excludes the run that dispatched the relay', async () => {
     const github = createGitHub({
       runs: [
-        makeAgentRun({ id: 42, workflow: 'pr-validation.lock.yml', branch })
+        makeAgentRun({ id: 42, workflow: 'fix-metadata.lock.yml', branch })
       ]
     });
     expect(await pending(github, 42)).toEqual([]);
@@ -214,13 +214,13 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
       runs: [
         makeAgentRun({
           id: 1,
-          workflow: 'pr-lint-fixer.lock.yml',
+          workflow: 'fix-lint.lock.yml',
           branch: 'other'
         }),
         {
           ...makeAgentRun({
             id: 2,
-            workflow: 'pr-lint-fixer.lock.yml',
+            workflow: 'fix-lint.lock.yml',
             branch
           }),
           event: 'push'
@@ -232,10 +232,8 @@ describe('pr-quality.cjs pendingRemediationRuns', () => {
 
   it('skips agent workflows that do not exist on the branch (404)', async () => {
     const github = createGitHub({
-      missingWorkflows: ['pr-secret-fixer.lock.yml'],
-      runs: [
-        makeAgentRun({ id: 1, workflow: 'pr-lint-fixer.lock.yml', branch })
-      ]
+      missingWorkflows: ['fix-secrets.lock.yml'],
+      runs: [makeAgentRun({ id: 1, workflow: 'fix-lint.lock.yml', branch })]
     });
     expect(await pending(github)).toHaveLength(1);
   });
@@ -290,13 +288,13 @@ describe('pr-quality.cjs repairedGate', () => {
     ['security-remediation', 'security'],
     ['doc-remediation', 'docs'],
     ['Lint auto-fix (run 7)', 'lint'],
-    ['PR Validation (run 12)', 'metadata'],
-    ['PR Lint Fixer (run 3)', 'lint'],
-    ['PR Test Generator', 'tests'],
-    ['PR CodeQL Fixer (run 1)', 'security'],
-    ['PR Dependency Fixer (run 1)', 'security'],
-    ['PR Secret Fixer (run 1)', 'security'],
-    ['PR Documentation Updater (run 9)', 'docs']
+    ['Fix: PR metadata (run 12)', 'metadata'],
+    ['Fix: Lint & format (run 3)', 'lint'],
+    ['Fix: Tests', 'tests'],
+    ['Fix: CodeQL alerts (run 1)', 'security'],
+    ['Fix: Dependencies (run 1)', 'security'],
+    ['Fix: Secrets (run 1)', 'security'],
+    ['Fix: Docs (run 9)', 'docs']
   ])('maps %s to the %s gate', (source, gate) => {
     expect(quality.repairedGate(source)).toBe(gate);
   });
@@ -310,7 +308,9 @@ describe('pr-quality.cjs repairedGate', () => {
   it('maps Copilot review fixes to every gate (they can touch anything)', () => {
     const all = quality.GATES.map((g) => g.id);
     expect(quality.repairedGates('review-remediation')).toEqual(all);
-    expect(quality.repairedGates('PR Review Fixer (run 5)')).toEqual(all);
+    expect(
+      quality.repairedGates('Fix: Copilot review comments (run 5)')
+    ).toEqual(all);
     expect(quality.repairedGate('review-remediation')).toBeNull();
     expect(quality.repairedGates('lint-remediation')).toEqual(['lint']);
     expect(quality.repairedGates('PR Review (run 1)')).toEqual([]);
@@ -438,31 +438,31 @@ describe('pr-quality.cjs remediationInProgress', () => {
       runs: [
         makeAgentRun({
           id: 1,
-          workflow: 'pr-test-generator.lock.yml',
+          workflow: 'fix-tests.lock.yml',
           branch: BRANCH
         }),
         makeRun({
           id: 2,
-          workflow: 'pr-stacked-merge.yml',
+          workflow: 'relay.yml',
           branch: 'main',
           status: 'in_progress',
           conclusion: null,
-          title: `Remediation relay for ${BRANCH}`
+          title: `Relay: merge stacked fixes · ${BRANCH}`
         }),
         makeRun({
           id: 3,
-          workflow: 'pr-stacked-merge.yml',
+          workflow: 'relay.yml',
           branch: 'main',
           status: 'in_progress',
           conclusion: null,
-          title: 'Remediation relay for feat/sample-2'
+          title: 'Relay: merge stacked fixes · feat/sample-2'
         })
       ]
     });
     expect((await inProgress(github)).map((w) => [w.workflow, w.id])).toEqual([
-      ['pr-test-generator.lock.yml', 1],
+      ['fix-tests.lock.yml', 1],
       ['stacked PR #31', 31],
-      ['pr-stacked-merge.yml', 2]
+      ['relay.yml', 2]
     ]);
     expect((await inProgress(github, [1, 2])).map((w) => w.id)).toEqual([31]);
   });
@@ -490,7 +490,7 @@ describe('pr-quality.cjs evaluateVerdict', () => {
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pr-review-dispatcher.yml',
+        workflow_id: 'review-request.yml',
         ref: 'main',
         inputs: { pr_number: '20' }
       }
@@ -552,7 +552,7 @@ describe('pr-quality.cjs evaluateVerdict', () => {
       runs: [
         makeAgentRun({
           id: 1,
-          workflow: 'pr-lint-fixer.lock.yml',
+          workflow: 'fix-lint.lock.yml',
           branch: BRANCH
         })
       ]
@@ -574,7 +574,7 @@ describe('pr-quality.cjs evaluateVerdict', () => {
       runs: [
         makeAgentRun({
           id: 1,
-          workflow: 'pr-lint-fixer.lock.yml',
+          workflow: 'fix-lint.lock.yml',
           branch: BRANCH
         })
       ]
@@ -632,7 +632,7 @@ describe('pr-quality.cjs evaluateVerdict', () => {
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pr-pipeline.yml',
+        workflow_id: 'pipeline.yml',
         ref: BRANCH,
         inputs: { pr_number: '20', force: 'true' }
       }
@@ -644,7 +644,7 @@ describe('pr-quality.cjs evaluateVerdict', () => {
       runs: [
         makeRun({
           id: 5,
-          workflow: 'pr-pipeline.yml',
+          workflow: 'pipeline.yml',
           branch: BRANCH,
           status: 'queued',
           conclusion: null
@@ -689,7 +689,7 @@ describe('pr-quality.cjs recheckGates', () => {
       carried: ['metadata', 'build', 'tests', 'security', 'docs'],
       kept: []
     });
-    expect(dispatched(w.github)).toEqual(['pr-lint.yml']);
+    expect(dispatched(w.github)).toEqual(['gate-lint.yml']);
     const gates = await quality.getGateStatuses({
       github: w.github,
       context: w.context,
@@ -805,7 +805,10 @@ describe('pr-quality.cjs gate revisions', () => {
     w.github.pr(20).title = 'feat(app): a better title';
     const plan = await recheck(w);
     expect(plan.recheck).toEqual(['metadata', 'docs']);
-    expect(dispatched(w.github)).toEqual(['pr-gatekeeper.yml', 'pr-docs.yml']);
+    expect(dispatched(w.github)).toEqual([
+      'gate-metadata.yml',
+      'gate-docs.yml'
+    ]);
   });
 
   it('re-checks Docs after a docs-not-required decision even without a relay source', async () => {
@@ -925,7 +928,7 @@ describe('pr-quality.cjs sweepStalled (watchdog)', () => {
     await stalled(w, { summary: 'Checking: Tests' });
     const [result] = await sweep(w);
     expect(result).toMatchObject({ recheck: ['tests'], state: 'pending' });
-    expect(dispatched(w.github)).toEqual(['pr-test.yml']);
+    expect(dispatched(w.github)).toEqual(['gate-tests.yml']);
   });
 
   it('leaves recent, final, busy, fork and stacked PRs alone', async () => {
@@ -941,7 +944,7 @@ describe('pr-quality.cjs sweepStalled (watchdog)', () => {
       runs: [
         makeRun({
           id: 7,
-          workflow: 'pr-pipeline.yml',
+          workflow: 'pipeline.yml',
           branch: BRANCH,
           status: 'in_progress',
           conclusion: null
@@ -1137,7 +1140,7 @@ describe('pr-quality.cjs stackedBase', () => {
     return { github, context: createContext(), pr, head: B };
   };
   const agentBody = (id) =>
-    `<!-- gh-aw-agentic-workflow: PR Lint Fixer, engine: copilot, id: ${id}, workflow_id: x -->`;
+    `<!-- gh-aw-agentic-workflow: Fix: Lint & format, engine: copilot, id: ${id}, workflow_id: x -->`;
 
   it('reads the base from the remediation-base marker', async () => {
     const w = setup(quality.stackedBaseMarker(A));

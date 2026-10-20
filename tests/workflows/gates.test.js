@@ -43,11 +43,11 @@ const dispatched = (github, workflow) =>
 
 describe('gate workflows: Resolve PR context', () => {
   const steps = [
-    ['pr-lint.yml', 'lint'],
-    ['pr-test.yml', 'test'],
-    ['pr-docs.yml', 'docs-drift'],
-    ['pr-security.yml', 'detect-environment'],
-    ['pr-build.yml', 'build']
+    ['gate-lint.yml', 'lint'],
+    ['gate-tests.yml', 'test'],
+    ['gate-docs.yml', 'docs-drift'],
+    ['gate-security.yml', 'detect-environment'],
+    ['gate-build.yml', 'build']
   ];
 
   it.each(steps)(
@@ -63,7 +63,7 @@ describe('gate workflows: Resolve PR context', () => {
         }
       );
       expect(core.failed).toEqual([]);
-      if (file !== 'pr-build.yml') expect(core.outputs.head_ref).toBe(BRANCH);
+      if (file !== 'gate-build.yml') expect(core.outputs.head_ref).toBe(BRANCH);
       if (core.outputs.head_sha)
         expect(core.outputs.head_sha).toBe(pr.head.sha);
       if (core.outputs.base_ref) expect(core.outputs.base_ref).toBe('main');
@@ -86,7 +86,7 @@ describe('gate workflows: Resolve PR context', () => {
     }
   );
 
-  it.each(steps.filter(([file]) => file !== 'pr-build.yml'))(
+  it.each(steps.filter(([file]) => file !== 'gate-build.yml'))(
     '%s prefers the refs passed by the pipeline',
     async (file, job) => {
       const { github } = world();
@@ -112,10 +112,10 @@ describe('gate workflows: Resolve PR context', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('pr-gatekeeper.yml (Metadata gate)', () => {
+describe('gate-metadata.yml (Metadata gate)', () => {
   const script = getScript(
-    'pr-gatekeeper.yml',
-    'gatekeeper',
+    'gate-metadata.yml',
+    'metadata',
     'Run Pre-Flight Checks'
   );
   const run = (github) =>
@@ -144,14 +144,16 @@ describe('pr-gatekeeper.yml (Metadata gate)', () => {
       { body: 'Please fill this out before merging the change.' }
     ]
   ])(
-    'fails %s, labels the PR and dispatches PR Validation',
+    'fails %s, labels the PR and dispatches Fix: PR metadata',
     async (_, change) => {
       const { github } = world(change);
       const { core } = await run(github);
-      expect(core.failed[0]).toContain('PR Gatekeeper failed with 1 error(s)');
+      expect(core.failed[0]).toContain(
+        'Gate: PR metadata failed with 1 error(s)'
+      );
       expect(github.labels(20)).toContain('needs-metadata');
-      expect(dispatched(github, 'pr-validation.lock.yml')).toHaveLength(1);
-      expect(dispatched(github, 'pr-validation.lock.yml')[0].ref).toBe(BRANCH);
+      expect(dispatched(github, 'fix-metadata.lock.yml')).toHaveLength(1);
+      expect(dispatched(github, 'fix-metadata.lock.yml')[0].ref).toBe(BRANCH);
       expect(core.summaryText).toContain('dispatch status: **dispatched**');
     }
   );
@@ -194,7 +196,7 @@ describe('pr-gatekeeper.yml (Metadata gate)', () => {
 
   it('respects the remediation budget', async () => {
     const runs = [1, 2].map((id) =>
-      makeRun({ id, workflow: 'pr-validation.lock.yml', branch: BRANCH })
+      makeRun({ id, workflow: 'fix-metadata.lock.yml', branch: BRANCH })
     );
     const { github } = world({ title: 'bad title' }, { runs });
     const { core } = await run(github);
@@ -217,20 +219,20 @@ function lintWorkspace(files) {
   return dir;
 }
 
-describe('pr-lint.yml (Lint gate)', () => {
+describe('gate-lint.yml (Lint gate)', () => {
   const failure = getScript(
-    'pr-lint.yml',
+    'gate-lint.yml',
     'lint',
     'Handle Lint Failure (Trigger Autonomous Remediation)'
   );
   const success = getScript(
-    'pr-lint.yml',
+    'gate-lint.yml',
     'lint',
     'Handle Lint Success (Clear Remediation Label)'
   );
 
   it('only runs the handlers for the matching outcome', () => {
-    const steps = loadWorkflow('pr-lint.yml').jobs.lint.steps;
+    const steps = loadWorkflow('gate-lint.yml').jobs.lint.steps;
     const byName = (n) => steps.find((s) => s.name.startsWith(n));
     expect(byName('Handle Lint Failure').if).toBe(
       "failure() && steps.super-linter.outcome == 'failure'"
@@ -238,7 +240,7 @@ describe('pr-lint.yml (Lint gate)', () => {
     expect(byName('Handle Lint Success').if).toBe('success()');
   });
 
-  it('labels the PR and hands the linter output to the PR Lint Fixer', async () => {
+  it('labels the PR and hands the linter output to the lint fixer', async () => {
     const workspace = lintWorkspace({
       'super-linter-parallel-stdout-JAVASCRIPT_ES':
         '\x1b[31m/github/workspace/src/a.js\x1b[0m\n  1:7  error  x is unused  no-unused-vars\n✖ 1 problem',
@@ -253,7 +255,7 @@ describe('pr-lint.yml (Lint gate)', () => {
       env: { PR_NUMBER: '20', HEAD_REF: BRANCH, GITHUB_WORKSPACE: workspace }
     });
     expect(github.labels(20)).toEqual(['lint-failed']);
-    const [d] = dispatched(github, 'pr-lint-fixer.lock.yml');
+    const [d] = dispatched(github, 'fix-lint.lock.yml');
     expect(d.ref).toBe(BRANCH);
     expect(d.inputs.pr_number).toBe('20');
     expect(d.inputs.findings).toContain('### JAVASCRIPT_ES');
@@ -279,7 +281,7 @@ describe('pr-lint.yml (Lint gate)', () => {
       'Could not read Super-Linter output'
     );
     expect(
-      dispatched(github, 'pr-lint-fixer.lock.yml')[0].inputs.findings
+      dispatched(github, 'fix-lint.lock.yml')[0].inputs.findings
     ).toContain('(no linter output captured)');
   });
 
@@ -318,19 +320,19 @@ describe('pr-lint.yml (Lint gate)', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('pr-test.yml (Tests & coverage gate)', () => {
+describe('gate-tests.yml (Tests & coverage gate)', () => {
   const failure = getScript(
-    'pr-test.yml',
+    'gate-tests.yml',
     'test',
     'Handle Test Failure (Trigger Autonomous Remediation)'
   );
   const success = getScript(
-    'pr-test.yml',
+    'gate-tests.yml',
     'test',
     'Handle Test Success (Clear Remediation Label)'
   );
 
-  it('extracts the relevant test output for the PR Test Generator', async () => {
+  it('extracts the relevant test output for the tests fixer', async () => {
     const temp = makeTempDir();
     tempDirs.push(temp);
     fs.writeFileSync(
@@ -350,8 +352,7 @@ describe('pr-test.yml (Tests & coverage gate)', () => {
       env: { PR_NUMBER: '20', HEAD_REF: BRANCH, RUNNER_TEMP: temp }
     });
     expect(github.labels(20)).toEqual(['test-required']);
-    const { findings } = dispatched(github, 'pr-test-generator.lock.yml')[0]
-      .inputs;
+    const { findings } = dispatched(github, 'fix-tests.lock.yml')[0].inputs;
     expect(findings).toContain('FAIL tests/a.test.js');
     expect(findings).toContain('AssertionError');
     expect(findings).toContain('threshold');
@@ -370,14 +371,14 @@ describe('pr-test.yml (Tests & coverage gate)', () => {
       env: { PR_NUMBER: '20', HEAD_REF: BRANCH, RUNNER_TEMP: temp }
     });
     expect(core.warnings.join()).toContain('Could not read test output');
-    expect(dispatched(github, 'pr-test-generator.lock.yml')).toHaveLength(1);
+    expect(dispatched(github, 'fix-tests.lock.yml')).toHaveLength(1);
   });
 
   it('does not dispatch while the generator is already running', async () => {
     const runs = [
       makeRun({
         id: 5,
-        workflow: 'pr-test-generator.lock.yml',
+        workflow: 'fix-tests.lock.yml',
         branch: BRANCH,
         status: 'in_progress',
         conclusion: null
@@ -401,20 +402,20 @@ describe('pr-test.yml (Tests & coverage gate)', () => {
       env: { PR_NUMBER: '20' }
     });
     expect(github.labels(20)).toEqual([]);
-    expect(core.summaryText).toContain('Passed');
+    expect(core.summaryText).toContain('passed');
   });
 });
 
 // ---------------------------------------------------------------------------
 
-describe('pr-build.yml (Build gate)', () => {
+describe('gate-build.yml (Build gate)', () => {
   const failure = getScript(
-    'pr-build.yml',
+    'gate-build.yml',
     'build',
     'Handle Build Failure (Trigger Autonomous Remediation)'
   );
   const success = getScript(
-    'pr-build.yml',
+    'gate-build.yml',
     'build',
     'Handle Build Success (Clear Remediation Label)'
   );
@@ -444,9 +445,9 @@ describe('pr-build.yml (Build gate)', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('pr-docs.yml (Documentation drift gate)', () => {
+describe('gate-docs.yml (Documentation drift gate)', () => {
   const script = getScript(
-    'pr-docs.yml',
+    'gate-docs.yml',
     'docs-drift',
     'Evaluate Gate & Trigger Documentation Agent'
   );
@@ -463,12 +464,12 @@ describe('pr-docs.yml (Documentation drift gate)', () => {
       }
     });
 
-  it('fails and dispatches the PR Documentation Updater when docs are missing', async () => {
+  it('fails and dispatches the docs fixer when docs are missing', async () => {
     const { github } = world();
     const { core } = await run(github, { RESULT: 'docs-missing' });
     expect(core.failed[0]).toContain('Documentation drift');
     expect(github.labels(20)).toEqual(['docs-required']);
-    const [d] = dispatched(github, 'pr-doc-updater.lock.yml');
+    const [d] = dispatched(github, 'fix-docs.lock.yml');
     expect(d.inputs.findings).toContain('src/app.js');
     expect(core.summaryText).toContain('docs-not-required');
   });
@@ -519,10 +520,10 @@ describe('pr-docs.yml (Documentation drift gate)', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('pr-security.yml (Security gate)', () => {
+describe('gate-security.yml (Security gate)', () => {
   const script = getScript(
-    'pr-security.yml',
-    'security-gatekeeper',
+    'gate-security.yml',
+    'security-status',
     'Evaluate Security Results & Label PR'
   );
   const run = (github, env, workspace = ROOT) =>
@@ -538,7 +539,7 @@ describe('pr-security.yml (Security gate)', () => {
     });
 
   it('only runs when the PR was resolved', () => {
-    const job = loadWorkflow('pr-security.yml').jobs['security-gatekeeper'];
+    const job = loadWorkflow('gate-security.yml').jobs['security-status'];
     expect(job.if).toBe(
       "always() && needs.detect-environment.result == 'success'"
     );
@@ -582,8 +583,8 @@ describe('pr-security.yml (Security gate)', () => {
     });
     expect(core.failed[0]).toContain('Security vulnerabilities');
     expect(github.labels(20)).toEqual(['dependency-alert']);
-    expect(dispatched(github, 'pr-dependency-fixer.lock.yml')).toHaveLength(1);
-    expect(dispatched(github, 'pr-codeql-fixer.lock.yml')).toHaveLength(0);
+    expect(dispatched(github, 'fix-dependencies.lock.yml')).toHaveLength(1);
+    expect(dispatched(github, 'fix-codeql.lock.yml')).toHaveLength(0);
   });
 
   it('dispatches the CodeQL fixer with the downloaded findings', async () => {
@@ -605,8 +606,7 @@ describe('pr-security.yml (Security gate)', () => {
       workspace
     );
     expect(github.labels(20)).toEqual(['codeql-alert']);
-    const { findings } = dispatched(github, 'pr-codeql-fixer.lock.yml')[0]
-      .inputs;
+    const { findings } = dispatched(github, 'fix-codeql.lock.yml')[0].inputs;
     expect(findings).toContain('js/sql-injection in src/db.js:12');
     expect(findings).not.toContain('nope');
   });
@@ -619,11 +619,11 @@ describe('pr-security.yml (Security gate)', () => {
       tmp()
     );
     expect(github.state.dispatches.map((d) => d.workflow_id)).toEqual([
-      'pr-dependency-fixer.lock.yml',
-      'pr-codeql-fixer.lock.yml'
+      'fix-dependencies.lock.yml',
+      'fix-codeql.lock.yml'
     ]);
-    expect(core.summaryText).toContain('PR Dependency Fixer: **dispatched**');
-    expect(core.summaryText).toContain('PR CodeQL Fixer: **dispatched**');
+    expect(core.summaryText).toContain('Dependency fixer: **dispatched**');
+    expect(core.summaryText).toContain('CodeQL fixer: **dispatched**');
     expect(github.state.dispatches[1].inputs.findings).toContain(
       '(see run artifacts codeql-findings-*)'
     );
@@ -655,8 +655,8 @@ describe('pr-security.yml (Security gate)', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('pr-review-dispatcher.yml', () => {
-  const text = readWorkflow('pr-review-dispatcher.yml');
+describe('review-request.yml', () => {
+  const text = readWorkflow('review-request.yml');
 
   it('blocks review on every label a gate can set', () => {
     const blocking = /BLOCKING_LABELS=\(([^)]*)\)/.exec(text)[1];
@@ -682,12 +682,12 @@ describe('pr-review-dispatcher.yml', () => {
 
 describe('gate workflows: per-gate status and verdict', () => {
   const GATE_JOBS = [
-    ['pr-gatekeeper.yml', 'gatekeeper', 'metadata'],
-    ['pr-lint.yml', 'lint', 'lint'],
-    ['pr-build.yml', 'build', 'build'],
-    ['pr-test.yml', 'test', 'tests'],
-    ['pr-security.yml', 'security-gatekeeper', 'security'],
-    ['pr-docs.yml', 'docs-drift', 'docs']
+    ['gate-metadata.yml', 'metadata', 'metadata'],
+    ['gate-lint.yml', 'lint', 'lint'],
+    ['gate-build.yml', 'build', 'build'],
+    ['gate-tests.yml', 'test', 'tests'],
+    ['gate-security.yml', 'security-status', 'security'],
+    ['gate-docs.yml', 'docs-drift', 'docs']
   ];
 
   it('covers every gate listed in pr-quality.cjs', () => {
@@ -728,7 +728,7 @@ describe('gate workflows: per-gate status and verdict', () => {
       const verdict = wf.jobs.verdict;
       expect(verdict.needs).toEqual([job]);
       expect(verdict.if).toBe('${{ always() && !inputs.from_pipeline }}');
-      expect(verdict.uses).toBe('./.github/workflows/pr-quality-verdict.yml');
+      expect(verdict.uses).toBe('./.github/workflows/verdict.yml');
       expect(verdict.with).toEqual({
         pr_number: '${{ inputs.pr_number }}',
         gate,
@@ -762,17 +762,17 @@ describe('gate workflows: per-gate status and verdict', () => {
   });
 });
 
-describe('pr-quality-verdict.yml', () => {
-  const wf = loadWorkflow('pr-quality-verdict.yml');
+describe('verdict.yml', () => {
+  const wf = loadWorkflow('verdict.yml');
   const script = getScript(
-    'pr-quality-verdict.yml',
+    'verdict.yml',
     'verdict',
     'Publish pr-quality status'
   );
 
   it('serializes verdicts per PR without cancelling', () => {
     expect(wf.jobs.verdict.concurrency).toEqual({
-      group: "pr-quality-verdict-${{ inputs.pr_number || 'watchdog' }}",
+      group: "verdict-${{ inputs.pr_number || 'watchdog' }}",
       'cancel-in-progress': false
     });
     expect(Object.keys(wf.on.workflow_call.inputs)).toEqual([
@@ -828,10 +828,10 @@ describe('pr-quality-verdict.yml', () => {
   });
 });
 
-describe('pr-quality-verdict.yml watchdog', () => {
-  const wf = loadWorkflow('pr-quality-verdict.yml');
+describe('verdict.yml watchdog', () => {
+  const wf = loadWorkflow('verdict.yml');
   const script = getScript(
-    'pr-quality-verdict.yml',
+    'verdict.yml',
     'verdict',
     'Publish pr-quality status'
   );

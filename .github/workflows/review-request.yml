@@ -1,0 +1,196 @@
+name: 'Review: request'
+run-name: 'Review: request · PR #${{ inputs.pr_number }}'
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+  # Re-run this step alone; head branch/SHA are resolved from the PR.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  # Dispatching the review-comments fixer and holding pr-quality while it works.
+  actions: write
+  statuses: write
+
+jobs:
+  review-request:
+    name: Evaluate Readiness & Request Copilot Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        with:
+          script: |
+            // workflow_call passes the refs from the pipeline; workflow_dispatch passes only pr_number.
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(process.env.PR_NUMBER)
+            });
+            core.setOutput('head_ref', process.env.HEAD_REF || pr.head.ref);
+            core.setOutput('head_sha', process.env.HEAD_SHA || pr.head.sha);
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Copilot reviews at most twice per PR: once when the gates first pass, and once more to
+      # confirm the review fixes (see .github/scripts/review.cjs).
+      - name: Decide on a Copilot review
+        id: copilot
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
+            const { request, reason } = await review.copilotReviewRequest({ github, context, prNumber: Number(process.env.PR_NUMBER) });
+            core.info(`Copilot review: ${request || 'none'} (${reason})`);
+            core.setOutput('request', request);
+            core.setOutput('reason', reason);
+
+      - name: Evaluate Quality Gates & Request Review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_REQUEST: ${{ steps.copilot.outputs.request }}
+          COPILOT_REASON: ${{ steps.copilot.outputs.reason }}
+        run: |
+          PR_NUM="${{ inputs.pr_number }}"
+          HEAD_BRANCH="${{ steps.pr.outputs.head_ref }}"
+          HEAD_SHA="${{ steps.pr.outputs.head_sha }}"
+
+          echo "🔍 Evaluating quality status for PR #$PR_NUM ($HEAD_BRANCH @ $HEAD_SHA)..."
+
+          if [ "$(gh pr view "$PR_NUM" --json isDraft --jq '.isDraft')" = "true" ]; then
+            echo "ℹ️ PR is a draft. Skipping review dispatch."
+            exit 0
+          fi
+
+          # 1. Check current labels on the PR
+          LABELS=$(gh pr view "$PR_NUM" --json labels --jq '.labels.[].name' 2>/dev/null || true)
+          echo "Active labels:"
+          echo "$LABELS"
+
+          BLOCKING_LABELS=("needs-metadata" "lint-failed" "build-failed" "test-required" "docs-required" "codeql-alert" "dependency-alert" "secret-alert")
+          IS_BLOCKED=false
+
+          for b_label in "${BLOCKING_LABELS[@]}"; do
+            if echo "$LABELS" | grep -qx "$b_label"; then
+              echo "⚠️ PR has active blocking label: $b_label. Halting review dispatch until resolved."
+              IS_BLOCKED=true
+            fi
+          done
+
+          if [ "$IS_BLOCKED" = "true" ]; then
+            echo "Quality gates not cleared yet. Waiting for remediation to complete."
+            exit 0
+          fi
+
+          # 2. Check if there are still any open stacked remediation PRs targeting this branch
+          OPEN_STACKED=$(gh pr list --base "$HEAD_BRANCH" --state open --json number,title,url)
+          STACKED_COUNT=$(echo "$OPEN_STACKED" | jq '. | length')
+
+          if [ "$STACKED_COUNT" -gt 0 ]; then
+            echo "ℹ️ There are $STACKED_COUNT open stacked PR(s) currently being processed/merged. Deferring review."
+            exit 0
+          fi
+
+          echo "✅ All automated quality gates passed and all stacked PRs are settled!"
+
+          # 3. Discover all previously merged stacked remediation PRs targeting this branch
+          MERGED_STACKED=$(gh pr list --base "$HEAD_BRANCH" --state merged --json number,title,url,mergedAt --limit 10)
+          MERGED_COUNT=$(echo "$MERGED_STACKED" | jq '. | length')
+
+          STACKED_SUMMARY=""
+          if [ "$MERGED_COUNT" -gt 0 ]; then
+            STACKED_SUMMARY="#### 📦 Auto-Merged Remediation PRs & Commits\n\nThe following agentic fixes were automatically validated and merged into this branch:\n\n"
+            STACKED_SUMMARY+=$(echo "$MERGED_STACKED" | jq -r '.[] | "- [#" + (.number|tostring) + " - " + .title + "](" + .url + ")"')
+            STACKED_SUMMARY+="\n\n"
+          else
+            STACKED_SUMMARY="*No automated remediations were required; clean pass on first run!*\n\n"
+          fi
+
+          # 4. Request a Copilot review when the "Decide on a Copilot review" step says so: the first
+          #    review (its comments get one automatic fix round) or one confirmation review after
+          #    the review fixes passed the gates (its comments are left to the author).
+          if [ -n "$COPILOT_REQUEST" ]; then
+            echo "🚀 Requesting GitHub Copilot Code Review ($COPILOT_REQUEST): $COPILOT_REASON"
+            if gh api -X POST "repos/${{ github.repository }}/pulls/$PR_NUM/requested_reviewers" \
+                 -f 'reviewers[]=copilot-pull-request-reviewer[bot]' >/dev/null 2>&1 \
+               || gh pr edit "$PR_NUM" --add-reviewer "@copilot" >/dev/null 2>&1; then
+              echo "Requested GitHub Copilot review."
+            else
+              echo "::warning::Could not request GitHub Copilot review (Copilot code review may not be enabled for this repository)."
+            fi
+          else
+            echo "ℹ️ No Copilot review requested: $COPILOT_REASON"
+          fi
+
+          case "$COPILOT_REQUEST" in
+            initial)
+              COPILOT_STEPS="1. **GitHub Copilot Code Review** has been requested for deep semantic and architectural analysis.\n2. Copilot's inline comments are addressed automatically, **all at once in one stacked PR** (\`fix(review): …\`) that is merged here and re-checked by every gate. Each comment gets a reply: applied ones are resolved, skipped ones say why and are left to you. If every comment was applied, Copilot then reviews the result once more (and can approve it)." ;;
+            confirmation)
+              COPILOT_STEPS="1. Every Copilot review comment was applied in the review fix above. **GitHub Copilot** has been asked for a **confirmation review** of this commit (it can approve it).\n2. Comments from the confirmation review are left to you: there is no second automatic fix round." ;;
+            *)
+              COPILOT_STEPS="1. **GitHub Copilot Code Review**: $COPILOT_REASON\n2. Open Copilot comments are left to you (one-click **\"Commit suggestion\"**)." ;;
+          esac
+
+          # 5. Post consolidated summary comment on the PR (once per head commit)
+          MARKER="<!-- pr-quality-pipeline-complete:$HEAD_SHA -->"
+          if gh api "repos/${{ github.repository }}/issues/$PR_NUM/comments" --paginate --jq '.[].body' | grep -qF "$MARKER"; then
+            echo "ℹ️ Completion summary already posted for $HEAD_SHA."
+            exit 0
+          fi
+
+          COMMENT_FILE=$(mktemp)
+          {
+            echo "$MARKER"
+            echo "### 🎯 Automated Quality Pipeline Completed"
+            echo ""
+            echo "All automated gates (**Metadata, Lint, Build, Tests, Security, and Docs**) have completed successfully!"
+            echo ""
+            echo -e "$STACKED_SUMMARY"
+            echo "---"
+            echo ""
+            echo "### 🔍 Next Steps for Contributor:"
+            echo -e "$COPILOT_STEPS"
+            echo "3. If remediation commits were merged, review the changes via the links above."
+            echo "4. **⏳ Awaiting human review** — all gates passed (\`pr-quality\` is green). Final approval and the merge into \`main\` are up to a maintainer. 🚀"
+          } > "$COMMENT_FILE"
+
+          gh pr comment "$PR_NUM" --body-file "$COMMENT_FILE"
+          rm -f "$COMMENT_FILE"
+          echo "Posted completion summary and review dispatch comment."
+
+      # A Copilot review submitted before the gates passed (e.g. automatic review on PR open) was
+      # skipped by the intake; hand it over now. No-op once the round happened.
+      - name: Address an earlier Copilot review
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
+            await review.addressCopilotReview({ github, context, core, prNumber: Number(process.env.PR_NUMBER) });

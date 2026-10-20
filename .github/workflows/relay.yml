@@ -1,0 +1,342 @@
+name: 'Relay: merge stacked fixes'
+
+# Remediation relay (the "Recheck" step of Check -> Repair -> Recheck -> Review & merge).
+#
+# Agents run with the default GITHUB_TOKEN, and GitHub never starts workflow runs for
+# pushes/labels created with that token (nor `workflow_run` events for runs that were
+# themselves dispatched with it); PRs only get runs held for approval. Every gh-aw agent
+# therefore dispatches this workflow from its generated `conclusion` job (imported from
+# .github/workflows/shared/remediation-handoff.md), after its safe outputs and whatever its
+# result, with `agent_result` = success | no-changes | failure | cancelled | skipped |
+# safe-outputs-<result>. The pipeline's lint auto-fix hands off the same way once it
+# has opened its stacked PR (source `Lint auto-fix (run <id>)`), so every automated change
+# reaches a feature branch through this relay. There is deliberately no `pull_request` trigger:
+# stacked PRs opened with GITHUB_TOKEN would only create runs held for approval. The relay:
+#   1. squash-merges open stacked remediation PRs into the parent branch, with a
+#      `Recheck-Gates:` trailer naming the repaired gates. With the GitHub App token
+#      (PR_BOT_CLIENT_ID / PR_BOT_PRIVATE_KEY) the merge raises `synchronize`, and the PR Quality
+#      Pipeline run it starts re-checks those gates: the relay stops here;
+#      A stacked PR that conflicts with the parent branch is closed as superseded instead
+#      (`remediation-superseded`) and its gate re-checked on the current head: if the gate still
+#      fails, its agent regenerates the fix there (once per label and branch; then it is blocked).
+#      So is a stacked PR built on a commit that is no longer in the parent branch (the author
+#      rebased or force-pushed): it would merge cleanly but bring back what the rebase removed;
+#   2. otherwise (no App, or nothing merged) it re-checks only the gate(s) the agent repaired on
+#      the new commit itself, carrying the other gate results over, so agents working in
+#      parallel never wait for each other. A failed agent or one that changed nothing re-checks
+#      nothing: its gate still fails, so pr-quality fails fast;
+#   3. and updates the `pr-quality` verdict (one final full check runs once every gate passed).
+# A `review-remediation` PR (the review-comments fixer addressing a Copilot code review) re-checks every
+# gate, and the relay answers each Copilot thread it covers: applied ones are resolved, skipped
+# ones get the agent's reason. A conflicting one is superseded like any other: once every gate
+# passed again, the Copilot comments still open are handed to the review-comments fixer once more.
+# It never clears gate labels or marks anything as fixed: only the gates do that.
+
+run-name: 'Relay: merge stacked fixes · ${{ inputs.branch }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Parent PR head branch to consolidate'
+        required: true
+        type: string
+      agent_result:
+        description: 'Outcome of the dispatching agent run: success (a repair was applied), no-changes, failure, cancelled, skipped or safe-outputs-<result>'
+        required: false
+        type: string
+        default: ''
+      source:
+        description: 'Workflow run that dispatched the relay'
+        required: false
+        type: string
+        default: ''
+concurrency:
+  group: relay-${{ inputs.branch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  statuses: write
+
+jobs:
+  auto-merge-stacked:
+    name: Auto-Merge Remediation PRs & Recheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Mint GitHub App token
+        id: app
+        if: vars.PR_BOT_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PR_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
+
+      - name: Consolidate Stacked PRs & Recheck
+        # v9 injects `getOctokit` for the App-token client.
+        uses: actions/github-script@v9
+        env:
+          INPUT_BRANCH: ${{ inputs.branch }}
+          AGENT_RESULT: ${{ inputs.agent_result }}
+          SOURCE: ${{ inputs.source }}
+          PIPELINE_WAIT_MINUTES: ${{ vars.PIPELINE_WAIT_MINUTES || '30' }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const defaultBranch = context.payload.repository.default_branch;
+            const quality = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-quality.cjs`);
+            const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
+            const REMEDIATION_LABELS = ['lint-remediation', 'test-remediation', 'security-remediation', 'doc-remediation', 'review-remediation'];
+            const ACTIVE = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const summary = (text) => core.summary.addRaw(`### Relay: merge stacked fixes\n\n${text}\n`).write();
+
+            const parentBranch = process.env.INPUT_BRANCH;
+
+            if (!parentBranch || parentBranch === defaultBranch) {
+              core.info(`Nothing to consolidate for branch '${parentBranch}'.`);
+              return;
+            }
+
+            const [parent] = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', head: `${owner}:${parentBranch}`, per_page: 10
+            });
+            if (!parent) {
+              core.info(`No open parent PR found for branch '${parentBranch}'.`);
+              return;
+            }
+            core.info(`Parent PR: #${parent.number} (${parent.html_url})`);
+            const headBefore = parent.head.sha;
+
+            // Gates to re-check: the one the dispatching agent repaired, plus one per merged stacked PR.
+            // A run that failed or applied no repair (agent_result other than `success`) changed
+            // nothing, so its gate is not re-checked: the verdict below fails fast instead of
+            // spending another remediation attempt on the same commit. Manual runs (no
+            // agent_result) re-check it.
+            const repaired = new Set();
+            const agentRepaired = ['', 'success'].includes(process.env.AGENT_RESULT || '');
+            const sourceGates = agentRepaired ? quality.repairedGates(process.env.SOURCE) : [];
+            sourceGates.forEach(g => repaired.add(g));
+
+            // Merges made with the App token raise `synchronize`, so the pipeline re-checks
+            // them natively. Its `pull_request` trigger only listens to PRs targeting the default branch.
+            const appMerge = Boolean(process.env.APP_TOKEN) && parent.base.ref === defaultBranch;
+            const merger = appMerge ? getOctokit(process.env.APP_TOKEN) : github;
+
+            // 1. Merge every open stacked remediation PR that targets the parent branch.
+            //    Gate labels stay on the parent PR: only a passing gate removes them.
+            const stacked = (await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', base: parentBranch, per_page: 100
+            })).filter(p => p.labels.some(l => REMEDIATION_LABELS.includes(l.name)));
+
+            let merged = 0;
+            const superseded = new Set();
+
+            // A stacked PR that conflicts with the parent branch was built on a commit that other
+            // repairs (or the author) have changed since. Rather than resolving conflict markers,
+            // close it and re-check its gate on the current head: if the gate still fails, it
+            // dispatches the same agent again with fresh findings (a superseded PR gives its
+            // attempt back). Once per remediation label and branch; a second conflict blocks.
+            // A review fix re-checks every gate; once they pass, the verdict's review-request workflow
+            // hands the Copilot comments still open to the review-comments fixer again.
+            const supersede = async (pr, gates, why = 'conflict') => {
+              const label = pr.labels.map(l => l.name).find(n => REMEDIATION_LABELS.includes(n));
+              const closed = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'closed', base: parentBranch, per_page: 100
+              });
+              const names = (p) => p.labels.map(l => l.name);
+              if (closed.some(p => names(p).includes(quality.SUPERSEDED_LABEL) && names(p).includes(label))) {
+                core.warning(`A '${label}' PR was already regenerated on '${parentBranch}'.`);
+                return false;
+              }
+              const cause = why === 'rebased'
+                ? `was built on a commit that is no longer in \`${parentBranch}\` (the branch was rebased or force-pushed), so merging it could bring back changes removed there`
+                : `conflicts with \`${parentBranch}\`, which changed after it was generated`;
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: [quality.SUPERSEDED_LABEL] });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr.number,
+                body: `Superseded: this fix ${cause}. ` +
+                  `The gate is re-checked on the latest commit and the fix regenerated there if it is still needed.`
+              });
+              await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });
+              await github.rest.git.deleteRef({ owner, repo, ref: `heads/${pr.head.ref}` })
+                .catch(e => core.warning(`Could not delete branch '${pr.head.ref}': ${e.message}`));
+              gates.forEach(g => superseded.add(g));
+              const gateNames = gates.map(g => quality.GATES.find(x => x.id === g).name).join(', ');
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: parent.number,
+                body: [
+                  why === 'rebased'
+                    ? '### 🔀 Stacked remediation PR superseded after a rebase or force-push'
+                    : '### 🔀 Stacked remediation PR superseded after a merge conflict',
+                  '',
+                  `[#${pr.number} - ${pr.title}](${pr.html_url}) ${cause}. Instead of merging it, it was closed:`,
+                  '',
+                  ...(label === review.REVIEW_LABEL
+                    ? ['- **every** gate is re-checked on the latest commit;',
+                       '- once they pass, the Copilot comments still open are addressed again on that commit (one extra attempt).']
+                    : [`- the **${gateNames}** gate is re-checked on the latest commit;`,
+                       '- if it still fails, its agent regenerates the fix on that commit (one extra attempt).'])
+                ].join('\n')
+              });
+              core.info(`🔀 Superseded stacked PR #${pr.number} (${why}); re-checking ${gates.join(', ')}.`);
+              return true;
+            };
+
+            // A human has to merge it: stop counting it as repair in progress.
+            const block = async (pr, reason) => {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: pr.number, labels: [quality.BLOCKED_LABEL]
+              }).catch(err => core.warning(`Could not label stacked PR #${pr.number}: ${err.message}`));
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: parent.number,
+                body: `### ⚠️ Stacked remediation PR #${pr.number} could not be auto-merged\n\n${reason}\n\nPlease review and merge it manually.`
+              });
+            };
+            const regenerate = (pr, gates, why) =>
+              supersede(pr, gates, why).catch(err => { core.warning(`Could not supersede #${pr.number}: ${err.message}`); return false; });
+
+            for (const pr of stacked) {
+              const gates = [...new Set(pr.labels.flatMap(l => quality.repairedGates(l.name)))];
+              const reviewFix = pr.labels.some(l => l.name === review.REVIEW_LABEL);
+
+              // A fix built on a commit the author rebased away merges "cleanly" but would bring back
+              // what the rebase removed: regenerate it on the current head, like a conflict.
+              const { state: baseState } = await quality.stackedBase({ github, context, pr, head: headBefore })
+                .catch(e => { core.warning(`Could not check the base of stacked PR #${pr.number}: ${e.message}`); return { state: 'unknown' }; });
+              if (baseState === 'rebased') {
+                if (!(await regenerate(pr, gates, 'rebased'))) {
+                  await block(pr, `It was built on a commit that is no longer in \`${parentBranch}\` (rebased or force-pushed), and its fix was already regenerated once.`);
+                }
+                continue;
+              }
+              try {
+                if (pr.draft) {
+                  await github.graphql(
+                    'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { clientMutationId } }',
+                    { id: pr.node_id }
+                  );
+                  core.info(`Marked stacked PR #${pr.number} ready for review.`);
+                }
+
+                const { data: result } = await merger.rest.pulls.merge({
+                  owner, repo,
+                  pull_number: pr.number,
+                  merge_method: 'squash',
+                  commit_title: `Merge stacked PR #${pr.number}: ${pr.title}`,
+                  commit_message: quality.recheckTrailer([...gates, ...sourceGates])
+                });
+                merged++;
+                gates.forEach(g => repaired.add(g));
+                const gateNames = gates.map(g => quality.GATES.find(x => x.id === g).name).join(', ') || 'affected';
+                core.info(`✅ Merged stacked PR #${pr.number} into '${parentBranch}' (${result.sha}).`);
+
+                try {
+                  await github.rest.git.deleteRef({ owner, repo, ref: `heads/${pr.head.ref}` });
+                } catch (e) {
+                  core.warning(`Could not delete branch '${pr.head.ref}': ${e.message}`);
+                }
+
+                const commitUrl = `${context.serverUrl}/${owner}/${repo}/commit/${result.sha}`;
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: parent.number,
+                  body: [
+                    '### 🤖 Autonomous Remediation Auto-Merged',
+                    '',
+                    'A stacked remediation PR has been squashed into your branch:',
+                    '',
+                    `- **Stacked PR**: [#${pr.number} - ${pr.title}](${pr.html_url})`,
+                    `- **Merged Commit**: [\`${result.sha.slice(0, 7)}\`](${commitUrl})`,
+                    `- **Target Branch**: \`${parentBranch}\``,
+                    '',
+                    reviewFix
+                      ? '> 💡 *Copilot review fixes can touch anything, so **every gate** re-checks this commit now. Each Copilot comment got a reply: applied ones are resolved, skipped ones say why.*'
+                      : `> 💡 *The fix is not trusted until the gates pass: the **${gateNames}** gate re-checks this commit now, and every gate runs once more together before human review.*`
+                  ].join('\n')
+                });
+
+                if (reviewFix) {
+                  await review.answerCopilotReview({ github, context, core, prNumber: parent.number, stacked: pr, sha: result.sha })
+                    .catch(e => core.warning(`Could not answer the Copilot review: ${e.message}`));
+                }
+              } catch (e) {
+                core.warning(`Failed to merge stacked PR #${pr.number}: ${e.message}`);
+                // Only a real conflict is regenerated; GitHub may still be computing mergeability.
+                const { state: mergeState } = await quality.mergeability({ github, context, prNumber: pr.number, sleep, delayMs: 5000 });
+                if (mergeState === 'conflict' && await regenerate(pr, gates, 'conflict')) continue;
+                await block(pr, mergeState === 'conflict'
+                  ? `It conflicts with \`${parentBranch}\` again after its fix was already regenerated once.`
+                  : e.message);
+              }
+            }
+
+            // With the App token, the pipeline run started by the merges re-checks the merged gates;
+            // superseded gates are not in any merge commit, so the relay re-checks those itself.
+            if (merged && appMerge && !superseded.size) {
+              await summary([
+                `- Parent PR: #${parent.number}`,
+                `- Stacked PRs merged: ${merged} (GitHub App token)`,
+                `- Repaired by: ${process.env.SOURCE || 'stacked PR'}${process.env.AGENT_RESULT ? ` (${process.env.AGENT_RESULT})` : ''}`,
+                `- Re-check: the pipeline run started by the merge re-checks ${[...repaired].join(', ') || 'the affected gates'}`
+              ].join('\n'));
+              return;
+            }
+
+            // 2. A pipeline still running on this branch is about to record fresh gate results.
+            const deadline = Date.now() + Number(process.env.PIPELINE_WAIT_MINUTES) * 60000;
+            for (;;) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: 'pipeline.yml', branch: parentBranch, per_page: 20
+              });
+              const running = data.workflow_runs.filter(r => ACTIVE.has(r.status));
+              if (!running.length) break;
+              if (Date.now() > deadline) {
+                core.warning(`Pipeline still running after ${process.env.PIPELINE_WAIT_MINUTES} minutes; deciding anyway.`);
+                break;
+              }
+              core.info(`Waiting for Pipeline run(s) ${running.map(r => r.id).join(', ')} to finish...`);
+              await sleep(30000);
+            }
+
+            // 3. Re-check only the repaired gates on the new head commit; every other gate keeps
+            //    its result from the commit before the repair (marked as carried over).
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: parent.number });
+            const reason = process.env.SOURCE || (merged ? `stacked PR merge` : 'remediation');
+            // Rare: App merges plus a superseded PR. Re-checking the merged gates here too (the
+            // pipeline run started by the merges may not be listed yet) beats carrying a failure.
+            const recheck = new Set([...repaired, ...superseded]);
+            const plan = await quality.recheckGates({
+              github, context, core,
+              prNumber: parent.number,
+              branch: parentBranch,
+              before: headBefore,
+              sha: pr.head.sha,
+              repaired: [...recheck],
+              reason
+            });
+
+            // 4. Publish the verdict. It stays pending while gates re-check or agents still repair,
+            //    and asks for one final full check once every gate passed.
+            const verdict = await quality.evaluateVerdict({ github, context, core, prNumber: parent.number });
+            const gateNames = (ids) => ids.map(id => quality.GATES.find(g => g.id === id).name).join(', ') || 'none';
+            await summary([
+              `- Parent PR: #${parent.number}`,
+              `- Stacked PRs merged: ${merged}`,
+              ...(superseded.size ? [`- Superseded after a merge conflict or a rebase/force-push (regenerated if still needed): ${gateNames([...superseded])}`] : []),
+              `- Repaired by: ${process.env.SOURCE || 'stacked PR'}${process.env.AGENT_RESULT ? ` (${process.env.AGENT_RESULT})` : ''}`,
+              `- Re-checking: ${gateNames(plan.recheck)}`,
+              `- Carried over: ${gateNames(plan.carried)}`,
+              `- pr-quality: **${verdict.state}** — ${verdict.summary}`
+            ].join('\n'));

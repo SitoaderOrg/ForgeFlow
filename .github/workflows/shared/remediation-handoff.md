@@ -2,7 +2,7 @@
 # Deterministic hand-off to the remediation relay, shared by every remediation agent.
 #
 # GitHub never starts workflow runs for pushes, labels or pull requests created with
-# GITHUB_TOKEN, so the relay (pr-stacked-merge.yml) has to be dispatched. The generated
+# GITHUB_TOKEN, so the relay (relay.yml) has to be dispatched. The generated
 # `conclusion` job runs after the agent and its safe outputs whatever their result, so this
 # step always hands off, whether the agent repaired something, changed nothing or crashed
 # (HTTP 429, timeout, sandbox error). `agent_result` tells the relay which case it is:
@@ -41,7 +41,7 @@ jobs:
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: 'pr-stacked-merge.yml',
+              workflow_id: 'relay.yml',
               ref: context.payload.repository.default_branch,
               inputs: { branch: BRANCH, agent_result: result, source: SOURCE }
             });
