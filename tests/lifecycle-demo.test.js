@@ -36,6 +36,19 @@ describe('lifecycle demo leaderboard', () => {
     expect(exportLeaderboard(entries)).toHaveLength(5);
   });
 
+  it('does not mutate the caller-provided entries array', () => {
+    const entries = [
+      { name: 'Scout', score: 20 },
+      { name: 'Pip & Pop', score: 100 },
+      { name: '<Dash>', score: 70 }
+    ];
+    const originalOrder = entries.map((entry) => entry.name);
+
+    exportLeaderboard(entries, 2);
+
+    expect(entries.map((entry) => entry.name)).toEqual(originalOrder);
+  });
+
   it('summarizes a populated leaderboard', () => {
     expect(
       summarizeLeaderboard([
@@ -48,6 +61,14 @@ describe('lifecycle demo leaderboard', () => {
   it('preserves a zero score in the summary', () => {
     expect(summarizeLeaderboard([{ name: 'Scout', score: 0 }])).toEqual({
       count: 1,
+      total: 0,
+      average: 0
+    });
+  });
+
+  it('returns a zero average for an empty leaderboard', () => {
+    expect(summarizeLeaderboard([])).toEqual({
+      count: 0,
       total: 0,
       average: 0
     });
