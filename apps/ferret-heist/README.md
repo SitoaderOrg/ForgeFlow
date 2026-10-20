@@ -5,8 +5,8 @@ avoiding a human and a vacuum. The game logic lives under `src/game/`.
 
 ## Running
 
-Open `index.html` in a browser, or serve the `apps/ferret-heist` directory
-with any static file server.
+Serve the `apps/ferret-heist` directory with any HTTP static file server,
+then open its `index.html` URL in a browser.
 
 ## Game Modules
 
