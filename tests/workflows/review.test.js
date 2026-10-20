@@ -380,6 +380,103 @@ describe('review.cjs copilotReviewRequest', () => {
   });
 });
 
+describe('review.cjs awaitCopilotReview', () => {
+  const copilotOn = (sha) => ({
+    user: { login: `${COPILOT}[bot]` },
+    state: 'COMMENTED',
+    submitted_at: '2025-01-01T10:00:00Z',
+    commit_id: sha
+  });
+  const wait = (github, pr, { onSleep, ...opts } = {}) => {
+    const sleeps = [];
+    return review
+      .awaitCopilotReview({
+        github,
+        context: createContext(),
+        core: createCore(),
+        prNumber: 20,
+        headSha: pr.head.sha,
+        timeoutMs: 100000,
+        intervalMs: 20000,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          if (onSleep) onSleep(sleeps.length);
+        },
+        ...opts
+      })
+      .then((outcome) => ({ outcome, sleeps }));
+  };
+
+  it('hands the review to the fixer as soon as Copilot reviewed the head commit', async () => {
+    const { github, pr } = await world();
+    const { outcome, sleeps } = await wait(github, pr, {
+      onSleep: (n) => {
+        if (n === 2) github.state.reviews = { 20: [copilotOn(pr.head.sha)] };
+      }
+    });
+    expect(outcome).toEqual({
+      result: 'reviewed',
+      address: 'dispatched',
+      comments: 2
+    });
+    expect(sleeps).toEqual([20000, 20000]);
+    expect(fixerDispatches(github)).toHaveLength(1);
+  });
+
+  it('dispatches nothing when the review has no open comments', async () => {
+    const { github, pr } = await world({
+      threads: [],
+      reviews: { 20: [copilotOn('placeholder')] }
+    });
+    github.state.reviews[20][0].commit_id = pr.head.sha;
+    const { outcome } = await wait(github, pr);
+    expect(outcome).toEqual({
+      result: 'reviewed',
+      address: 'no-comments',
+      comments: 0
+    });
+    expect(github.state.dispatches).toEqual([]);
+  });
+
+  it('ignores reviews of other commits and by other reviewers', async () => {
+    const { github, pr } = await world({
+      reviews: {
+        20: [
+          copilotOn('0'.repeat(40)),
+          { ...copilotOn('placeholder'), user: { login: 'octocat' } }
+        ]
+      }
+    });
+    github.state.reviews[20][1].commit_id = pr.head.sha;
+    const { outcome, sleeps } = await wait(github, pr);
+    expect(outcome).toEqual({ result: 'timeout' });
+    // 100 s at 20 s intervals: five checks, four waits in between.
+    expect(sleeps).toHaveLength(4);
+    expect(github.state.dispatches).toEqual([]);
+  });
+
+  it('stops when a new commit is pushed', async () => {
+    const { github, pr } = await world();
+    const { outcome } = await wait(github, pr, {
+      onSleep: () => {
+        github.state.pulls[0].head.sha = 'f'.repeat(40);
+      }
+    });
+    expect(outcome).toEqual({ result: 'head-changed' });
+    expect(github.state.dispatches).toEqual([]);
+  });
+
+  it('stops when the PR is closed', async () => {
+    const { github, pr } = await world();
+    const { outcome } = await wait(github, pr, {
+      onSleep: () => {
+        github.state.pulls[0].state = 'closed';
+      }
+    });
+    expect(outcome).toEqual({ result: 'not-open' });
+  });
+});
+
 describe('Copilot review wiring', () => {
   it('the review-request workflow requests Copilot at most twice and hands over earlier reviews', async () => {
     const text = readWorkflow('review-request.yml');
@@ -413,6 +510,87 @@ describe('Copilot review wiring', () => {
       { github, env: { PR_NUMBER: '20' } }
     );
     expect(fixerDispatches(github)).toHaveLength(1);
+  });
+
+  it('the review-request workflow waits for the first Copilot review only', async () => {
+    const wf = loadWorkflow('review-request.yml');
+    const steps = wf.jobs['review-request'].steps;
+    const request = steps.find(
+      (s) => s.name === 'Evaluate Quality Gates & Request Review'
+    );
+    expect(request.id).toBe('request');
+    expect(request.run).toContain(
+      'echo "copilot_requested=true" >> "$GITHUB_OUTPUT"'
+    );
+    const names = steps.map((s) => s.name);
+    const waitStep = steps.find(
+      (s) => s.name === 'Wait for the Copilot review'
+    );
+    expect(names.indexOf('Wait for the Copilot review')).toBeGreaterThan(
+      names.indexOf('Address an earlier Copilot review')
+    );
+    expect(waitStep.if).toBe(
+      "steps.copilot.outputs.request == 'initial' && steps.request.outputs.copilot_requested == 'true'"
+    );
+    expect(waitStep['timeout-minutes']).toBeGreaterThan(10);
+
+    const { github, pr } = await world();
+    const { core, sleeps } = await runScript(
+      getScript(
+        'review-request.yml',
+        'review-request',
+        'Wait for the Copilot review'
+      ),
+      {
+        github,
+        env: {
+          PR_NUMBER: '20',
+          HEAD_SHA: pr.head.sha,
+          REVIEW_WAIT_MINUTES: '5'
+        },
+        onSleep: (ms, n) => {
+          if (n === 3)
+            github.state.reviews = {
+              20: [
+                {
+                  user: { login: `${COPILOT}[bot]` },
+                  state: 'COMMENTED',
+                  submitted_at: '2025-01-01T10:00:00Z',
+                  commit_id: pr.head.sha
+                }
+              ]
+            };
+        }
+      }
+    );
+    expect(sleeps).toEqual([20000, 20000, 20000]);
+    expect(fixerDispatches(github)).toHaveLength(1);
+    expect(core.summaryText).toContain('hand-over: dispatched (2 comment(s))');
+  });
+
+  it('the review-request wait hands over to the watchdog after the time limit', async () => {
+    const { github, pr } = await world();
+    const { core, sleeps } = await runScript(
+      getScript(
+        'review-request.yml',
+        'review-request',
+        'Wait for the Copilot review'
+      ),
+      {
+        github,
+        env: {
+          PR_NUMBER: '20',
+          HEAD_SHA: pr.head.sha,
+          REVIEW_WAIT_MINUTES: '5'
+        }
+      }
+    );
+    // 5 minutes at 20 s intervals: 15 checks.
+    expect(sleeps).toHaveLength(14);
+    expect(github.state.dispatches).toEqual([]);
+    expect(core.summaryText).toContain(
+      'the pr-quality watchdog hands it over later'
+    );
   });
 
   it('the watchdog hands over Copilot reviews whose event was lost', async () => {

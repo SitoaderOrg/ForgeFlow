@@ -4,8 +4,9 @@ run-name: 'Review: Copilot intake · PR #${{ github.event.pull_request.number ||
 # Hands a Copilot code review to the review-comments fixer as soon as it is submitted: all of its open
 # comments in one batch, addressed in one stacked PR (see .github/scripts/review.cjs). One
 # automatic round per PR, and only once every gate passed on the head commit; later reviews are
-# left to the author. The review-request workflow (a review that arrived before the gates passed) and
-# the pr-quality watchdog (a lost event) hand reviews over the same way.
+# left to the author. This run is held for approval when Copilot is its actor, so the review-request
+# workflow (a review that arrived before the gates passed, or within a few minutes of its request) and
+# the pr-quality watchdog (anything later) hand reviews over the same way.
 
 on:
   pull_request_review:

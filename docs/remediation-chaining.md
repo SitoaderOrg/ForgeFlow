@@ -270,8 +270,11 @@ Its inline comments are not left for the author to click through one by one:
    (unresolved, not outdated) Copilot comment to `fix-review-comments.lock.yml` in one dispatch, keyed by
    comment id. It only acts while `pr-quality` is green on the head commit, so it never races the gate
    agents; a review that arrived earlier (e.g. automatic review on PR open) is handed over by the
-   review-request workflow once the gates pass, and the `verdict.yml` watchdog catches a lost
-   `pull_request_review` event. `pr-quality` goes back to **pending** (`Addressing N Copilot review
+   review-request workflow once the gates pass. Because Copilot is the actor of the review event, the
+   intake run is held for approval; so after requesting the first review, `review-request.yml` checks
+   every 20 seconds, for up to `REVIEW_WAIT_MINUTES` (default 5, at most 10), for a Copilot review of the
+   head commit and hands it over as soon as it arrives. It stops early on a new commit or a closed PR,
+   and the `verdict.yml` watchdog hands over a review that arrives later. `pr-quality` goes back to **pending** (`Addressing N Copilot review
    comment(s)`), and stays pending while the fixer runs, so the PR is not handed to a human mid-fix.
 2. **One stacked PR** — the review-comments fixer decides each comment, applies the accepted ones (a
    `suggestion` block as written), runs lint and tests, and opens a single `review-remediation` PR
@@ -378,7 +381,7 @@ so the tests run the exact code that runs in Actions.
 | `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome (incl. base-conflict guards and deduplicated resolution instructions), the `sweepStalled` watchdog, `mergeability` polling and `stackedBase` (base from the marker or the agent run; intact, rebased, unknown) |
 | `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check, conflicts with `main`), autofix stacked PR and relay hand-off, verdict job |
 | `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, one full check after the last repair on passing gates, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR, conflicting stacked PRs (superseded and regenerated once, then blocked; App path), stacked PRs built before a rebase or force-push (base from the agent run or the auto-fix marker; superseded once, then blocked; unknown base merged), Copilot review fixes (every gate re-checked, threads answered and resolved, conflicts superseded once, then blocked) |
-| `review.test.js` | Copilot review handling: `addressCopilotReview` (one batched dispatch, thread filtering, gates must be green, one round per PR, skipped PRs), decision parsing, `copilotReviewRequest` (first review, one confirmation after a merged review fix, never a third; its comments left to the author), `review-intake.yml`, dispatcher and watchdog hand-over, `pr-quality` held pending while the fixer runs |
+| `review.test.js` | Copilot review handling: `addressCopilotReview` (one batched dispatch, thread filtering, gates must be green, one round per PR, skipped PRs), decision parsing, `copilotReviewRequest` (first review, one confirmation after a merged review fix, never a third; its comments left to the author), `review-intake.yml`, dispatcher and watchdog hand-over, `awaitCopilotReview` (bounded wait after the request: review of the head commit, new commit, closed PR, timeout), `pr-quality` held pending while the fixer runs |
 | `gates.test.js` | Every gate's handlers (metadata, lint, build, tests, docs, security, review-request workflow), *Record gate result* steps, standalone `verdict` jobs, `verdict.yml` |
 | `agents.test.js` | gh-aw agent contracts: declarative (no scripted steps/jobs), skipped on the default branch, dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, the shared relay hand-off compiled into every `conclusion` job (`agent_result` for repairs, no changes, crashes and failed safe outputs) |
 

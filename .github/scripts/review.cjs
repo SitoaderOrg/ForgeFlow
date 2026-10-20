@@ -242,6 +242,32 @@ async function copilotReviewRequest({ github, context, prNumber }) {
 }
 
 /**
+ * Right after requesting the first Copilot review: wait for Copilot's review of `headSha` and hand
+ * its comments to the review-comments fixer at once. The `pull_request_review` run that Copilot's
+ * review starts is held for approval (its actor is Copilot), so without this the hand-over waits
+ * for the watchdog. Bounded: stops when the PR is closed or gets a new head commit (a new pipeline
+ * run takes over), and after `timeoutMs` without a review (the watchdog takes over).
+ * @returns {Promise<{result: 'reviewed'|'not-open'|'head-changed'|'timeout', address?: string, comments?: number}>}
+ */
+async function awaitCopilotReview({ github, context, core, prNumber, headSha, sleep, timeoutMs = 300000, intervalMs = 20000 }) {
+  const { owner, repo } = context.repo;
+  const polls = Math.max(1, Math.ceil(timeoutMs / intervalMs));
+  for (let poll = 1; ; poll++) {
+    const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    if (pr.state !== 'open') return { result: 'not-open' };
+    if (pr.head.sha !== headSha) return { result: 'head-changed' };
+    const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
+    if (reviews.some((r) => isCopilot(r.user && r.user.login) && r.commit_id === headSha)) {
+      core.info(`PR #${prNumber}: Copilot reviewed ${headSha.slice(0, 7)}.`);
+      const { result, comments } = await addressCopilotReview({ github, context, core, prNumber });
+      return { result: 'reviewed', address: result, comments };
+    }
+    if (poll >= polls) return { result: 'timeout' };
+    await sleep(intervalMs);
+  }
+}
+
+/**
  * Watchdog fallback for a lost `pull_request_review` event: address Copilot reviews on open PRs
  * into the default branch whose gates all passed.
  */
@@ -271,5 +297,6 @@ module.exports = {
   parseReviewDecisions,
   answerCopilotReview,
   copilotReviewRequest,
+  awaitCopilotReview,
   sweepCopilotReviews
 };

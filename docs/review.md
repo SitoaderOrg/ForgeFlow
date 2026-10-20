@@ -78,6 +78,7 @@ Instead of pinging the developer to manually review and merge 3–4 separate sta
 Once all automated checks pass and all stacked PRs are settled:
 - **Verifies All Gates Passed**: Confirms zero blocking labels (`needs-metadata`, `lint-failed`, `build-failed`, `test-required`, `docs-required`, `codeql-alert`, `dependency-alert`).
 - **Requests GitHub Copilot Code Review**: Automatically dispatches `@copilot` to perform deep architectural and semantic review — once when the gates first pass, and once more to confirm the review fixes when every comment was applied.
+- **Waits for the first review**: checks for Copilot's review of the head commit for up to `REVIEW_WAIT_MINUTES` (default 5) and hands its comments to the fixer as soon as it arrives (the intake run is held for approval because Copilot is its actor). It stops early on a new commit or a closed PR; a later review is handed over by the watchdog.
 - **Posts Consolidated Summary**:
   - Itemizes every auto-merged remediation PR and commit with direct links.
   - Explains that Copilot's comments are addressed automatically and what is left for the developer.

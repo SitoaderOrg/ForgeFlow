@@ -60,6 +60,7 @@ Navigate to **Settings → Secrets and variables → Actions**:
 - `GH_AW_AGENT_MODEL`: (Default: `gpt-4.1`) Copilot model used by all remediation agents (e.g. `gpt-5.3-codex`, `gpt-4.1`).
 - `MAX_REMEDIATION_ATTEMPTS`: (Default: `1`) How many times a gate may dispatch the same remediation agent for one PR branch. With `1`, a gate that still fails after its repair fails `pr-quality` and asks for manual intervention.
 - `PIPELINE_WAIT_MINUTES`: (Default: `30`) How long the remediation relay waits for a running pipeline before re-checking gates.
+- `REVIEW_WAIT_MINUTES`: (Default: `5`, max `10`) How long `review-request.yml` waits for the first Copilot review before leaving the hand-over to the watchdog.
 - `STALE_VERDICT_MINUTES`: (Default: `30`) How long `pr-quality` may stay pending (with no pipeline or relay running) before the watchdog re-evaluates it.
 - `PR_BOT_CLIENT_ID`: *(Recommended)* Client ID of the GitHub App used for bot pushes (autofix commits and stacked-PR merges). Set it with `PR_BOT_PRIVATE_KEY`.
 

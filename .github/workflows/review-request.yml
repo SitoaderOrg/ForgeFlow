@@ -72,6 +72,7 @@ jobs:
             core.setOutput('reason', reason);
 
       - name: Evaluate Quality Gates & Request Review
+        id: request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COPILOT_REQUEST: ${{ steps.copilot.outputs.request }}
@@ -141,6 +142,7 @@ jobs:
                  -f 'reviewers[]=copilot-pull-request-reviewer[bot]' >/dev/null 2>&1 \
                || gh pr edit "$PR_NUM" --add-reviewer "@copilot" >/dev/null 2>&1; then
               echo "Requested GitHub Copilot review."
+              echo "copilot_requested=true" >> "$GITHUB_OUTPUT"
             else
               echo "::warning::Could not request GitHub Copilot review (Copilot code review may not be enabled for this repository)."
             fi
@@ -194,3 +196,35 @@ jobs:
           script: |
             const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
             await review.addressCopilotReview({ github, context, core, prNumber: Number(process.env.PR_NUMBER) });
+
+      # The review-intake run that Copilot's review starts is held for approval (its actor is
+      # Copilot), so wait here for the first review and hand its comments to the fixer at once.
+      # Stops on a closed PR or a new head commit; without a review in time the watchdog takes over.
+      # Only the first review: comments of the confirmation review are left to the author.
+      - name: Wait for the Copilot review
+        if: steps.copilot.outputs.request == 'initial' && steps.request.outputs.copilot_requested == 'true'
+        timeout-minutes: 15
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          REVIEW_WAIT_MINUTES: ${{ vars.REVIEW_WAIT_MINUTES || '5' }}
+        with:
+          script: |
+            const review = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review.cjs`);
+            const minutes = Number(process.env.REVIEW_WAIT_MINUTES) || 5;
+            const { result, address, comments } = await review.awaitCopilotReview({
+              github, context, core,
+              prNumber: Number(process.env.PR_NUMBER),
+              headSha: process.env.HEAD_SHA,
+              timeoutMs: Math.min(minutes, 10) * 60000,
+              sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+            });
+            const detail = {
+              reviewed: `Copilot reviewed the commit; hand-over: ${address}${comments ? ` (${comments} comment(s))` : ''}.`,
+              'not-open': 'The PR was closed while waiting.',
+              'head-changed': 'A new commit was pushed while waiting; its pipeline run takes over.',
+              timeout: `No Copilot review within ${Math.min(minutes, 10)} minute(s); the pr-quality watchdog hands it over later.`
+            }[result];
+            core.info(detail);
+            await core.summary.addRaw(`### Copilot review\n\n${detail}\n`).write();
