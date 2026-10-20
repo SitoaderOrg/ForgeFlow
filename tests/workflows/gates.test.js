@@ -648,6 +648,54 @@ describe('gate-security.yml (Security gate)', () => {
   });
 });
 
+describe('scan-codeql.yml (the only CodeQL configuration)', () => {
+  const scan = loadWorkflow('scan-codeql.yml');
+  const steps = scan.jobs.analyze.steps;
+  const step = (name) => steps.find((s) => s.name === name);
+
+  it('is the CodeQL job of the security gate, which fails on its findings', () => {
+    const job = loadWorkflow('gate-security.yml').jobs['codeql-analysis'];
+    expect(job.uses).toBe('./.github/workflows/scan-codeql.yml');
+    expect(job.with).toEqual({
+      sha: '${{ needs.detect-environment.outputs.head_sha }}',
+      upload_ref: 'refs/pull/${{ inputs.pr_number }}/head',
+      gate: true
+    });
+    expect(job.permissions['security-events']).toBe('write');
+    expect(step('Fail on CodeQL Findings').if).toMatch(/^inputs\.gate && /);
+    expect(step('Upload Findings').with.name).toBe(
+      'codeql-findings-${{ matrix.language }}'
+    );
+  });
+
+  it('also scans main on push and on a schedule', () => {
+    expect(scan.on.push.branches).toEqual(['main']);
+    expect(scan.on.schedule).toHaveLength(1);
+    expect(scan.on.workflow_call.inputs.gate.default).toBe(false);
+  });
+
+  it('uploads the results of the head it analyzed, to the PR', () => {
+    const analyze = step('Perform CodeQL Analysis').with;
+    expect(analyze.upload).toBe(
+      "${{ github.event.pull_request.head.repo.fork && 'never' || 'always' }}"
+    );
+    expect(analyze.ref).toBe('${{ inputs.upload_ref }}');
+    expect(analyze.sha).toBe("${{ inputs.upload_ref && inputs.sha || '' }}");
+    expect(step('Checkout Code').with.ref).toBe(
+      '${{ inputs.sha || github.sha }}'
+    );
+  });
+
+  it('keeps the coverage of the former default setup', () => {
+    expect(step('Initialize CodeQL').with.queries).toBe('security-extended');
+    const detect = scan.jobs.languages.steps.find(
+      (s) => s.name === 'Detect languages'
+    ).run;
+    expect(detect).toContain('add_lang actions none');
+    expect(detect).toContain('add_lang javascript-typescript none');
+  });
+});
+
 // ---------------------------------------------------------------------------
 
 describe('review-request.yml', () => {

@@ -53,6 +53,7 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 | :--- | :--- | :--- |
 | **Pipeline** | Entry point for every feature PR into `main` | `pipeline.yml` |
 | **Gate:** | Checks one aspect and records `gate/<id>`; never changes code | `gate-*.yml` |
+| **Scan:** | Code scanning shared by a gate and `main` (push and schedule) | `scan-*.yml` |
 | **Fix:** | gh-aw agent that repairs one failing gate through a stacked PR | `fix-*.md` |
 | **Relay:** | Merges stacked fixes into the feature branch and re-checks the repaired gates | `relay.yml` |
 | **Review:** | Requests Copilot code review and hands its comments to the review-comments fixer | `review-*.yml` |
@@ -65,7 +66,8 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 - **Gate: Lint & format (`gate-lint.yml`)**: Polyglot linting using Super-Linter (reusable; also `workflow_dispatch`).
 - **Gate: Build (`gate-build.yml`)**: Compiles and builds project artifacts (reusable; also `workflow_dispatch`).
 - **Gate: Tests & coverage (`gate-tests.yml`)**: Polyglot test runner with diff-scoped 80% coverage check (reusable; also `workflow_dispatch`).
-- **Gate: Security (`gate-security.yml`)**: Per-language CodeQL matrix and Dependency Review (reusable; also `workflow_dispatch`).
+- **Gate: Security (`gate-security.yml`)**: CodeQL (via `scan-codeql.yml`) and Dependency Review (reusable; also `workflow_dispatch`).
+- **Scan: CodeQL (`scan-codeql.yml`)**: The repository's only CodeQL configuration (GitHub's default setup stays disabled). Analyzes the PR head for the security gate and uploads the results to the PR; also scans `main` on push and weekly.
 - **Gate: Docs drift (`gate-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
 - **Review: request (`review-request.yml`)**: Requests a Copilot code review (once when the gates pass, once more to confirm the review fixes) and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
 - **Review: Copilot intake (`review-intake.yml`)**: When Copilot submits a review, hands all of its open comments to the review-comments fixer in one batch (see [Copilot review comments](docs/remediation-chaining.md#copilot-review-comments)).

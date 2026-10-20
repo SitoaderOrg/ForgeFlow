@@ -4,6 +4,7 @@ import { listWorkflowFiles, loadWorkflow } from './helpers/harness.js';
 // Role prefix of the file name -> prefix of the display name (see readme "Naming convention").
 const ROLES = [
   [/^gate-[a-z-]+\.yml$/, 'Gate: '],
+  [/^scan-[a-z-]+\.yml$/, 'Scan: '],
   [/^fix-[a-z-]+\.lock\.yml$/, 'Fix: '],
   [/^review-[a-z-]+\.yml$/, 'Review: '],
   [/^relay\.yml$/, 'Relay: '],

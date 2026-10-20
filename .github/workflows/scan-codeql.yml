@@ -1,0 +1,160 @@
+name: 'Scan: CodeQL'
+run-name: 'Scan: CodeQL · ${{ github.ref_name }}'
+
+# The repository's single CodeQL configuration (advanced setup). GitHub's CodeQL "default setup"
+# must stay disabled: it would scan every PR a second time and rejects uploads from workflows.
+#   Pull requests: called by gate-security.yml on the PR head. Results are uploaded to
+#                  refs/pull/<n>/head (alerts, PR annotations, Copilot Autofix) and, with
+#                  `gate: true`, any finding at or above CODEQL_MIN_SECURITY_SEVERITY fails the
+#                  job; the findings are handed to the gate as `codeql-findings-*` artifacts.
+#   main:          every push and a weekly schedule refresh the default-branch alerts that PR
+#                  results are compared against.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      sha:
+        description: 'Commit to analyze (the PR head)'
+        required: true
+        type: string
+      upload_ref:
+        description: 'Ref the results are uploaded to, e.g. refs/pull/12/head'
+        required: true
+        type: string
+      gate:
+        description: 'Fail on findings and publish them as codeql-findings-* artifacts'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+env:
+  # Fail the gate on CodeQL findings at or above this CVSS security-severity (medium = 4.0)
+  CODEQL_MIN_SECURITY_SEVERITY: ${{ vars.CODEQL_MIN_SECURITY_SEVERITY || '4.0' }}
+
+jobs:
+  languages:
+    name: Detect CodeQL languages
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+
+      - name: Detect languages
+        id: detect
+        run: |
+          FILES=$(git ls-files | grep -vE '^(node_modules|dist|coverage)/' || true)
+          MATRIX='[]'
+          add_lang() {
+            MATRIX=$(echo "$MATRIX" | jq -c --arg l "$1" --arg m "$2" '. + [{"language": $l, "build-mode": $m}]')
+          }
+          # Interpreted languages are analysed without a build; compiled ones use autobuild.
+          echo "$FILES" | grep -qE '^\.github/(workflows/[^/]+|actions/.+/action)\.ya?ml$' && add_lang actions none
+          echo "$FILES" | grep -qE '\.(js|jsx|ts|tsx|mjs|cjs)$' && add_lang javascript-typescript none
+          echo "$FILES" | grep -qE '\.py$' && add_lang python none
+          echo "$FILES" | grep -qE '\.rb$' && add_lang ruby none
+          echo "$FILES" | grep -qE '\.(java|kt)$' && add_lang java-kotlin none
+          echo "$FILES" | grep -qE '\.cs$' && add_lang csharp none
+          echo "$FILES" | grep -qE '\.go$' && add_lang go autobuild
+          echo "$FILES" | grep -qE '\.(c|cpp|cc|cxx|h|hpp)$' && add_lang c-cpp none
+          echo "$FILES" | grep -qE '\.swift$' && add_lang swift autobuild
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "CodeQL matrix: $MATRIX"
+
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    needs: languages
+    if: needs.languages.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.languages.outputs.matrix) }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+          config: |
+            paths-ignore:
+              - node_modules
+              - dist
+              - coverage
+
+      - name: Autobuild
+        if: matrix.build-mode == 'autobuild'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'
+          output: sarif-results
+          # PR results go to the PR head ref, also when the gate is re-run by workflow_dispatch;
+          # empty for push/schedule, which upload to the scanned branch. Fork PRs get a
+          # read-only token, so their results stay in the run.
+          upload: ${{ github.event.pull_request.head.repo.fork && 'never' || 'always' }}
+          ref: ${{ inputs.upload_ref }}
+          sha: ${{ inputs.upload_ref && inputs.sha || '' }}
+          # The gate decides from the local SARIF below; don't wait for server-side processing.
+          wait-for-processing: false
+
+      - name: Evaluate CodeQL Findings
+        id: findings
+        run: |
+          MIN="$CODEQL_MIN_SECURITY_SEVERITY"
+          FINDINGS_FILE="codeql-findings-${{ matrix.language }}.txt"
+          : > "$FINDINGS_FILE"
+          for SARIF in sarif-results/*.sarif; do
+            jq -r --argjson min "$MIN" '
+              .runs[] as $run
+              | ([$run.tool.driver.rules[]?, $run.tool.extensions[]?.rules[]?]
+                  | map({key: .id, value: .}) | from_entries) as $rules
+              | $run.results[]?
+              | . as $r
+              | (($rules[$r.ruleId].properties["security-severity"] // "0") | tonumber) as $sev
+              | select($sev >= $min)
+              | "- [\($r.ruleId)] severity \($sev): \($r.message.text | gsub("\n"; " ")) (\($r.locations[0].physicalLocation.artifactLocation.uri):\($r.locations[0].physicalLocation.region.startLine))"
+            ' "$SARIF" >> "$FINDINGS_FILE"
+          done
+          COUNT=$(grep -c '^- ' "$FINDINGS_FILE" || true)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "### CodeQL (${{ matrix.language }}): $COUNT finding(s) with security-severity >= $MIN" >> "$GITHUB_STEP_SUMMARY"
+          cat "$FINDINGS_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Findings
+        if: always() && inputs.gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-findings-${{ matrix.language }}
+          path: |
+            codeql-findings-${{ matrix.language }}.txt
+            sarif-results/*.sarif
+          if-no-files-found: ignore
+
+      - name: Fail on CodeQL Findings
+        if: inputs.gate && steps.findings.outputs.count != '0'
+        run: |
+          echo "::error::CodeQL found ${{ steps.findings.outputs.count }} security issue(s) at or above severity $CODEQL_MIN_SECURITY_SEVERITY."
+          exit 1

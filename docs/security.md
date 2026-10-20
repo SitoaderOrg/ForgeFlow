@@ -39,16 +39,18 @@ flowchart TD
 The deterministic security gate leverages native GitHub Code Security features:
 
 - **Dynamic Environment Detection**:
-  - Automatically identifies whether the repository contains CodeQL-supported languages (`javascript-typescript`, `python`, `go`, `java-kotlin`, `csharp`, `ruby`, `c-cpp`, `swift`) and dependency manifests (`package.json`, `requirements.txt`, `go.mod`, `pom.xml`, `Cargo.lock`, etc.).
+  - Automatically identifies whether the repository contains dependency manifests (`package.json`, `requirements.txt`, `go.mod`, `pom.xml`, `Cargo.lock`, etc.); the CodeQL scan detects its languages itself.
   - Skips jobs cleanly if no relevant source files exist, guaranteeing polyglot compatibility without false failures.
 - **GitHub Dependency Review (`actions/dependency-review-action`)**:
   - Evaluates changes to dependency manifests introduced in the pull request against GitHub's Advisory Database.
   - Blocks high- and critical-severity CVEs from entering the codebase.
   - Applies the **`dependency-alert`** label on failure.
-- **GitHub CodeQL SAST (`github/codeql-action`)**:
-  - Runs a per-language matrix with a supported build mode (`none` for interpreted languages, `autobuild` for Go/Swift) and the `security-extended` query suite.
-  - CodeQL's analyze step succeeds even when it finds vulnerabilities, so the gate evaluates the SARIF output itself and fails on any result whose `security-severity` is at or above `CODEQL_MIN_SECURITY_SEVERITY` (repository variable, default `4.0` = medium).
-  - Results are not uploaded (`upload: never`) because repositories using CodeQL *default setup* reject advanced-configuration uploads; default setup still publishes alerts for the PR.
+- **GitHub CodeQL SAST (`github/codeql-action`, `.github/workflows/scan-codeql.yml`)**:
+  - The repository's single CodeQL configuration (advanced setup); GitHub's CodeQL *default setup* must stay disabled, otherwise every PR is scanned twice and the uploads are rejected.
+  - The gate calls it on the PR head: a per-language matrix (`actions` for workflow files, plus `javascript-typescript`, `python`, `go`, `java-kotlin`, `csharp`, `ruby`, `c-cpp`, `swift` as detected) with a supported build mode (`none` for interpreted languages, `autobuild` for Go/Swift) and the `security-extended` query suite.
+  - CodeQL's analyze step succeeds even when it finds vulnerabilities, so the scan evaluates the SARIF output itself and fails on any result whose `security-severity` is at or above `CODEQL_MIN_SECURITY_SEVERITY` (repository variable, default `4.0` = medium).
+  - Results are uploaded to `refs/pull/<n>/head` for the analyzed commit (also for re-checks dispatched on the branch), so the same scan provides the PR's code scanning alerts, annotations and Copilot Autofix suggestions. Fork PRs only get a read-only token and keep their results in the run.
+  - The same workflow scans `main` on every push and weekly, keeping the default-branch alerts that PR results are compared against.
   - Applies the **`codeql-alert`** label on failure and dispatches the CodeQL fixer with the rule id, severity, message and `file:line` of each finding.
 - **GitHub Secret Protection & Scanning**:
   - Repositories configure native GitHub Push Protection to reject hardcoded secrets server-side at `git push`.
