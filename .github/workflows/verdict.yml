@@ -1,5 +1,5 @@
 name: Verdict & watchdog
-run-name: ${{ github.event_name == 'schedule' && 'Verdict & watchdog · sweep' || format('Verdict & watchdog · PR #{0}', inputs.pr_number) }}
+run-name: "${{ github.event_name == 'schedule' && 'Verdict & watchdog · sweep' || format('Verdict & watchdog · PR #{0}', inputs.pr_number) }}"
 
 # Derives the `pr-quality` commit status of a PR from the `gate/<id>` statuses of its head
 # commit (see .github/scripts/pr-quality.cjs). Called by a gate that was re-checked alone
