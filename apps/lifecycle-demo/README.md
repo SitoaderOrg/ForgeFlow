@@ -30,9 +30,8 @@ names, without mutating the caller's array.
 
 - **Parameters**
   - `entries` (`Array<{ name: string, score: number }>`) — the leaderboard
-    entries. **Caution:** this array is sorted in place (`Array.prototype.sort`
-    mutates its receiver), so the caller's original ordering is not
-    preserved even though the returned objects are new copies.
+    entries. The caller's array is left untouched; sorting happens on a
+    copy.
   - `limit` (`number`, default `5`) — the maximum number of entries to
     return.
 - **Returns** (`Array<{ rank: number, name: string, score: number }>`) — the
@@ -61,8 +60,7 @@ Summarizes the total and average score across a set of entries.
     entries.
 - **Returns** (`{ count: number, total: number, average: number }`) — the
   number of entries, the total score, and the average score. For an empty
-  leaderboard, `average` is `NaN` (division of `0` by `0`); callers should
-  check `count === 0` before relying on `average`.
+  leaderboard, `average` is `0`.
 
 ```js
 import { summarizeLeaderboard } from './leaderboard.js';
