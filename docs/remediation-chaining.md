@@ -95,7 +95,6 @@ With four failing gates, the PR is checked once, repaired by four agents, re-che
 | Reusable gates | Called by the pipeline via `workflow_call` (`from_pipeline: true`, `head_sha`). Each also has a `workflow_dispatch` that takes only `pr_number`; head/base refs and head SHA are resolved from the PR, and the run fails if it was not dispatched on the PR head branch. Every gate ends with a *Record gate result* step, and when run alone, a `verdict` job. They do not declare workflow-level concurrency. Gates are the only writers of their labels and `gate/<id>` statuses. |
 | gh-aw agents (`fix-*.md`) | Triggered only by `workflow_dispatch` with `pr_number` and `findings` inputs (the gate's concrete failure output — linter messages, failing tests and coverage, CodeQL rule/file/line). Safe outputs target the PR explicitly and cannot remove gate labels. They are declarative — a natural-language prompt plus gh-aw frontmatter (no `steps:`/`jobs:` scripts of their own) — and cannot dispatch workflows. Each imports `shared/remediation-handoff.md`, whose deterministic *Hand off to the remediation relay* step in the generated `conclusion` job (which runs after the agent and its safe outputs, whatever their result) dispatches the relay with `agent_result`: `success` when a repair was applied (stacked PR, PR metadata edit or decision label), `no-changes`, the agent job's result (`failure`, `cancelled`, `skipped`) or `safe-outputs-<result>`. |
 | `relay.yml` | The relay (run name `Relay: merge stacked fixes · <branch>`). Marks draft stacked PRs ready, squash-merges every open `*-remediation` PR into the parent branch, posts an audit comment naming the gate being re-checked, waits for a running pipeline, then re-checks the repaired gates on the new head (carrying the others over) and updates `pr-quality`. Only an `agent_result` of `success` (or a manual run without one) re-checks the dispatching agent's gate; any other result re-checks nothing new, so the still-failing gate fails `pr-quality` fast. With the GitHub App configured it merges with the App token and stops there: the pipeline run started by the merge re-checks the gates named in the commit's `Recheck-Gates` trailer. It does not wait for other agents: each agent's own relay re-checks its gate. A stacked PR that conflicts with the branch, or was built on a commit the author rebased or force-pushed away, is closed as `remediation-superseded` and its gate re-checked, so the fix is regenerated once on the current head ([Merge conflicts](#merge-conflicts)). |
-| `conflicts.yml` | Runs on every push (GitHub never starts `pull_request` runs for conflicting PRs). Flags open PRs into `main` that conflict with it — all of them after a push to `main`, the branch's own PR otherwise — with a `pr-quality` failure and one comment explaining how to resolve. |
 | `review-intake.yml` + `.github/scripts/review.cjs` | Runs when Copilot submits a review (`pull_request_review`, also `workflow_dispatch(pr_number)`). Hands every open Copilot comment to `fix-review-comments.lock.yml` in one dispatch — once per PR, and only while `pr-quality` is green ([Copilot review comments](#copilot-review-comments)). |
 
 ## Gate → agent mapping
@@ -193,7 +192,7 @@ Three kinds of conflicts can occur, and they are handled where they arise:
 | :--- | :--- | :--- |
 | Stacked remediation PR ↔ feature branch | Agents run one after another, each from the commit it was dispatched on; an earlier fix (or an author push) changed the same lines | **Automatic, bounded**: the relay closes the stale fix and has it regenerated on the current head |
 | Stacked remediation PR built before a rebase or force-push | The author rewrote the feature branch while a fix was open; the fix may still merge cleanly but would bring back commits the author removed | **Automatic, bounded**: handled exactly like a conflict |
-| Feature PR ↔ `main` | `main` moved, or the author pushed a conflicting commit | **Detected, left to the author**: `pr-quality` fails with resolve instructions |
+| Feature PR ↔ `main` | `main` moved, or the author pushed a conflicting commit | **Human exception**: GitHub shows the conflict and blocks merging; the author resolves it and pushes |
 
 ### Stacked PR conflicts: regenerate, don't resolve
 
@@ -231,24 +230,27 @@ If the base is gone, the PR is superseded and regenerated once, exactly like a c
 comment says "superseded after a rebase or force-push"). A PR without a recorded base, or whose agent
 run no longer exists, is merged as before.
 
-### Conflicts with `main`: detect early, hand to the author
+### Conflicts with `main`: native merge checks, human resolution
 
-GitHub [does not start `pull_request` workflows for a PR that has a merge conflict](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request),
-so without help the pipeline silently never runs and `pr-quality` stays on an older commit — or
-stays green after `main` moved. `conflicts.yml` runs on every push instead:
+Feature-branch conflicts with `main` are a deliberate human exception, like a build failure that
+has no fixer. GitHub's PR merge box detects these conflicts and blocks merging. There is no
+standalone push-triggered conflict workflow or additional conflict polling.
 
-- a push to `main` checks every open PR into `main`;
-- a push to any other branch checks that branch's PR.
+GitHub [does not start `pull_request` workflows for a PR that has a merge conflict](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
+Consequently, a conflicting PR may need human intervention before all checks finish. Its
+`pr-quality` status may be absent on the new head or remain green if only `main` changed;
+`pr-quality` is not a replacement for GitHub's native mergeability check.
 
-A conflicting PR gets `pr-quality` = **failure** (`Merge conflict with main: …`) and one comment per
-head commit with the `git merge origin/main` commands. The resolving push starts the pipeline as
-usual; a conflict-only verdict is never treated as a final verdict for de-duplication. The pipeline's
-context job and `evaluateVerdict` apply the same check, so a dispatched run never checks — and
-`pr-quality` never turns green on — a PR that cannot merge.
+The existing safeguards remain: the pipeline's context job stops an explicitly dispatched run
+when GitHub reports a base conflict, and `evaluateVerdict` refuses a successful verdict for a
+known conflict. These paths set `pr-quality` to **failure** (`Merge conflict with main: ...`) and
+post resolution instructions once per head commit.
 
-Conflicts with `main` are not resolved by an agent: they decide how this change combines with what
-landed on `main`, which is the author's call. For the window between a `main` push and a stale green
-`pr-quality`, enable **Require branches to be up to date before merging** in branch protection.
+The author resolves the conflict and pushes the result, which starts validation again. A
+conflict-only verdict is not treated as final for de-duplication. Stacked-fix conflict recovery
+in the relay is unchanged. To additionally require validation against an up-to-date base before
+merging, enable **Require branches to be up to date before merging** alongside the required
+status checks.
 
 ## Copilot review comments
 
@@ -362,10 +364,9 @@ so the tests run the exact code that runs in Actions.
 | Suite | Covers |
 |---|---|
 | `remediation.test.js` | Label helpers, `commentOnce`, `dispatchRemediation` (dispatch, already running, pending stacked PR, budget exhaustion, cancelled runs not counted, superseded stacked PRs refunded, truncation, API errors) |
-| `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome (incl. conflicts with the base), the `sweepStalled` watchdog, `mergeability` polling, `flagBaseConflicts` and `stackedBase` (base from the marker or the agent run; intact, rebased, unknown) |
+| `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome (incl. base-conflict guards and deduplicated resolution instructions), the `sweepStalled` watchdog, `mergeability` polling and `stackedBase` (base from the marker or the agent run; intact, rebased, unknown) |
 | `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check, conflicts with `main`), autofix stacked PR and relay hand-off, verdict job |
 | `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR, conflicting stacked PRs (superseded and regenerated once, then blocked; App path), stacked PRs built before a rebase or force-push (base from the agent run or the auto-fix marker; superseded once, then blocked; unknown base merged), Copilot review fixes (every gate re-checked, threads answered and resolved, conflicts superseded once, then blocked) |
-| `conflicts.test.js` | `conflicts.yml`: push trigger and permissions, PRs flagged after a push to `main` vs. a feature branch |
 | `review.test.js` | Copilot review handling: `addressCopilotReview` (one batched dispatch, thread filtering, gates must be green, one round per PR, skipped PRs), decision parsing, `copilotReviewRequest` (first review, one confirmation after a merged review fix, never a third; its comments left to the author), `review-intake.yml`, dispatcher and watchdog hand-over, `pr-quality` held pending while the fixer runs |
 | `gates.test.js` | Every gate's handlers (metadata, lint, build, tests, docs, security, review-request workflow), *Record gate result* steps, standalone `verdict` jobs, `verdict.yml` |
 | `agents.test.js` | gh-aw agent contracts: declarative (no scripted steps/jobs), skipped on the default branch, dispatch-only, no direct pushes or gate-label removal, stacked labels match gates, lock files in sync, the shared relay hand-off compiled into every `conclusion` job (`agent_result` for repairs, no changes, crashes and failed safe outputs) |

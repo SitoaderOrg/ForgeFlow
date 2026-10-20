@@ -56,7 +56,7 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 | **Fix:** | gh-aw agent that repairs one failing gate through a stacked PR | `fix-*.md` |
 | **Relay:** | Merges stacked fixes into the feature branch and re-checks the repaired gates | `relay.yml` |
 | **Review:** | Requests Copilot code review and hands its comments to the review-comments fixer | `review-*.yml` |
-| — | `pr-quality` verdict and watchdog; merge conflict check | `verdict.yml`, `conflicts.yml` |
+| — | `pr-quality` verdict and watchdog | `verdict.yml` |
 
 ### 1. Standard GitHub Actions Workflows
 
@@ -70,9 +70,14 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 - **Review: request (`review-request.yml`)**: Requests a Copilot code review (once when the gates pass, once more to confirm the review fixes) and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
 - **Review: Copilot intake (`review-intake.yml`)**: When Copilot submits a review, hands all of its open comments to the review-comments fixer in one batch (see [Copilot review comments](docs/remediation-chaining.md#copilot-review-comments)).
 - **Relay: merge stacked fixes (`relay.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs only the repaired gate on the new commit. A stacked PR that conflicts with the feature branch is superseded and regenerated once on the current head.
-- **Merge conflict check (`conflicts.yml`)**: Runs on every push, because GitHub never starts `pull_request` runs for conflicting PRs; fails `pr-quality` with resolve instructions for PRs that conflict with `main` (see [Merge conflicts](docs/remediation-chaining.md#merge-conflicts)).
 - **Verdict & watchdog (`verdict.yml`)**: Derives the `pr-quality` status from the `gate/<id>` statuses after a gate is re-checked alone (reusable; also `workflow_dispatch`).
 - **Shared gate helper (`.github/scripts/remediation.cjs`)**: Label management and deduplicated, budgeted agent dispatch.
+
+Feature-branch conflicts with `main` are a human exception: GitHub's PR merge box detects them and
+blocks merging, without a separate push-triggered conflict workflow. Existing pipeline/verdict
+guards still stop on known base conflicts; the author resolves them and pushes to restart
+validation. Stacked-fix conflict recovery remains automatic and bounded
+(see [Merge conflicts](docs/remediation-chaining.md#merge-conflicts)).
 
 ### 2. `gh-aw` Workflows (Natural Language Markdown)
 

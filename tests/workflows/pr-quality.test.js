@@ -1071,42 +1071,17 @@ describe('pr-quality.cjs merge conflicts with the base branch', () => {
     expect(comment).toContain('git merge origin/main');
   });
 
-  it('flags conflicting PRs once and leaves clean, stacked and closed PRs alone', async () => {
-    const conflicting = makePR({ number: 21 });
-    conflicting.mergeable = false;
-    const clean = makePR({ number: 22 });
-    clean.mergeable = true;
-    const stacked = makePR({
-      number: 23,
-      base: BRANCH,
-      labels: ['lint-remediation']
-    });
-    stacked.mergeable = false;
-    const closed = makePR({ number: 24, state: 'closed' });
-    closed.mergeable = false;
-    const github = createGitHub({
-      pulls: [conflicting, clean, stacked, closed]
-    });
-    const env = {
-      github,
-      context: createContext(),
-      core: createCore(),
-      sleep: noSleep
-    };
-    const pulls = [conflicting, clean, stacked, closed];
+  it('does not duplicate conflict instructions when the verdict is re-evaluated', async () => {
+    const w = gateWorld();
+    w.github.pr(20).mergeable = false;
+    await seedGates(w.github, w.pr.head.sha, ALL_PASSED);
 
-    expect(await quality.flagBaseConflicts({ ...env, pulls })).toEqual([21]);
-    expect(github.qualityStatuses(conflicting.head.sha)[0].state).toBe(
-      'failure'
-    );
-    expect(github.qualityStatuses(clean.head.sha)).toEqual([]);
-    expect(github.comments(23)).toEqual([]);
-    expect(github.comments(24)).toEqual([]);
+    await quality.evaluateVerdict({ ...w, prNumber: 20 });
+    const result = await quality.evaluateVerdict({ ...w, prNumber: 20 });
 
-    // A second push to main does not flag the same head commit again.
-    expect(await quality.flagBaseConflicts({ ...env, pulls })).toEqual([]);
-    expect(github.qualityStatuses(conflicting.head.sha)).toHaveLength(1);
-    expect(github.comments(21)).toHaveLength(1);
+    expect(result).toMatchObject({ state: 'failure', conflict: true });
+    expect(w.github.comments(20)).toHaveLength(1);
+    expect(dispatched(w.github)).toEqual([]);
   });
 
   it('does not treat other failures as conflicts', () => {

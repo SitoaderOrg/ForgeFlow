@@ -8,8 +8,7 @@ const ROLES = [
   [/^review-[a-z-]+\.yml$/, 'Review: '],
   [/^relay\.yml$/, 'Relay: '],
   [/^pipeline\.yml$/, 'Pipeline'],
-  [/^verdict\.yml$/, 'Verdict & watchdog'],
-  [/^conflicts\.yml$/, 'Merge conflict check']
+  [/^verdict\.yml$/, 'Verdict & watchdog']
 ];
 const WORKFLOWS = listWorkflowFiles((f) => f.endsWith('.yml')).filter(
   (f) => f !== 'agentic-workflows-compilation.yml'

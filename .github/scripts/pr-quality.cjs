@@ -667,26 +667,6 @@ async function failBaseConflict({ github, context, core, pr, rev = revision(pr),
 /** A `pr-quality` status set by `failBaseConflict` (not a verdict on the code itself). */
 const isBaseConflict = (status) => Boolean(status) && status.state === 'failure' && /^Merge conflict with /.test(status.description || '');
 
-/**
- * Flag open PRs that conflict with their base (`pull_request` workflows do not run for them at
- * all). `pulls`: PRs to check; already flagged head commits are left alone.
- */
-async function flagBaseConflicts({ github, context, core, pulls, sleep }) {
-  const flagged = [];
-  for (const candidate of pulls) {
-    if (candidate.labels.some((l) => REMEDIATION_LABELS.includes(l.name))) continue;
-    const { pr, state } = await mergeability({ github, context, prNumber: candidate.number, sleep });
-    if (pr.state !== 'open' || state !== 'conflict') {
-      core.info(`PR #${pr.number}: ${pr.state === 'open' ? state : pr.state}.`);
-      continue;
-    }
-    if (isBaseConflict(await getQualityStatus({ github, context, sha: pr.head.sha }))) continue;
-    await failBaseConflict({ github, context, core, pr });
-    flagged.push(pr.number);
-  }
-  return flagged;
-}
-
 module.exports = {
   STATUS_CONTEXT,
   DECISION_LABELS,
@@ -719,6 +699,5 @@ module.exports = {
   stackedBase,
   stackedBaseMarker,
   failBaseConflict,
-  isBaseConflict,
-  flagBaseConflicts
+  isBaseConflict
 };
