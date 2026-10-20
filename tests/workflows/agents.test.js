@@ -36,6 +36,10 @@ const STACKED_LABELS = [
 
 const lockFile = (md) => md.replace(/\.md$/, '.lock.yml');
 
+// Escapes all regex metacharacters (backslash first) so the string is safe to
+// interpolate into a `new RegExp(...)` pattern.
+const escapeRegExp = (s) => s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+
 // Shared import whose conclusion-job step hands every agent run off to the relay.
 const HANDOFF = 'shared/remediation-handoff.md';
 const HANDOFF_STEP = 'Hand off to the remediation relay';
@@ -198,7 +202,7 @@ describe('agent / gate wiring', () => {
       const text = readWorkflow(gate);
       for (const workflow of workflows) {
         const re = new RegExp(
-          `workflow: '${workflow.replace(/\./g, '\\.')}',(?:\\s*stackedLabel: '([\\w-]+)')?`
+          `workflow: '${escapeRegExp(workflow)}',(?:\\s*stackedLabel: '([\\w-]+)')?`
         );
         const match = re.exec(text);
         expect(match, `${gate} dispatches ${workflow}`).not.toBeNull();
