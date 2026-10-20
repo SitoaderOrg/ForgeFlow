@@ -56,7 +56,7 @@ The deterministic security gate leverages native GitHub Code Security features:
   - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. `fix-secrets.md` remains available for a manual run (`workflow_dispatch` with `pr_number`).
 - **Autonomous Label Management**:
   - Each label is independent: if only one check fails, only its specific alert label is attached.
-  - The remediation relay auto-merges the stacked PR into the feature branch and re-runs only the security gate on the new commit; the security gate clears the labels only if the re-check passes.
+  - The remediation relay auto-merges the stacked PR into the feature branch and re-runs only the security gate on the new commit (or every gate together, when this was the last repair and the others passed); the security gate clears the labels only if the re-check passes.
 
 ---
 

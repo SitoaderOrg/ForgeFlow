@@ -149,6 +149,14 @@ describe('relay.yml relay: Repair (stacked PR consolidation)', () => {
         stackedPR(31),
         stackedPR(32, 'doc-remediation', { draft: true }),
         stackedPR(33, null)
+      ],
+      // Another agent is still repairing: the re-check stays targeted.
+      runs: [
+        makeAgentRun({
+          id: 2000,
+          workflow: 'fix-codeql.lock.yml',
+          branch: BRANCH
+        })
       ]
     });
     const oldSha = parent.head.sha;
@@ -292,6 +300,10 @@ describe('relay.yml relay: parallel repairs', () => {
     await seedGates(github, b, { lint: 'success' });
 
     github.state.pulls.push(stackedPR(32, 'test-remediation'));
+    // The docs agent is still working, so the tests repair is not the last one.
+    github.state.runs.push(
+      makeAgentRun({ id: 2001, workflow: 'fix-docs.lock.yml', branch: BRANCH })
+    );
     github.state.dispatches = [];
     await relay(github, { SOURCE: 'Fix: Tests (run 1001)' });
 
@@ -654,7 +666,16 @@ describe('relay.yml relay: GitHub App token', () => {
     expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
   });
 
-  it('re-checks by itself when the parent PR does not target the default branch', async () => {
+  /** The full check the relay dispatches itself after the last repair (no App merge). */
+  const fullCheck = {
+    owner: 'octo',
+    repo: 'demo',
+    workflow_id: 'pipeline.yml',
+    ref: BRANCH,
+    inputs: { pr_number: '20', force: 'true' }
+  };
+
+  it('checks every gate by itself when the parent PR does not target the default branch', async () => {
     const { github, parent } = world({ stacked: [stackedPR(31)] });
     parent.base.ref = 'release/1.0';
     await seedGates(github, parent.head.sha, ALL_PASSED);
@@ -662,13 +683,13 @@ describe('relay.yml relay: GitHub App token', () => {
     expect(github.state.merges).toMatchObject([
       { number: 31, token: 'github-token' }
     ]);
-    expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
+    expect(github.state.dispatches).toEqual([fullCheck]);
   });
 
-  it('merges with GITHUB_TOKEN and re-checks by itself without the App', async () => {
+  it('merges with GITHUB_TOKEN and checks every gate by itself after the last repair', async () => {
     const { github, parent } = world({ stacked: [stackedPR(31)] });
     await seedGates(github, parent.head.sha, ALL_PASSED);
-    await relay(github);
+    const { core } = await relay(github);
     expect(github.state.merges).toMatchObject([
       {
         number: 31,
@@ -676,7 +697,27 @@ describe('relay.yml relay: GitHub App token', () => {
         commit_message: 'Recheck-Gates: lint'
       }
     ]);
+    expect(github.state.dispatches).toEqual([fullCheck]);
+    const newSha = github.pr(20).head.sha;
+    expect(github.qualityStatuses(newSha)[0]).toMatchObject({
+      state: 'pending',
+      description: expect.stringMatching(
+        /^Final check: re-running all gates together/
+      )
+    });
+    expect(await gatesOn(github, newSha)).toEqual({});
+    expect(core.summaryText).toContain('every gate is checked together');
+  });
+
+  it('merges with GITHUB_TOKEN and re-checks only the repaired gate while another gate fails', async () => {
+    const { github, parent } = world({ stacked: [stackedPR(31)] });
+    await seedGates(github, parent.head.sha, {
+      ...ALL_PASSED,
+      build: 'failure'
+    });
+    await relay(github);
     expect(gateDispatches(github)).toEqual(['gate-lint.yml']);
+    expect(pipelineDispatches(github)).toEqual([]);
   });
 });
 
@@ -728,7 +769,15 @@ describe('relay.yml relay: stacked PRs that conflict with the branch', () => {
 
   it('supersedes a conflicting stacked PR and re-checks its gate instead of blocking', async () => {
     const { github, parent } = world({
-      stacked: [conflicting(31), stackedPR(32, 'test-remediation')]
+      stacked: [conflicting(31), stackedPR(32, 'test-remediation')],
+      // Another agent is still repairing: the re-check stays targeted.
+      runs: [
+        makeAgentRun({
+          id: 2000,
+          workflow: 'fix-docs.lock.yml',
+          branch: BRANCH
+        })
+      ]
     });
     await seedGates(github, parent.head.sha, {
       ...ALL_PASSED,
@@ -945,7 +994,7 @@ describe('relay.yml relay: Copilot review fixes', () => {
     ]
   });
 
-  it('merges the fix, re-checks every gate and answers each Copilot thread', async () => {
+  it('merges the fix, checks every gate together and answers each Copilot thread', async () => {
     const { github, parent } = world({
       parentLabels: [],
       stacked: [reviewPR()],
@@ -959,9 +1008,17 @@ describe('relay.yml relay: Copilot review fixes', () => {
     expect(merge.commit_message).toBe(
       'Recheck-Gates: metadata, lint, build, tests, security, docs'
     );
-    expect(gateDispatches(github).sort()).toEqual(
-      quality.GATES.map((g) => g.workflow).sort()
-    );
+    // One full pipeline run instead of six standalone gate runs.
+    expect(gateDispatches(github)).toEqual([]);
+    expect(pipelineDispatches(github)).toEqual([
+      {
+        owner: 'octo',
+        repo: 'demo',
+        workflow_id: 'pipeline.yml',
+        ref: BRANCH,
+        inputs: { pr_number: '20', force: 'true' }
+      }
+    ]);
     expect(github.comments(20)[0]).toContain('**every gate** re-checks');
 
     const replies = github.state.reviewReplies;

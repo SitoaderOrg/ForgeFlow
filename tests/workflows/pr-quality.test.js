@@ -466,6 +466,112 @@ describe('pr-quality.cjs remediationInProgress', () => {
     ]);
     expect((await inProgress(github, [1, 2])).map((w) => w.id)).toEqual([31]);
   });
+
+  it('leaves relay runs out with includeRelays: false', async () => {
+    const { github } = gateWorld({
+      runs: [
+        makeRun({
+          id: 2,
+          workflow: 'relay.yml',
+          branch: 'main',
+          status: 'in_progress',
+          conclusion: null,
+          title: `Relay: merge stacked fixes · ${BRANCH}`
+        })
+      ]
+    });
+    expect(
+      await quality.remediationInProgress({
+        github,
+        context: createContext(),
+        branch: BRANCH,
+        includeRelays: false
+      })
+    ).toEqual([]);
+  });
+});
+
+describe('pr-quality.cjs fullCheckAfterRepair', () => {
+  const BEFORE = 'a'.repeat(40);
+  const AFTER = 'c'.repeat(40);
+  const ALL = quality.GATES.map((g) => g.id);
+  const decide = (github, repaired, { before = BEFORE, sha = AFTER } = {}) =>
+    quality.fullCheckAfterRepair({
+      github,
+      context: createContext(),
+      branch: BRANCH,
+      before,
+      sha,
+      repaired
+    });
+  const agent = () =>
+    makeAgentRun({ id: 1, workflow: 'fix-tests.lock.yml', branch: BRANCH });
+
+  it('runs the full check when the last repair lands on passing gates', async () => {
+    const { github } = gateWorld();
+    await seedGates(github, BEFORE, { ...ALL_PASSED, security: 'failure' });
+    expect(await decide(github, ['security'])).toBe(true);
+  });
+
+  it('stays targeted while another gate fails or has no result', async () => {
+    const { github } = gateWorld();
+    await seedGates(github, BEFORE, {
+      ...ALL_PASSED,
+      security: 'failure',
+      tests: 'failure'
+    });
+    expect(await decide(github, ['security'])).toBe(false);
+
+    const { github: partial } = gateWorld();
+    await seedGates(partial, BEFORE, { lint: 'success', security: 'failure' });
+    expect(await decide(partial, ['security'])).toBe(false);
+  });
+
+  it('stays targeted while another agent or stacked PR is repairing the branch', async () => {
+    const running = gateWorld({ runs: [agent()] });
+    await seedGates(running.github, BEFORE, ALL_PASSED);
+    expect(await decide(running.github, ['docs'])).toBe(false);
+
+    const stacked = makePR({
+      number: 31,
+      branch: 'doc-remediation-31',
+      base: BRANCH,
+      labels: ['doc-remediation']
+    });
+    const waiting = gateWorld({ pulls: [stacked] });
+    await seedGates(waiting.github, BEFORE, ALL_PASSED);
+    expect(await decide(waiting.github, ['lint'])).toBe(false);
+  });
+
+  it('ignores the relay that pushed the repair', async () => {
+    const { github } = gateWorld({
+      runs: [
+        makeRun({
+          id: 2,
+          workflow: 'relay.yml',
+          branch: 'main',
+          status: 'in_progress',
+          conclusion: null,
+          title: `Relay: merge stacked fixes · ${BRANCH}`
+        })
+      ]
+    });
+    await seedGates(github, BEFORE, ALL_PASSED);
+    expect(await decide(github, ['lint'])).toBe(true);
+  });
+
+  it('always runs the full check for a repair that touches every gate', async () => {
+    const { github } = gateWorld({ runs: [agent()] });
+    expect(await decide(github, ALL)).toBe(true);
+  });
+
+  it('never runs it when the head did not move or nothing was repaired', async () => {
+    const { github } = gateWorld();
+    await seedGates(github, BEFORE, ALL_PASSED);
+    expect(await decide(github, ['lint'], { sha: BEFORE })).toBe(false);
+    expect(await decide(github, ['lint'], { before: '' })).toBe(false);
+    expect(await decide(github, [])).toBe(false);
+  });
 });
 
 describe('pr-quality.cjs evaluateVerdict', () => {

@@ -291,9 +291,9 @@ async function activeRuns({ github, context, workflow, branch, event }) {
 
 /**
  * Repairs still in flight for a branch: agents that have not handed off yet, stacked
- * remediation PRs waiting to be merged, and relay runs still consolidating them.
+ * remediation PRs waiting to be merged, and (with `includeRelays`) relay runs still consolidating them.
  */
-async function remediationInProgress({ github, context, branch, excludeRunIds = [] }) {
+async function remediationInProgress({ github, context, branch, excludeRunIds = [], includeRelays = true }) {
   const { owner, repo } = context.repo;
   const exclude = new Set(excludeRunIds.map(Number));
   const work = (await pendingRemediationRuns({ github, context, branch })).filter((r) => !exclude.has(r.id));
@@ -302,11 +302,30 @@ async function remediationInProgress({ github, context, branch, excludeRunIds = 
     .filter((p) => p.labels.some((l) => REMEDIATION_LABELS.includes(l.name)))
     .filter((p) => !p.labels.some((l) => l.name === BLOCKED_LABEL));
   for (const pr of stacked) work.push({ workflow: `stacked PR #${pr.number}`, id: pr.number, url: pr.html_url });
+  if (!includeRelays) return work;
 
   const relays = (await activeRuns({ github, context, workflow: RELAY_WORKFLOW }))
     .filter((r) => !exclude.has(r.id) && String(r.display_title || '').endsWith(` ${branch}`));
   for (const run of relays) work.push({ workflow: RELAY_WORKFLOW, id: run.id, url: run.html_url });
   return work;
+}
+
+/**
+ * Whether a repair that moved the head from `before` to `sha` is validated by one full check of
+ * every gate instead of re-checking the `repaired` gates alone. Re-checking only the repaired
+ * gates pays off while other gates still fail or other repairs are in flight. Once the last repair
+ * lands on top of passing gates, carrying their results over would only start the final all-gates
+ * check right after, so it runs straight away. A repair that touches every gate (a Copilot review
+ * fix) always gets the full check. A relay still merging has open stacked PRs, so relay runs are
+ * not counted as repairs in flight (the relay that pushed `sha` may still be finishing).
+ */
+async function fullCheckAfterRepair({ github, context, branch, before, sha, repaired = [] }) {
+  if (!before || !sha || before === sha || !repaired.length) return false;
+  const gates = new Set(repaired);
+  if (GATES.every((g) => gates.has(g.id))) return true;
+  if ((await remediationInProgress({ github, context, branch, includeRelays: false })).length) return false;
+  const previous = await getGateStatuses({ github, context, sha: before });
+  return GATES.every((g) => gates.has(g.id) || (previous[g.id] && previous[g.id].state === 'success'));
 }
 
 /**
@@ -689,6 +708,7 @@ module.exports = {
   recordGate,
   startGates,
   remediationInProgress,
+  fullCheckAfterRepair,
   recheckGates,
   evaluateVerdict,
   sweepStalled,

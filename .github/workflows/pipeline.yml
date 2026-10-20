@@ -7,10 +7,11 @@ run-name: "${{ format('Pipeline · PR #{0}{1}{2}', github.event.pull_request.num
 #            `gate/<id>` commit status (mirrored by a `<id>-passed` label).
 #   Repair:  each failing gate dispatches its gh-aw agent right away, so all agents of a round
 #            work in parallel (bounded by MAX_REMEDIATION_ATTEMPTS, default 1).
-#   Recheck: when an agent's stacked PR is merged, the relay (relay.yml) re-checks
-#            only that gate; the other gates keep their results. A gate that still fails after
-#            its repair fails with an error. Once every gate is green, this pipeline runs once
-#            more (force=true) to confirm all gates together on the final commit.
+#   Recheck: when an agent's stacked PR is merged while other gates still fail or other repairs
+#            are in flight, the relay (relay.yml) re-checks only that gate; the other gates keep
+#            their results. A gate that still fails after its repair fails with an error. The last
+#            repair on top of passing gates (and every Copilot review fix) gets one full check of
+#            all gates together instead, which is also the final check before human review.
 #   Review:  the `pr-quality` commit status gates human review; only stacked remediation PRs
 #            are merged automatically. A human approves and merges the feature PR into main.
 
@@ -146,11 +147,19 @@ jobs:
             }
 
             // Relay merges pushed with the GitHub App token raise `synchronize` themselves: re-check
-            // only the repaired gates and carry the others over (see relay.yml).
+            // only the repaired gates and carry the others over (see relay.yml). The last repair on
+            // top of passing gates (or a review fix, which touches every gate) gets the full check
+            // instead: carried results would only start the final all-gates check right after.
             let repair = null;
             if (!skip && context.eventName === 'pull_request' && context.payload.action === 'synchronize' &&
                 context.payload.sender && context.payload.sender.type === 'Bot') {
               repair = await quality.repairPush({ github, context, before: context.payload.before, after: pr.head.sha });
+              if (repair && await quality.fullCheckAfterRepair({
+                github, context, branch: pr.head.ref, before: repair.before, sha: pr.head.sha, repaired: repair.gates
+              })) {
+                core.notice(`Relay merge into ${pr.head.ref} repaired ${repair.gates.join(', ')} and nothing else is repairing it: checking every gate together.`);
+                repair = null;
+              }
               if (repair) {
                 mode = 'recheck';
                 skip = true;
@@ -510,9 +519,10 @@ jobs:
               }[verdict.state] || '') + '\n'
             ).write();
   # Repair re-check: the push consisted only of relay merges (stacked remediation PRs merged with
-  # the GitHub App token). Only the repaired gates are re-checked on the new commit; the others
-  # keep their result from the commit before the merge. Replaces the relay's own re-check, so a
-  # repair costs exactly one pipeline run and no approval-held runs.
+  # the GitHub App token) while other gates still fail or other repairs are in flight. Only the
+  # repaired gates are re-checked on the new commit; the others keep their result from the commit
+  # before the merge. Replaces the relay's own re-check, so a repair costs exactly one pipeline run
+  # and no approval-held runs.
   recheck:
     name: 'Re-check repaired gates'
     needs: [context]

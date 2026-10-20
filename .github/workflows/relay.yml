@@ -23,6 +23,8 @@ name: 'Relay: merge stacked fixes'
 #      rebased or force-pushed): it would merge cleanly but bring back what the rebase removed;
 #   2. otherwise (no App, or nothing merged) it re-checks only the gate(s) the agent repaired on
 #      the new commit itself, carrying the other gate results over, so agents working in
+#      parallel never wait for each other. The last repair on top of passing gates (and a
+#      review fix) dispatches one full pipeline run instead (the App-started run does the same).
 #      parallel never wait for each other. A failed agent or one that changed nothing re-checks
 #      nothing: its gate still fails, so pr-quality fails fast;
 #   3. and updates the `pr-quality` verdict (one final full check runs once every gate passed).
@@ -311,12 +313,40 @@ jobs:
             }
 
             // 3. Re-check only the repaired gates on the new head commit; every other gate keeps
-            //    its result from the commit before the repair (marked as carried over).
+            //    its result from the commit before the repair (marked as carried over). The last
+            //    repair on top of passing gates (or a review fix) gets one full check instead.
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: parent.number });
             const reason = process.env.SOURCE || (merged ? `stacked PR merge` : 'remediation');
             // Rare: App merges plus a superseded PR. Re-checking the merged gates here too (the
             // pipeline run started by the merges may not be listed yet) beats carrying a failure.
             const recheck = new Set([...repaired, ...superseded]);
+            // With App merges, the pipeline run they started decides on the full check itself.
+            if (!(merged && appMerge) && await quality.fullCheckAfterRepair({
+              github, context, branch: parentBranch, before: headBefore, sha: pr.head.sha, repaired: [...recheck]
+            })) {
+              await quality.setQualityStatus({
+                github, context,
+                sha: pr.head.sha,
+                state: 'pending',
+                summary: 'Final check: re-running all gates together after the repairs',
+                rev: quality.revision(pr),
+                targetUrl: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`
+              });
+              await github.rest.actions.createWorkflowDispatch({
+                owner, repo,
+                workflow_id: 'pipeline.yml',
+                ref: parentBranch,
+                inputs: { pr_number: String(parent.number), force: 'true' }
+              });
+              await summary([
+                `- Parent PR: #${parent.number}`,
+                `- Stacked PRs merged: ${merged}`,
+                ...(superseded.size ? [`- Superseded after a merge conflict or a rebase/force-push (regenerated if still needed): ${[...superseded].join(', ')}`] : []),
+                `- Repaired by: ${process.env.SOURCE || 'stacked PR'}${process.env.AGENT_RESULT ? ` (${process.env.AGENT_RESULT})` : ''}`,
+                `- Re-check: nothing else is repairing the branch, so every gate is checked together (pipeline dispatched)`
+              ].join('\n'));
+              return;
+            }
             const plan = await quality.recheckGates({
               github, context, core,
               prNumber: parent.number,

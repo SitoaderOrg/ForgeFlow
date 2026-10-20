@@ -36,7 +36,8 @@ flowchart TD
         AutoMerge --> CommentParent[Post Audit Trail Comment on Parent PR\nDirect links to merged PR & commit SHA]
     end
 
-    AutoMerge --> SyncBranch[Re-check only the repaired gate\nother gates carried over]
+    AutoMerge -->|other repairs in flight| SyncBranch[Re-check only the repaired gate\nother gates carried over]
+    AutoMerge -->|last repair or review fix:\nall gates together| Pipeline
     SyncBranch --> Verdict{pr-quality verdict}
     Pipeline --> Verdict
     Verdict -->|all green, some carried over:\none final full run| Pipeline
@@ -64,7 +65,7 @@ Instead of pinging the developer to manually review and merge 3–4 separate sta
 - **Automatic Ingestion**: Automatically merges valid remediation PRs with labels (`lint-remediation`, `test-remediation`, `security-remediation`, `doc-remediation`, `review-remediation`) targeting the feature branch.
 - **Ready & Squash & Delete**: Marks draft stacked PRs ready, squashes the remediation commit into the developer's feature branch and deletes the temporary agent branch.
 - **Conflicts regenerate, not resolve**: A stacked PR that conflicts with the feature branch (an earlier fix changed the same lines) is closed as `remediation-superseded`; its gate is re-checked on the current head and, if still failing, its agent regenerates the fix there — once, without spending the retry budget. See [Merge conflicts](remediation-chaining.md#merge-conflicts).
-- **Re-check the repaired gate only**: Waits for a running pipeline, then re-runs only the gate the agent repaired (e.g. `gate-tests.yml` for `test-remediation`) on the new commit and carries the other gates' `gate/<id>` results over. It does not wait for other agents — each agent's relay re-checks its own gate. Once every gate is green, one final full pipeline run verifies the combined fixes. Gate labels are never cleared here — merging a fix is not evidence that it works.
+- **Re-check the repaired gate only**: Waits for a running pipeline, then re-runs only the gate the agent repaired (e.g. `gate-tests.yml` for `test-remediation`) on the new commit and carries the other gates' `gate/<id>` results over. It does not wait for other agents — each agent's relay re-checks its own gate. Once every gate is green, one final full pipeline run verifies the combined fixes. When the merge is the last repair on top of passing gates (or a review fix), that full run starts straight away instead of the single-gate re-check. Gate labels are never cleared here — merging a fix is not evidence that it works.
 - **Transparent Audit Trail**: Posts a comment directly to the parent PR:
   > **🤖 Autonomous Remediation Auto-Merged**:
   > - **Stacked PR**: [#12 - test: add unit test coverage for PR changes](url)

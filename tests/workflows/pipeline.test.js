@@ -723,6 +723,16 @@ const relayMerge = (n, gates) =>
   `Merge stacked PR #${n}: fix\n\n${quality.recheckTrailer(gates)}`;
 
 describe('pipeline.yml context job: relay merge pushes', () => {
+  /** Another agent still repairing the branch keeps the re-check targeted. */
+  const repairInFlight = (github) =>
+    github.state.runs.push(
+      makeAgentRun({
+        id: 900,
+        workflow: 'fix-tests.lock.yml',
+        branch: 'feat/sample'
+      })
+    );
+
   it('re-checks only the repaired gates of a relay merge pushed by the App', async () => {
     const world = repairWorld({
       commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
@@ -731,6 +741,7 @@ describe('pipeline.yml context job: relay merge pushes', () => {
       ...ALL_PASSED_GATES,
       docs: 'failure'
     });
+    repairInFlight(world.github);
     const { outputs, github, core } = await resolvePush(world);
     expect(outputs).toMatchObject({
       skip: 'true',
@@ -752,12 +763,57 @@ describe('pipeline.yml context job: relay merge pushes', () => {
     });
     await seedGateResults(world.github, world.before, ALL_PASSED_GATES);
     world.before = MERGE_1;
+    repairInFlight(world.github);
     const { outputs } = await resolvePush(world);
     expect(outputs).toMatchObject({
       mode: 'recheck',
       recheck_before: 'b'.repeat(40),
       recheck_gates: 'lint,docs'
     });
+  });
+
+  it('checks every gate together when the last repair lands on passing gates', async () => {
+    const world = repairWorld({
+      commits: [{ sha: MERGE_1, message: relayMerge(31, ['security']) }]
+    });
+    await seedGateResults(world.github, world.before, {
+      ...ALL_PASSED_GATES,
+      security: 'failure'
+    });
+    const { outputs, github, core } = await resolvePush(world);
+    expect(outputs).toMatchObject({
+      skip: 'false',
+      mode: 'full',
+      recheck_before: '',
+      recheck_gates: ''
+    });
+    expect(core.notices.join()).toContain('checking every gate together');
+    expect(github.qualityStatuses(MERGE_1)[0].state).toBe('pending');
+    expect(github.state.dispatches).toEqual([]);
+  });
+
+  it('keeps the re-check targeted while another gate still fails', async () => {
+    const world = repairWorld({
+      commits: [{ sha: MERGE_1, message: relayMerge(31, ['docs']) }]
+    });
+    await seedGateResults(world.github, world.before, {
+      ...ALL_PASSED_GATES,
+      build: 'failure',
+      docs: 'failure'
+    });
+    const { outputs } = await resolvePush(world);
+    expect(outputs).toMatchObject({ mode: 'recheck', recheck_gates: 'docs' });
+  });
+
+  it('checks every gate together after a Copilot review fix, even with other repairs in flight', async () => {
+    const all = quality.GATES.map((g) => g.id);
+    const world = repairWorld({
+      commits: [{ sha: MERGE_1, message: relayMerge(50, all) }]
+    });
+    await seedGateResults(world.github, world.before, ALL_PASSED_GATES);
+    repairInFlight(world.github);
+    const { outputs } = await resolvePush(world);
+    expect(outputs).toMatchObject({ skip: 'false', mode: 'full' });
   });
 
   it('runs the full check when the merged auto-fix landed before any gate ran', async () => {

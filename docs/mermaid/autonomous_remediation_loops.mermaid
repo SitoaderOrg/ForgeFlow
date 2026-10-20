@@ -24,7 +24,8 @@ flowchart TD
     AgentLint & AgentTest & AgentSec & AgentDoc --> StackedPR[Stacked PR on Feature Branch\nTagged: lint/test/doc/security-remediation]
     StackedPR --> AutoMerge[Relay: merge stacked fixes\n.github/workflows/relay.yml\nSquash, delete branch, post audit link]
     AgentMeta --> AutoMerge
-    AutoMerge --> Recheck[Re-check only the repaired gate\nother gate results carried over]
+    AutoMerge -->|other repairs in flight| Recheck[Re-check only the repaired gate\nother gate results carried over]
+    AutoMerge -->|last repair or review fix:\nall gates together| Pipeline
 
     Parallel & Recheck --> Verdict{verdict}
     Verdict -->|other repairs in flight| Wait([pending])

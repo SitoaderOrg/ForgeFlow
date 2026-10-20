@@ -21,8 +21,9 @@ flowchart TD
         Build -->|build-failed| BlockBuild[❌ No agent: manual fix]
         FixLint & AgentTest & AgentSec & AgentDoc --> StackedPRs[Stacked PRs targeting feature branch]
         StackedPRs & FixMeta --> Relay[7. Relay: merge stacked fixes\nrelay.yml\nSquash-merge & audit comment]
-        Relay -->|re-check only the repaired gate,\ncarry the other results over| Recheck[Standalone gate run\ne.g. gate-lint.yml]
+        Relay -->|other repairs in flight: re-check only\nthe repaired gate, carry the rest over| Recheck[Standalone gate run\ne.g. gate-lint.yml]
     end
+    Relay -->|last repair or review fix:\nall gates together| Pipeline
 
     Gates --> Verdict{pr-quality verdict}
     Recheck --> Verdict
