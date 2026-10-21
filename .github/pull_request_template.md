@@ -2,12 +2,12 @@
 <!-- Briefly explain what changes this PR introduces and why. -->
 
 ## Type of Change
-<!-- Select all that apply by putting an 'x' in the brackets: [x] -->
-- [ ] 🐛 Bug fix (non-breaking change which fixes an issue)
-- [ ] ✨ New feature (non-breaking change which adds functionality)
-- [ ] 💥 Breaking change (fix or feature that causes existing functionality to not work as expected)
-- [ ] 📝 Documentation update
-- [ ] 🧪 Tests / Refactoring / Maintenance
+<!-- Keep the types that apply and delete the others (plain bullets, so they are not counted as tasks). -->
+- 🐛 Bug fix (non-breaking change which fixes an issue)
+- ✨ New feature (non-breaking change which adds functionality)
+- 💥 Breaking change (fix or feature that causes existing functionality to not work as expected)
+- 📝 Documentation update
+- 🧪 Tests / Refactoring / Maintenance
 
 ## Linked Issues
 <!-- Link related issues using GitHub keywords, e.g., Closes #123, Fixes #456 -->

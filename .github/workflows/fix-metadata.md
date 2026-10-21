@@ -107,7 +107,7 @@ Analyze the changes introduced in this pull request and generate complete, accur
 3. **Fill PR Template Description**:
    - Use the structure from `.github/pull_request_template.md`.
    - **Summary**: 2-4 concise bullet points explaining what was changed and why.
-   - **Type of Change**: Mark the appropriate checkbox (`- [x]`) based on the diff.
+   - **Type of Change**: Keep only the types that apply to the diff, as plain bullets (no checkboxes), and delete the others.
    - **Linked Issues**: Link any issue mentioned in commits or branch name (e.g. `Closes #123`), or leave as `None`.
    - **Verification & Testing**: Note tests that were added or modified in the diff.
    - The description must be at least 20 characters and must not contain the words "TODO" or "fill this out" (the gate rejects them).
