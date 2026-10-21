@@ -65,7 +65,7 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 
 ### 1. Standard GitHub Actions Workflows
 
-- **PR Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` and on `workflow_dispatch(pr_number, force)` (manual re-checks and the final check after repairs).
+- **PR Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` for PRs into `main` that change files under `apps/` (framework-only PRs are not checked) and on `workflow_dispatch(pr_number, force)` (manual re-checks and the final check after repairs).
 - **Gate: PR metadata (`gate-metadata.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable; also `workflow_dispatch`).
 - **Gate: Lint & format (`gate-lint.yml`)**: Polyglot linting using Super-Linter (reusable; also `workflow_dispatch`).
 - **Gate: Build (`gate-build.yml`)**: Compiles and builds each changed app in `apps/<app>/` (reusable; also `workflow_dispatch`).
@@ -104,7 +104,7 @@ The repository separates the framework from the projects it guards:
 | `.github/`, `docs/`, `tests/workflows/` | The ForgeFlow framework: workflows, agents, scripts, their documentation and offline tests. |
 | Repository root | Framework tooling (`package.json`) and the shared lint configs (`.eslintrc.json`, `.prettierrc`, ignore files) that Super-Linter applies to every app. |
 
-To put a project under ForgeFlow, add it as a new folder in `apps/` (see [apps/README.md](apps/README.md)). The Build and Tests gates run only for the apps a PR changes, from inside each app folder.
+To put a project under ForgeFlow, add it as a new folder in `apps/` (see [apps/README.md](apps/README.md)). The PR Pipeline runs only for PRs that change something under `apps/`, and the Build and Tests gates run only for the apps a PR changes, from inside each app folder.
 
 Framework commands (repository root, after `npm ci`):
 

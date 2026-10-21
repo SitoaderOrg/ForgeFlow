@@ -9,7 +9,8 @@ Only `workflow_dispatch` and `repository_dispatch` start runs. `pull_request` `o
 which never execute on their own.
 
 To keep those held runs out of the Actions list, `pr-pipeline.yml` only listens to PRs that
-target `main` (stacked remediation PRs target the feature branch), and `relay.yml`
+target `main` (stacked remediation PRs target the feature branch) and change files under `apps/`
+(framework-only PRs start no run), and `relay.yml`
 has no `pull_request` trigger at all. Every automated change reaches a feature branch the same way —
 as a stacked PR that the relay squash-merges (the lint autofix included), so the relay merge is the
 only bot push. It can use a GitHub App token instead, so its `synchronize` run is the re-check and

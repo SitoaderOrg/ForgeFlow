@@ -35,6 +35,13 @@ describe('pr-pipeline.yml structure', () => {
     });
   });
 
+  it('only checks PRs that change an app under apps/', () => {
+    // Framework-only PRs (.github/, docs/, tests/workflows/, root files) start no run.
+    expect(wf.on.pull_request.paths).toEqual(['apps/**']);
+    expect(wf.on.pull_request['paths-ignore']).toBeUndefined();
+    expect(wf.on.workflow_dispatch.inputs.pr_number).toBeDefined();
+  });
+
   it('serialises runs per PR and only cancels on new human pushes', () => {
     expect(wf.concurrency.group).toBe(
       'pipeline-${{ github.event.pull_request.number || inputs.pr_number }}'

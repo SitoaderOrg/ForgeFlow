@@ -82,6 +82,7 @@ Navigate to **Settings → Rules → Rulesets** (or **Settings → Branches**) a
   - Leave **Do not require status checks on creation** unchecked
   - Require only `pr-quality`, not the individual stage jobs (`Stage 2: Build`, …). GitHub treats a skipped job as passing, so when an earlier stage fails the skipped stages would not block the merge. `pr-quality` is a commit status published by the verdict (and by gate/relay re-checks) that is `success` only when every gate passed on the head commit; if it is never published, the required check stays pending and the merge stays blocked.
   - `pr-quality` is always posted with the workflow `GITHUB_TOKEN`, so pinning the source to **GitHub Actions** prevents another app or token from spoofing it. If the name does not appear in the search, type it exactly and add it.
+  - The PR Pipeline only runs for PRs that change files under `apps/` (`paths: ['apps/**']`). Framework-only PRs (`.github/`, `docs/`, `tests/workflows/`, root files) never receive `pr-quality`, so a required `pr-quality` keeps them pending. Merge those through a ruleset bypass (e.g. add the **Repository admin** role with bypass mode **For pull requests only**), or require `pr-quality` only once framework changes are rare.
 - **Require a pull request before merging**: at least 1 approval
   - Check: **Dismiss stale pull request approvals when new commits are pushed**
   - Check: **Require approval of the most recent reviewable push**

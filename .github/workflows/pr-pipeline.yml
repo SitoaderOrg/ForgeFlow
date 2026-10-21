@@ -18,9 +18,12 @@ run-name: "${{ format('PR Pipeline · PR #{0}{1}{2}', github.event.pull_request.
 on:
   # Feature PRs target main. Stacked remediation PRs target a feature branch and are consolidated
   # by relay.yml, so they must not start (approval-held) runs here.
+  # Only app changes are checked: a PR whose diff touches nothing under apps/ (framework-only)
+  # does not start the pipeline and gets no pr-quality status.
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+    paths: ['apps/**']
   # Re-entry point for the final all-gates check once every gate is green (pr-quality.cjs) and
   # for manual re-checks. Commits made with GITHUB_TOKEN do not raise `synchronize` events, so
   # the pipeline is re-dispatched on the PR head branch instead.
