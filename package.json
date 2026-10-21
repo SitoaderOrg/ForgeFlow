@@ -10,7 +10,7 @@
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
     "test:workflows": "vitest run tests/workflows",
-    "lint": "eslint . && prettier --check . && htmlhint \"apps/**/*.html\"",
+    "lint": "eslint . && prettier --check . && htmlhint \"apps/**/*.html\" --ignore \"**/coverage/**,**/dist/**\"",
     "lint:fix": "eslint . --fix && prettier --write ."
   },
   "keywords": [
