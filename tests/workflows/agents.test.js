@@ -242,7 +242,7 @@ describe('agent / gate wiring', () => {
   });
 
   it('relay, pipeline and review request agree on the stacked remediation labels', () => {
-    for (const file of ['relay.yml', 'pipeline.yml']) {
+    for (const file of ['relay.yml', 'pr-pipeline.yml']) {
       const text = readWorkflow(file);
       for (const label of STACKED_LABELS) expect(text).toContain(`'${label}'`);
     }

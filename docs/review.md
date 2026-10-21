@@ -27,7 +27,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ```mermaid
 flowchart TD
-    PR[Contributor Opens PR] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pipeline.yml\nAll gates in parallel: Metadata, Lint, Build, Tests, Security, Docs]
+    PR[Contributor Opens PR] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml\nAll gates in parallel: Metadata, Lint, Build, Tests, Security, Docs]
     
     Pipeline -->|Fails / Alerts| Agents[Remediation Agents Open Stacked PRs\n- Lint Fixes: lint-remediation\n- Unit Tests: test-remediation\n- Security Patches: security-remediation\n- Markdown Docs: doc-remediation]
     

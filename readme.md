@@ -33,7 +33,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 - **Regular GitHub Actions:** Deterministic, binary (pass/fail), fast, reproducible tasks (compiling, running test runners, linting, scanning). -> (fast, zero token cost, reproducible).
 - **`gh-aw` (English Agentic Workflows):** Tasks requiring **reasoning, semantic understanding, synthesis, or code generation**. -> (using English in Markdown).
-- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pipeline.yml`) owns a per-PR `concurrency` group: a newer human push cancels the obsolete check, while dispatched and bot runs queue behind it and are de-duplicated per revision via the `pr-quality` status; verdicts are serialized per PR. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
+- **Auto-Cancellation & Concurrency Control:** The orchestrator (`pr-pipeline.yml`) owns a per-PR `concurrency` group: a newer human push cancels the obsolete check, while dispatched and bot runs queue behind it and are de-duplicated per revision via the `pr-quality` status; verdicts are serialized per PR. Reusable gates intentionally declare no workflow-level concurrency (it would deadlock with the caller's group), and agent jobs are serialized to respect Copilot inference rate limits.
 - **No PAT required:** Events created with `GITHUB_TOKEN` never start workflows on their own (PR events only create approval-held runs), so every hop is chained with `workflow_dispatch` — see [Remediation Chaining Without PATs](docs/remediation-chaining.md). An optional, repository-scoped GitHub App (`PR_BOT_CLIENT_ID` / `PR_BOT_PRIVATE_KEY`) makes bot pushes start the pipeline natively, so no "Action required" runs are left behind.
 
 ### Documentation & Implemented Modules
@@ -55,7 +55,7 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 
 | Prefix | Role | Files |
 | :--- | :--- | :--- |
-| **Pipeline** | Entry point for every feature PR into `main` | `pipeline.yml` |
+| **PR Pipeline** | Entry point for every feature PR into `main` | `pr-pipeline.yml` |
 | **Gate:** | Checks one aspect and records `gate/<id>`; never changes code | `gate-*.yml` |
 | **Scan:** | Code scanning shared by a gate and `main` (push and schedule) | `scan-*.yml` |
 | **Fix:** | gh-aw agent that repairs one failing gate through a stacked PR | `fix-*.md` |
@@ -65,7 +65,7 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 
 ### 1. Standard GitHub Actions Workflows
 
-- **Pipeline (`pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` and on `workflow_dispatch(pr_number, force)` (manual re-checks and the final check after repairs).
+- **PR Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` and on `workflow_dispatch(pr_number, force)` (manual re-checks and the final check after repairs).
 - **Gate: PR metadata (`gate-metadata.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable; also `workflow_dispatch`).
 - **Gate: Lint & format (`gate-lint.yml`)**: Polyglot linting using Super-Linter (reusable; also `workflow_dispatch`).
 - **Gate: Build (`gate-build.yml`)**: Compiles and builds project artifacts (reusable; also `workflow_dispatch`).

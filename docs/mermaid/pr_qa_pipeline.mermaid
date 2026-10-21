@@ -1,5 +1,5 @@
 flowchart TD
-    PR[Pull Request Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pipeline.yml]
+    PR[Pull Request Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
     Pipeline --> Autofix[0. Autofix\neslint --fix + prettier --write\non changed files]
     Autofix -->|fixes pushed| Pipeline
 

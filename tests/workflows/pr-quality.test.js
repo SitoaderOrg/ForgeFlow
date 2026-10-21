@@ -738,7 +738,7 @@ describe('pr-quality.cjs evaluateVerdict', () => {
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pipeline.yml',
+        workflow_id: 'pr-pipeline.yml',
         ref: BRANCH,
         inputs: { pr_number: '20', force: 'true' }
       }
@@ -750,7 +750,7 @@ describe('pr-quality.cjs evaluateVerdict', () => {
       runs: [
         makeRun({
           id: 5,
-          workflow: 'pipeline.yml',
+          workflow: 'pr-pipeline.yml',
           branch: BRANCH,
           status: 'queued',
           conclusion: null
@@ -1050,7 +1050,7 @@ describe('pr-quality.cjs sweepStalled (watchdog)', () => {
       runs: [
         makeRun({
           id: 7,
-          workflow: 'pipeline.yml',
+          workflow: 'pr-pipeline.yml',
           branch: BRANCH,
           status: 'in_progress',
           conclusion: null

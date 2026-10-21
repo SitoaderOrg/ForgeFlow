@@ -1,5 +1,5 @@
 flowchart TD
-    Start([PR Created / Synchronized]) --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pipeline.yml]
+    Start([PR Created / Synchronized]) --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
     Pipeline --> Autofix[Autofix job\neslint --fix / prettier --write\nstacked PR lint-remediation]
     Autofix -->|files fixed: relay squash-merges,\nthen the fixed commit is checked| Pipeline
 

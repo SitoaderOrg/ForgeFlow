@@ -54,7 +54,7 @@ const { SUPERSEDED_LABEL } = require(path.join(__dirname, 'remediation.cjs'));
 // Gates whose result depends on PR metadata / decision labels, not only on the commit.
 const METADATA_GATES = ['metadata', 'docs'];
 const RELAY_WORKFLOW = 'relay.yml';
-const PIPELINE_WORKFLOW = 'pipeline.yml';
+const PIPELINE_WORKFLOW = 'pr-pipeline.yml';
 const REVIEW_WORKFLOW = 'review-request.yml';
 const CARRIED = /^carried from ([0-9a-f]{7}): /;
 

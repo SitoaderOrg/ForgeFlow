@@ -57,7 +57,7 @@ function relay(github, env = {}, opts = {}) {
 }
 
 const pipelineDispatches = (github) =>
-  github.state.dispatches.filter((d) => d.workflow_id === 'pipeline.yml');
+  github.state.dispatches.filter((d) => d.workflow_id === 'pr-pipeline.yml');
 const gateDispatches = (github) =>
   github.state.dispatches
     .filter((d) =>
@@ -413,7 +413,7 @@ describe('relay.yml relay: repairs without a new commit', () => {
     );
     expect(comment).toContain('**Build**: build failure');
     expect(comment).toContain(
-      'gh workflow run pipeline.yml --ref feat/sample -f pr_number=20 -f force=true'
+      'gh workflow run pr-pipeline.yml --ref feat/sample -f pr_number=20 -f force=true'
     );
     expect(core.summaryText).toContain('pr-quality: **failure**');
   });
@@ -520,7 +520,7 @@ describe('relay.yml relay: waiting for a running pipeline', () => {
       runs: [
         makeRun({
           id: 3000,
-          workflow: 'pipeline.yml',
+          workflow: 'pr-pipeline.yml',
           branch: BRANCH,
           status: 'in_progress',
           conclusion: null
@@ -545,7 +545,7 @@ describe('relay.yml relay: waiting for a running pipeline', () => {
       runs: [
         makeRun({
           id: 3000,
-          workflow: 'pipeline.yml',
+          workflow: 'pr-pipeline.yml',
           branch: BRANCH,
           status: 'queued',
           conclusion: null
@@ -670,7 +670,7 @@ describe('relay.yml relay: GitHub App token', () => {
   const fullCheck = {
     owner: 'octo',
     repo: 'demo',
-    workflow_id: 'pipeline.yml',
+    workflow_id: 'pr-pipeline.yml',
     ref: BRANCH,
     inputs: { pr_number: '20', force: 'true' }
   };
@@ -1014,7 +1014,7 @@ describe('relay.yml relay: Copilot review fixes', () => {
       {
         owner: 'octo',
         repo: 'demo',
-        workflow_id: 'pipeline.yml',
+        workflow_id: 'pr-pipeline.yml',
         ref: BRANCH,
         inputs: { pr_number: '20', force: 'true' }
       }

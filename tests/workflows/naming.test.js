@@ -8,7 +8,7 @@ const ROLES = [
   [/^fix-[a-z-]+\.lock\.yml$/, 'Fix: '],
   [/^review-[a-z-]+\.yml$/, 'Review: '],
   [/^relay\.yml$/, 'Relay: '],
-  [/^pipeline\.yml$/, 'Pipeline'],
+  [/^pr-pipeline\.yml$/, 'PR Pipeline'],
   [/^verdict\.yml$/, 'Verdict & watchdog']
 ];
 const WORKFLOWS = listWorkflowFiles((f) => f.endsWith('.yml')).filter(

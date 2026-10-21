@@ -300,7 +300,7 @@ jobs:
             const deadline = Date.now() + Number(process.env.PIPELINE_WAIT_MINUTES) * 60000;
             for (;;) {
               const { data } = await github.rest.actions.listWorkflowRuns({
-                owner, repo, workflow_id: 'pipeline.yml', branch: parentBranch, per_page: 20
+                owner, repo, workflow_id: 'pr-pipeline.yml', branch: parentBranch, per_page: 20
               });
               const running = data.workflow_runs.filter(r => ACTIVE.has(r.status));
               if (!running.length) break;
@@ -334,7 +334,7 @@ jobs:
               });
               await github.rest.actions.createWorkflowDispatch({
                 owner, repo,
-                workflow_id: 'pipeline.yml',
+                workflow_id: 'pr-pipeline.yml',
                 ref: parentBranch,
                 inputs: { pr_number: String(parent.number), force: 'true' }
               });

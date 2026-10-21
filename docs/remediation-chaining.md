@@ -8,7 +8,7 @@ Only `workflow_dispatch` and `repository_dispatch` start runs. `pull_request` `o
 ([docs](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs)),
 which never execute on their own.
 
-To keep those held runs out of the Actions list, `pipeline.yml` only listens to PRs that
+To keep those held runs out of the Actions list, `pr-pipeline.yml` only listens to PRs that
 target `main` (stacked remediation PRs target the feature branch), and `relay.yml`
 has no `pull_request` trigger at all. Every automated change reaches a feature branch the same way —
 as a stacked PR that the relay squash-merges (the lint autofix included), so the relay merge is the
@@ -20,7 +20,7 @@ The framework therefore chains every hop explicitly with `workflow_dispatch`:
 
 ```mermaid
 flowchart LR
-    PR[pull_request event\nopened / synchronize] --> Pipeline[pipeline.yml\ncontext → autofix → 6 gates in parallel → verdict]
+    PR[pull_request event\nopened / synchronize] --> Pipeline[pr-pipeline.yml\ncontext → autofix → 6 gates in parallel → verdict]
     Pipeline -->|autofix changed files:\nstacked PR lint-remediation\ngates wait for the merge| Relay
     Pipeline -->|gate fails| Helper[.github/scripts/remediation.cjs\nlabel + dispatchRemediation]
     Pipeline -->|each gate| Gates[(gate/* commit statuses\n+ *-passed labels)]
@@ -38,7 +38,7 @@ flowchart LR
 
 ## Check → Repair → Re-check one gate → Final check → Review & merge
 
-1. **Check** — `pipeline.yml` runs once per PR *revision*: the head SHA plus a hash of the PR
+1. **Check** — `pr-pipeline.yml` runs once per PR *revision*: the head SHA plus a hash of the PR
    title, body and gate decision labels (`docs-not-required`). An **autofix** job first applies
    `eslint --fix` and `prettier --write` to the changed files, so formatting never needs an agent.
    Like every automated change, the fix does not land on the feature branch directly: it is
@@ -97,7 +97,7 @@ of one full pipeline per repair round.
 
 | Piece | Responsibility |
 | :--- | :--- |
-| `pipeline.yml` | Runs on `pull_request` **and** `workflow_dispatch(pr_number, force)`. The context job resolves the PR (number, head/base ref, head SHA, revision), de-duplicates already-checked revisions and sets `pr-quality` to `pending`; the autofix job proposes deterministic lint/format fixes as a stacked PR and hands off to the relay (or marks every `gate/<id>` pending); the six gates run in parallel; the verdict job publishes `pr-quality`. A Bot-sent push made only of relay merges (`Recheck-Gates` trailer) runs the `recheck` job instead of the full check, unless no gate was checked before the merges (the merged autofix) or the merge is the last repair on passing gates or a review fix (`fullCheckAfterRepair`). Human pushes cancel a running check; dispatched and Bot-sent runs queue behind it. |
+| `pr-pipeline.yml` | Runs on `pull_request` **and** `workflow_dispatch(pr_number, force)`. The context job resolves the PR (number, head/base ref, head SHA, revision), de-duplicates already-checked revisions and sets `pr-quality` to `pending`; the autofix job proposes deterministic lint/format fixes as a stacked PR and hands off to the relay (or marks every `gate/<id>` pending); the six gates run in parallel; the verdict job publishes `pr-quality`. A Bot-sent push made only of relay merges (`Recheck-Gates` trailer) runs the `recheck` job instead of the full check, unless no gate was checked before the merges (the merged autofix) or the merge is the last repair on passing gates or a review fix (`fullCheckAfterRepair`). Human pushes cancel a running check; dispatched and Bot-sent runs queue behind it. |
 | `.github/scripts/remediation.cjs` | Shared helper used by every gate: adds/removes labels and dispatches the matching agent on the PR head branch. It skips dispatch when the agent is already running, when an unmerged stacked remediation PR exists, or when the retry budget is exhausted (then it comments once asking for a human). |
 | `.github/scripts/pr-quality.cjs` | Revision fingerprint and `pr-quality` status; `gate/<id>` statuses and `<id>-passed` labels (`recordGate`, `startGates`); `recheckGates` (re-check repaired gates, carry the others over); `fullCheckAfterRepair` (the last repair on passing gates, or a review fix, gets one full check instead); `evaluateVerdict` (pending / repairing / failure / final check / success); detection of remediation still in progress. |
 | `verdict.yml` | Reusable verdict called by a gate re-checked alone (also `workflow_dispatch(pr_number)`). One verdict per PR at a time (`verdict-<PR>` concurrency group). Every 15 minutes it runs as the watchdog for stalled `pr-quality` statuses. |
@@ -160,7 +160,7 @@ the `pr-quality` status, which is tied to the exact commit.
   remediation attempt — and the still-failing gate fails `pr-quality` with the error comment and
   re-run command, or keeps it pending while other agents, stacked PRs or relays are still repairing
   the PR (the last of them publishes it). The step never fails the agent run. Re-run the pipeline
-  with `gh workflow run pipeline.yml --ref <branch> -f pr_number=<PR> -f force=true` once the
+  with `gh workflow run pr-pipeline.yml --ref <branch> -f pr_number=<PR> -f force=true` once the
   cause is fixed. The watchdog remains a backstop for runs cancelled before their `conclusion` job.
 - **Fail closed on agent errors**: a gate is only green when its own check passes on the commit
   being verified; agent success, a merged stacked PR or a carried-over result alone never make
@@ -187,7 +187,7 @@ the `pr-quality` status, which is tied to the exact commit.
   to the feature branch (it force-pushes `lint-autofix/pr-<number>` and reuses that stacked PR if it
   is still open), skips a head that is an already merged auto-fix (`[pr-autofix]` in the squash
   title), and never fails the pipeline.
-- **Concurrency**: `pipeline.yml` declares `pipeline-<PR>` (human `pull_request` pushes cancel
+- **Concurrency**: `pr-pipeline.yml` declares `pipeline-<PR>` (human `pull_request` pushes cancel
   in-progress checks, dispatched and Bot-sent runs queue); verdict jobs share `verdict-<PR>` so
   gates finishing together publish one verdict at a time.
   Reusable workflows must not declare workflow-level concurrency: inside a reusable workflow
@@ -352,7 +352,7 @@ start runs, which the trigger filters exist to avoid.
 ```bash
 # Re-run the pipeline for PR 42 whose head branch is feat/my-change
 # (force=true re-checks a revision that already has a pr-quality verdict)
-gh workflow run pipeline.yml --ref feat/my-change -f pr_number=42 -f force=true
+gh workflow run pr-pipeline.yml --ref feat/my-change -f pr_number=42 -f force=true
 
 # Re-run a single gate on the PR head branch (refs are resolved from the PR); it records
 # gate/lint and updates pr-quality
@@ -379,7 +379,7 @@ so the tests run the exact code that runs in Actions.
 |---|---|
 | `remediation.test.js` | Label helpers, `commentOnce`, `dispatchRemediation` (dispatch, already running, pending stacked PR, budget exhaustion, cancelled runs not counted, superseded stacked PRs refunded, truncation, API errors) |
 | `pr-quality.test.js` | Revision fingerprint, `pr-quality` status round-trip and 140-char limit, pending agent detection, gate statuses and `<id>-passed` labels, `remediationInProgress` (incl. blocked stacked PRs), `recheckGates` (incl. metadata revisions), every `evaluateVerdict` outcome (incl. base-conflict guards and deduplicated resolution instructions), the `sweepStalled` watchdog, `mergeability` polling and `stackedBase` (base from the marker or the agent run; intact, rebased, unknown) |
-| `pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check, conflicts with `main`), autofix stacked PR and relay hand-off, verdict job |
+| `pr-pipeline.test.js` | Triggers/concurrency/job graph (autofix, parallel gates), context job (new revision, stale/fork runs, duplicate verdict skip, metadata/decision-label changes, `force`, re-run attempts, closed/stacked PRs, wrong ref, merged autofix gets the full check, conflicts with `main`), autofix stacked PR and relay hand-off, verdict job |
 | `relay.test.js` | Stacked PR merge (drafts, failures, branch cleanup), per-gate re-check with carried results, one full check after the last repair on passing gates, parallel repairs, repairs without a new commit, waiting for the pipeline, final failure, the autofix stacked PR, conflicting stacked PRs (superseded and regenerated once, then blocked; App path), stacked PRs built before a rebase or force-push (base from the agent run or the auto-fix marker; superseded once, then blocked; unknown base merged), Copilot review fixes (every gate re-checked, threads answered and resolved, conflicts superseded once, then blocked) |
 | `review.test.js` | Copilot review handling: `addressCopilotReview` (one batched dispatch, thread filtering, gates must be green, one round per PR, skipped PRs), decision parsing, `copilotReviewRequest` (first review, one confirmation after a merged review fix, never a third; its comments left to the author), `review-intake.yml`, dispatcher and watchdog hand-over, `awaitCopilotReview` (bounded wait after the request: review of the head commit, new commit, closed PR, timeout), `pr-quality` held pending while the fixer runs |
 | `gates.test.js` | Every gate's handlers (metadata, lint, build, tests, docs, security, review-request workflow), *Record gate result* steps, standalone `verdict` jobs, `verdict.yml` |

@@ -8,7 +8,7 @@ This step implements a fail-fast pre-flight check combined with an autonomous AI
 
 ```mermaid
 flowchart TD
-    PR[PR Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pipeline.yml]
+    PR[PR Created / Synchronized] --> Pipeline[PR Orchestrator Pipeline\n.github/workflows/pr-pipeline.yml]
     Pipeline --> Gate[Gate: PR metadata\n.github/workflows/gate-metadata.yml]
     
     Gate -->|✅ All Checks Pass| DownstreamCI[gate/metadata: success\nOther gates run in parallel]
