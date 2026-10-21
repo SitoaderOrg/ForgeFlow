@@ -1,14 +1,41 @@
 export const LEADERBOARD_KEY = 'ferret-heist:leaderboard';
 export const MAX_ENTRIES = 5;
 
+function isValidEntry(entry) {
+  return (
+    entry !== null &&
+    typeof entry === 'object' &&
+    typeof entry.name === 'string' &&
+    typeof entry.score === 'number' &&
+    typeof entry.items === 'number' &&
+    typeof entry.outcome === 'string'
+  );
+}
+
 export function loadLeaderboard(storage) {
-  const raw = storage.getItem(LEADERBOARD_KEY);
+  let raw;
+  try {
+    raw = storage.getItem(LEADERBOARD_KEY);
+  } catch {
+    return [];
+  }
   if (!raw) return [];
-  return JSON.parse(raw);
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(isValidEntry);
 }
 
 export function saveLeaderboard(storage, entries) {
-  storage.setItem(LEADERBOARD_KEY, JSON.stringify(entries));
+  try {
+    storage.setItem(LEADERBOARD_KEY, JSON.stringify(entries));
+  } catch {
+    // Persistence failures (storage full/denied) should not block gameplay.
+  }
 }
 
 export function addEntry(entries, entry) {
