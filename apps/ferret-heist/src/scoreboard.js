@@ -10,8 +10,20 @@ export function getPlayerName() {
   return params.get('player') || 'Anonymous Ferret';
 }
 
+function getDefaultStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    const data = new Map();
+    return {
+      getItem: (key) => (data.has(key) ? data.get(key) : null),
+      setItem: (key, value) => data.set(key, String(value))
+    };
+  }
+}
+
 export class Scoreboard {
-  constructor(storage = window.localStorage) {
+  constructor(storage = getDefaultStorage()) {
     this.storage = storage;
     this.player = getPlayerName();
     this.greetingEl = document.getElementById('player-greeting');

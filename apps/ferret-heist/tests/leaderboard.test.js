@@ -30,6 +30,30 @@ describe('Leaderboard', () => {
     expect(loadLeaderboard(storage)).toEqual([]);
   });
 
+  it('returns an empty leaderboard for malformed or invalid stored data', () => {
+    storage.setItem(LEADERBOARD_KEY, 'not json');
+    expect(loadLeaderboard(storage)).toEqual([]);
+
+    storage.setItem(LEADERBOARD_KEY, JSON.stringify(null));
+    expect(loadLeaderboard(storage)).toEqual([]);
+
+    storage.setItem(LEADERBOARD_KEY, JSON.stringify([null]));
+    expect(loadLeaderboard(storage)).toEqual([]);
+  });
+
+  it('ignores read/write failures from storage', () => {
+    const brokenStorage = {
+      getItem: () => {
+        throw new Error('read denied');
+      },
+      setItem: () => {
+        throw new Error('write denied');
+      }
+    };
+    expect(loadLeaderboard(brokenStorage)).toEqual([]);
+    expect(() => saveLeaderboard(brokenStorage, [])).not.toThrow();
+  });
+
   it('round-trips entries through storage', () => {
     const entries = [run('Bandit', 120)];
     saveLeaderboard(storage, entries);
