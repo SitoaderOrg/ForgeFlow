@@ -55,7 +55,6 @@ The deterministic security gate leverages native GitHub Code Security features:
   - Applies the **`codeql-alert`** label on failure and dispatches the CodeQL fixer with the rule id, severity, message and `file:line` of each finding.
 - **GitHub Secret Protection & Scanning**:
   - Repositories configure native GitHub Push Protection to reject hardcoded secrets server-side at `git push`.
-  - Secrets introduced by the PR diff are caught by Super-Linter's **GITLEAKS** linter in the lint stage.
   - Repository-wide Secret Scanning alerts are not evaluated per PR: they are not scoped to the PR and `GITHUB_TOKEN` cannot read them. `fix-secrets.md` remains available for a manual run (`workflow_dispatch` with `pr_number`).
 - **Autonomous Label Management**:
   - Each label is independent: if only one check fails, only its specific alert label is attached.

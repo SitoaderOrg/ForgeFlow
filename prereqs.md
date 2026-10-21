@@ -124,7 +124,7 @@ When developing and compiling workflows locally:
 | **Security** | Dependency graph & alerts | Settings → Code security | Gate: Security (Dependency Review) |
 | **Security** | Automatic dependency submission | Settings → Code security | Build-time dependency detection |
 | **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |
-| **Security** | Secret scanning & push protection | Settings → Code security | Blocks secrets at `git push`; `fix-secrets.md` (manual run). PR-diff secrets are gated by GITLEAKS in the lint stage |
+| **Security** | Secret scanning & push protection | Settings → Code security | Blocks secrets at `git push`; `fix-secrets.md` (manual run) |
 | **Security** | CodeQL analysis | Settings → Code security | Gate: Security (CodeQL) |
 | **Security** | Copilot Autofix for CodeQL | Settings → Code security | AI fix suggestions for SAST alerts |
 | **AI / Copilot** | Copilot license & access | Organization / User Settings | Agentic reasoning & remediation |
