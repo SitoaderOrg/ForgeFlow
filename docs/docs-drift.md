@@ -53,7 +53,7 @@ The agent evaluates every PR diff using strict semantic rules:
 ## 2. Autonomous Documentation Updater (`.github/workflows/fix-docs.md`)
 
 - **Documentation Drift Gate (`.github/workflows/gate-docs.yml`)**:
-  - Cheap deterministic pre-check inside the pipeline: passes when no application source changed or when Markdown documentation changed alongside the code.
+  - Cheap deterministic pre-check inside the pipeline: passes when no application source under `apps/` changed or when Markdown under `apps/` (e.g. `apps/<app>/README.md`) changed alongside the code. Framework files and docs (`.github/`, `docs/`, root Markdown) are ignored.
   - Otherwise fails with `docs-required` and dispatches the documentation agent with the list of undocumented source files.
   - Passes when the agent recorded the semantic decision `docs-not-required`.
 - **Autonomous Execution**:

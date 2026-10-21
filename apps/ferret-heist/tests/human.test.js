@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { Human } from '../apps/ferret-heist/src/game/human.js';
-import { Ferret } from '../apps/ferret-heist/src/game/ferret.js';
-import { Loot } from '../apps/ferret-heist/src/game/loot.js';
-import { HUMAN_STATES } from '../apps/ferret-heist/src/game/constants.js';
+import { Human } from '../src/game/human.js';
+import { Ferret } from '../src/game/ferret.js';
+import { Loot } from '../src/game/loot.js';
+import { HUMAN_STATES } from '../src/game/constants.js';
 
 describe('Human AI & Awareness Cycle', () => {
   it('starts in SLEEPING state looking left into room', () => {

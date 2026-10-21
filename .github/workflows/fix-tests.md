@@ -97,8 +97,8 @@ Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `ite
 Confirm with `gh pr view ${{ github.event.inputs.pr_number }} --json state,headRefName` that the pull request is open and that its head branch is the branch checked out in the workspace (`git branch --show-current`). Your changes and any stacked pull request are based on this branch, and the sandbox cannot fetch other branches. If the pull request is not open or its head branch is different, change nothing: call `noop` explaining that this workflow must be re-dispatched with "Use workflow from" set to the pull request's head branch, and stop.
 
 ## Efficiency Rules (keep the run small)
-- Read the PR diff once with `gh pr diff ${{ github.event.inputs.pr_number }}` and run `npm ci` once before running the tests.
-- Only read the changed source files and their test files. Run the single relevant test file first (`npx vitest run tests/<file>.test.js`), then `npx vitest run --coverage` once to confirm the threshold. Finish in fewer than 20 tool calls.
+- Read the PR diff once with `gh pr diff ${{ github.event.inputs.pr_number }}`. Each application is a self-contained project in `apps/<app>/` (the findings start with `📁 Testing apps/<app>`); work from that folder and run `npm ci` there once before running the tests.
+- Only read the changed source files and their test files. Run the single relevant test file first (`npx vitest run tests/<file>.test.js` inside the app folder), then `npx vitest run --coverage` once to confirm the threshold. Finish in fewer than 20 tool calls.
 
 ## Objective
 Automatically generate missing unit tests or repair broken test assertions for code introduced or modified in this pull request to achieve at least 80% test coverage and unblock the tests gate. Propose all tests in a single batched stacked pull request targeting the author's feature branch.
@@ -110,7 +110,7 @@ Automatically generate missing unit tests or repair broken test assertions for c
 - Any pull request that proposes changes to non-test files will be rejected.
 
 ## Step 1: Detect Project Language, Framework & Test Runner
-Inspect repository configuration files and manifests to identify the language, testing framework, and coverage command:
+Inspect the changed app's manifests (in `apps/<app>/`) to identify the language, testing framework, and coverage command:
 
 | Ecosystem | Manifest File(s) | Common Test Frameworks | Typical Test & Coverage Command |
 | :--- | :--- | :--- | :--- |
@@ -127,7 +127,7 @@ Read the manifest or root test scripts to identify the exact coverage command us
 
 ## Step 2: Analyze Uncovered Code in PR Diff
 1. Inspect the pull request using `gh pr diff` and `gh pr view --json number,files,commits,headRefName`.
-2. Start from the **Gate findings** above (failing tests and coverage table), then reproduce locally with `npx vitest run --coverage` (dependencies are pre-installed).
+2. Start from the **Gate findings** above (failing tests and coverage table), then reproduce in the app folder with `npx vitest run --coverage`.
 3. Identify all newly added or modified source files and testable logic:
    - Functions, methods, classes, and handlers
    - Conditional branches (`if/else`, `switch/match`)

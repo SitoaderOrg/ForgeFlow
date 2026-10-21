@@ -339,6 +339,7 @@ describe('gate-tests.yml (Tests & coverage gate)', () => {
       path.join(temp, 'test-output.log'),
       [
         'RUN v5',
+        '📁 Testing apps/sample',
         '\x1b[31m FAIL tests/a.test.js > adds\x1b[0m',
         'AssertionError: expected 1 to be 2',
         'noise line',
@@ -353,6 +354,7 @@ describe('gate-tests.yml (Tests & coverage gate)', () => {
     });
     expect(github.labels(20)).toEqual(['test-required']);
     const { findings } = dispatched(github, 'fix-tests.lock.yml')[0].inputs;
+    expect(findings).toContain('📁 Testing apps/sample');
     expect(findings).toContain('FAIL tests/a.test.js');
     expect(findings).toContain('AssertionError');
     expect(findings).toContain('threshold');

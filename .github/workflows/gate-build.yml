@@ -52,6 +52,7 @@ jobs:
             if (context.eventName === 'workflow_dispatch' && context.ref !== `refs/heads/${pr.head.ref}`) {
               core.setFailed(`Dispatch ref '${context.ref}' does not match PR head branch '${pr.head.ref}'. Re-run with --ref ${pr.head.ref}.`);
             }
+            core.setOutput('base_ref', pr.base.ref);
 
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -60,61 +61,78 @@ jobs:
 
       - name: Verify Build & Compilation
         id: verify-build
+        env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
-          echo "🔨 Checking build and compilation for project manifests..."
-          BUILD_FOUND=false
+          # Every project lives in its own folder under apps/; build only the apps this PR changes.
+          APPS=$(git diff --name-only "origin/$BASE_REF...HEAD" \
+            | awk -F/ '$1 == "apps" && NF > 2 { print "apps/" $2 }' | sort -u \
+            | while read -r d; do [ -d "$d" ] && echo "$d"; done || true)
+          if [ -z "$APPS" ]; then
+            echo "ℹ️ No changes under apps/. Build check passed cleanly."
+            exit 0
+          fi
 
-          # 1. Node.js / TypeScript
-          if [ -f "package.json" ]; then
-            npm ci 2>/dev/null || npm install --prefer-offline --no-audit
-            if grep -q '"build"' package.json; then
-              BUILD_FOUND=true
-              echo "📦 Building Node.js / TypeScript project..."
-              npm run build
-            elif [ -f "tsconfig.json" ]; then
-              BUILD_FOUND=true
-              echo "📦 Compiling TypeScript via tsc..."
-              npx tsc --noEmit
+          for APP in $APPS; do
+            echo "::group::📁 $APP"
+            pushd "$APP" >/dev/null
+            echo "🔨 Checking build and compilation for $APP..."
+            BUILD_FOUND=false
+
+            # 1. Node.js / TypeScript
+            if [ -f "package.json" ]; then
+              npm ci 2>/dev/null || npm install --prefer-offline --no-audit
+              if grep -q '"build"' package.json; then
+                BUILD_FOUND=true
+                echo "📦 Building Node.js / TypeScript project..."
+                npm run build
+              elif [ -f "tsconfig.json" ]; then
+                BUILD_FOUND=true
+                echo "📦 Compiling TypeScript via tsc..."
+                npx tsc --noEmit
+              fi
             fi
-          fi
 
-          # 2. Go
-          if [ -f "go.mod" ] || ls *.go 1>/dev/null 2>&1; then
-            BUILD_FOUND=true
-            echo "🐹 Building Go project..."
-            go build -v ./...
-          fi
+            # 2. Go
+            if [ -f "go.mod" ] || ls *.go 1>/dev/null 2>&1; then
+              BUILD_FOUND=true
+              echo "🐹 Building Go project..."
+              go build -v ./...
+            fi
 
-          # 3. Rust
-          if [ -f "Cargo.toml" ]; then
-            BUILD_FOUND=true
-            echo "🦀 Checking Rust project compilation..."
-            cargo check
-          fi
+            # 3. Rust
+            if [ -f "Cargo.toml" ]; then
+              BUILD_FOUND=true
+              echo "🦀 Checking Rust project compilation..."
+              cargo check
+            fi
 
-          # 4. Java / Kotlin (Maven / Gradle)
-          if [ -f "pom.xml" ]; then
-            BUILD_FOUND=true
-            echo "☕ Compiling Maven project..."
-            if [ -f "./mvnw" ]; then ./mvnw compile -q; else mvn compile -q; fi
-          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            BUILD_FOUND=true
-            echo "☕ Compiling Gradle project..."
-            if [ -f "./gradlew" ]; then ./gradlew classes -q; else gradle classes -q; fi
-          fi
+            # 4. Java / Kotlin (Maven / Gradle)
+            if [ -f "pom.xml" ]; then
+              BUILD_FOUND=true
+              echo "☕ Compiling Maven project..."
+              if [ -f "./mvnw" ]; then ./mvnw compile -q; else mvn compile -q; fi
+            elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+              BUILD_FOUND=true
+              echo "☕ Compiling Gradle project..."
+              if [ -f "./gradlew" ]; then ./gradlew classes -q; else gradle classes -q; fi
+            fi
 
-          # 5. C# / .NET
-          if ls *.sln 1>/dev/null 2>&1 || ls *.csproj 1>/dev/null 2>&1; then
-            BUILD_FOUND=true
-            echo "🔷 Building .NET project..."
-            dotnet build -c Release
-          fi
+            # 5. C# / .NET
+            if ls *.sln 1>/dev/null 2>&1 || ls *.csproj 1>/dev/null 2>&1; then
+              BUILD_FOUND=true
+              echo "🔷 Building .NET project..."
+              dotnet build -c Release
+            fi
 
-          if [ "$BUILD_FOUND" = "false" ]; then
-            echo "ℹ️ No compilation step needed for this project. Build check passed cleanly."
-          else
-            echo "✅ Build and compilation verification passed."
-          fi
+            if [ "$BUILD_FOUND" = "false" ]; then
+              echo "ℹ️ No compilation step needed for $APP. Build check passed cleanly."
+            else
+              echo "✅ Build and compilation verification passed for $APP."
+            fi
+            popd >/dev/null
+            echo "::endgroup::"
+          done
 
       - name: Handle Build Failure (Trigger Autonomous Remediation)
         if: failure() && steps.pr.outcome == 'success'

@@ -84,11 +84,12 @@ jobs:
           CHANGED=$(git diff --name-only --diff-filter=d "origin/$BASE_REF...$HEAD_SHA")
           echo "Changed files:"; echo "$CHANGED"
 
-          # Source = application code (tests, CI config, lockfiles and docs excluded)
+          # Source = application code under apps/ (tests, config, lockfiles and docs excluded)
           SOURCE=$(echo "$CHANGED" \
-            | grep -E '\.(js|jsx|ts|tsx|mjs|cjs|py|go|java|kt|cs|rb|rs|php|swift|c|cpp|h|hpp)$' \
-            | grep -vE '(^|/)(tests?|spec|__tests__)/|\.(test|spec)\.[a-z]+$|_test\.go$|^\.github/|(^|/)[^/]*\.config\.[a-z]+$' || true)
-          DOCS=$(echo "$CHANGED" | grep -E '\.md$' | grep -vE '^\.github/' || true)
+            | grep -E '^apps/[^/]+/.+\.(js|jsx|ts|tsx|mjs|cjs|py|go|java|kt|cs|rb|rs|php|swift|c|cpp|h|hpp)$' \
+            | grep -vE '(^|/)(tests?|spec|__tests__)/|\.(test|spec)\.[a-z]+$|_test\.go$|(^|/)[^/]*\.config\.[a-z]+$' || true)
+          # App docs live next to the app (apps/<app>/README.md); framework docs do not count.
+          DOCS=$(echo "$CHANGED" | grep -E '^apps/[^/]+/.+\.md$' || true)
 
           {
             echo "source<<EOF"; echo "$SOURCE"; echo "EOF"

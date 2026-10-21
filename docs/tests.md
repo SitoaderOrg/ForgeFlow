@@ -10,7 +10,8 @@ This step implements automated testing and coverage validation combined with an 
 flowchart TD
     BuildPass[Pipeline autofix done] --> TestGate[Tests & Coverage Gate, in parallel with the other gates\n.github/workflows/gate-tests.yml]
     
-    TestGate --> PolyglotDetect{Detect Test Runner}
+    TestGate --> Apps[For each changed app folder under apps/]
+    Apps --> PolyglotDetect{Detect Test Runner}
     PolyglotDetect -->|Node.js / TS| RunNpm[npm test]
     PolyglotDetect -->|Python| RunPytest[pytest / unittest]
     PolyglotDetect -->|Go| RunGo[go test -v -cover]
@@ -38,7 +39,7 @@ flowchart TD
 
 ## 1. Deterministic Testing Gate (`.github/workflows/gate-tests.yml`)
 
-The deterministic test runner automatically discovers and executes test suites based on repository manifests:
+Projects live in `apps/<app>/` (see [apps/README.md](../apps/README.md)). The test gate lists the app folders the PR changes and, inside each one, discovers and executes the test suite from that app's manifests; diff-scoped lookups use paths relative to the app. A PR that changes nothing under `apps/` (framework-only) passes cleanly. Each app's output starts with `📁 Testing apps/<app>`, which is passed to the tests fixer with the findings so it works in the right folder.
 
 - **Universal & Polyglot**:
   - **Configurable Coverage Threshold**: Configured via repository variable `COVERAGE_THRESHOLD` (e.g. `vars.COVERAGE_THRESHOLD`), defaulting to `80`% if not set.

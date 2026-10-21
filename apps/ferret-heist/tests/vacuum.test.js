@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Vacuum } from '../apps/ferret-heist/src/game/vacuum.js';
+import { Vacuum } from '../src/game/vacuum.js';
 
 describe('Robotic Vacuum (Roomba)', () => {
   it('initializes with position, speed and not stunned', () => {

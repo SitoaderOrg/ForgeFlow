@@ -370,8 +370,8 @@ gh workflow run relay.yml -f branch=feat/my-change
 
 ## Testing the workflows
 
-`tests/workflows/` exercises the orchestration logic offline with Vitest (`npm run test:workflows`;
-also part of `npm test`). The inline `actions/github-script` blocks are extracted from the workflow
+`tests/workflows/` exercises the orchestration logic offline with Vitest (`npm run test:workflows`
+or `npm test` at the repository root; app tests live in each `apps/<app>/` folder). The inline `actions/github-script` blocks are extracted from the workflow
 YAML and executed against an in-memory fake of the GitHub API (`tests/workflows/helpers/harness.js`),
 so the tests run the exact code that runs in Actions.
 

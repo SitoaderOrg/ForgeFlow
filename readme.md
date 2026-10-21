@@ -6,8 +6,8 @@
 
 1. **Gate: PR metadata**: Validates PR metadata, templates, and branch rules. All six gates (1–6) run in parallel after a deterministic `eslint --fix`/`prettier --write` autofix (proposed as a stacked PR and auto-merged, like every automated change), so every failure is found in the first run.
 2. **Linters & Static Formatters**: Prettier, ESLint, Stylelint, `gofmt` (runs standard linters).
-3. **Polyglot Build Verification**: Verifies compilation and build artifacts across ecosystems (TypeScript, Go, Rust, Java, .NET).
-4. **Automated Testing & Coverage**: Executes test runner with diff-scoped coverage (configurable threshold, defaulting to 80%).
+3. **Polyglot Build Verification**: Verifies compilation and build artifacts across ecosystems (TypeScript, Go, Rust, Java, .NET) for every app under `apps/` that the PR changes.
+4. **Automated Testing & Coverage**: Executes each changed app's test runner with diff-scoped coverage (configurable threshold, defaulting to 80%).
 5. **GitHub Security & Quality**: Native CodeQL static analysis (SARIF findings gated by security severity), Dependency Review, and secret detection (GITLEAKS in the lint stage).
 6. **Documentation Drift Verification**: Detects when application code changes without documentation and hands the semantic decision to the documentation agent.
 7. **Autonomous `gh-aw` Remediation Loops**: Failing gates dispatch the matching agent with the concrete findings (bounded attempts); agents propose stacked PRs or metadata fixes but never mark a gate as passed (see [Remediation Chaining](docs/remediation-chaining.md)).
@@ -68,11 +68,11 @@ Workflow files and names share a role prefix, so the Actions sidebar groups them
 - **PR Pipeline (`pr-pipeline.yml`)**: Single entry point orchestrating individual modular workflows as parallel gates (after an autofix job) and publishes the `pr-quality` verdict. Runs on `pull_request` and on `workflow_dispatch(pr_number, force)` (manual re-checks and the final check after repairs).
 - **Gate: PR metadata (`gate-metadata.yml`)**: Validates branch names, PR templates, and Conventional Commit titles (reusable; also `workflow_dispatch`).
 - **Gate: Lint & format (`gate-lint.yml`)**: Polyglot linting using Super-Linter (reusable; also `workflow_dispatch`).
-- **Gate: Build (`gate-build.yml`)**: Compiles and builds project artifacts (reusable; also `workflow_dispatch`).
-- **Gate: Tests & coverage (`gate-tests.yml`)**: Polyglot test runner with diff-scoped 80% coverage check (reusable; also `workflow_dispatch`).
+- **Gate: Build (`gate-build.yml`)**: Compiles and builds each changed app in `apps/<app>/` (reusable; also `workflow_dispatch`).
+- **Gate: Tests & coverage (`gate-tests.yml`)**: Polyglot test runner with diff-scoped 80% coverage check, run inside each changed app in `apps/<app>/` (reusable; also `workflow_dispatch`).
 - **Gate: Security (`gate-security.yml`)**: CodeQL (via `scan-codeql.yml`) and Dependency Review (reusable; also `workflow_dispatch`).
 - **Scan: CodeQL (`scan-codeql.yml`)**: The repository's only CodeQL configuration (GitHub's default setup stays disabled). Analyzes the PR head for the security gate and uploads the results to the PR; also scans `main` on push and weekly.
-- **Gate: Docs drift (`gate-docs.yml`)**: Fails when application code changes without Markdown documentation, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
+- **Gate: Docs drift (`gate-docs.yml`)**: Fails when application code under `apps/` changes without Markdown documentation in that app, unless the doc agent recorded `docs-not-required` (reusable; also `workflow_dispatch`).
 - **Review: request (`review-request.yml`)**: Requests a Copilot code review (once when the gates pass, once more to confirm the review fixes), waits a few minutes to hand the first review's comments to the fixer, and posts consolidated audit summaries (reusable; also `workflow_dispatch`).
 - **Review: Copilot intake (`review-intake.yml`)**: When Copilot submits a review, hands all of its open comments to the review-comments fixer in one batch (see [Copilot review comments](docs/remediation-chaining.md#copilot-review-comments)).
 - **Relay: merge stacked fixes (`relay.yml`)**: Dispatched by every agent when it finishes; merges remediation PRs into the feature branch and re-runs only the repaired gate on the new commit (all gates together for the last repair or a review fix). A stacked PR that conflicts with the feature branch is superseded and regenerated once on the current head.
@@ -94,16 +94,31 @@ validation. Stacked-fix conflict recovery remains automatic and bounded
 - [Fix: Docs (`fix-docs.md`)](.github/workflows/fix-docs.md): Semantically evaluates PR diffs against documentation criteria (public APIs, schemas, architecture) and authors missing guides via stacked PRs.
 - [Fix: Copilot review comments (`fix-review-comments.md`)](.github/workflows/fix-review-comments.md): Dispatched with every open Copilot review comment once the gates pass. Applies or skips each one (with a reason) in a single stacked PR (`review-remediation`); the relay re-checks every gate and answers each Copilot thread.
 
-### 3. Sample Application: Ferret Heist (`apps/ferret-heist`)
+### 3. Applications (`apps/`)
 
-A standalone, zero-deployment 2D stealth action browser game built for testing the PR gate and autonomous remediation loops:
+The repository separates the framework from the projects it guards:
 
-- **Run Directly**: Open `dist/index.html` or `apps/ferret-heist/index.html` in any browser, or run `npm run dev` / `npm run preview`.
-- **Verify Build**: `npm run build` (builds bundled assets into `dist/`).
-- **Execute Tests & Coverage**: `npm test` or `npm run test:cov` (runs Vitest with diff-scoped coverage verification >= 80%).
-- **Test the CI/CD workflows**: `npm run test:workflows` (offline scenario tests for the pipeline, gates, relay and agents; see [Testing the workflows](docs/remediation-chaining.md#testing-the-workflows)).
+| Path | Contents |
+| :--- | :--- |
+| `apps/<app>/` | One self-contained project per folder: its own manifest, lockfile, sources, tests, build and test config, and `README.md`. Any ecosystem the gates detect works (Node.js/TypeScript, Python, Go, Rust, Java/Kotlin, .NET, Ruby, PHP). |
+| `.github/`, `docs/`, `tests/workflows/` | The ForgeFlow framework: workflows, agents, scripts, their documentation and offline tests. |
+| Repository root | Framework tooling (`package.json`) and the shared lint configs (`.eslintrc.json`, `.prettierrc`, ignore files) that Super-Linter applies to every app. |
+
+To put a project under ForgeFlow, add it as a new folder in `apps/` (see [apps/README.md](apps/README.md)). The Build and Tests gates run only for the apps a PR changes, from inside each app folder.
+
+Framework commands (repository root, after `npm ci`):
+
 - **Lint**: `npm run lint` (ESLint, Prettier, HTMLHint — the same configs Super-Linter uses in CI); `npm run lint:fix` to auto-fix.
+- **Test the CI/CD workflows**: `npm run test:workflows` (offline scenario tests for the pipeline, gates, relay and agents; see [Testing the workflows](docs/remediation-chaining.md#testing-the-workflows)).
+
+#### Sample application: Ferret Heist (`apps/ferret-heist`)
+
+A standalone, zero-deployment 2D stealth action browser game built for testing the PR gate and autonomous remediation loops. Run these commands from `apps/ferret-heist/` after `npm ci`:
+
+- **Run Directly**: Open `apps/ferret-heist/index.html` in any browser, or run `npm run dev` / `npm run preview`.
+- **Verify Build**: `npm run build` (builds bundled assets into `apps/ferret-heist/dist/`).
+- **Execute Tests & Coverage**: `npm test` or `npm run test:cov` (Vitest; the Tests gate enforces diff-scoped coverage >= 80%).
 - **Chaos Testing**:
-  - Break a test in `tests/ferret.test.js` to trigger the **Fix: Tests** loop.
+  - Break a test in `apps/ferret-heist/tests/ferret.test.js` to trigger the **Fix: Tests** loop.
   - Introduce lint formatting issues in `apps/ferret-heist/` to trigger the **Fix: Lint & format** loop.
   - Break compilation or syntax to trigger the **Gate: Build** loop.

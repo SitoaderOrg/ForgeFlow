@@ -98,7 +98,7 @@ Confirm with `gh pr view ${{ github.event.inputs.pr_number }} --json state,headR
 
 ## Efficiency Rules (keep the run small)
 - The comments above are your work list. Only if the list ends with `[truncated]`, fetch the remaining ones once with `gh api repos/${{ github.repository }}/pulls/${{ github.event.inputs.pr_number }}/comments`.
-- Only read the files the comments point at (and their tests). Run `npm ci` once, then the lint and the tests of the affected files. Finish in fewer than 25 tool calls.
+- Only read the files the comments point at (and their tests). Each application is a self-contained project in `apps/<app>/`: run `npm ci` once in that folder for its tests, and once at the repository root for the shared lint (`npm run lint`). Finish in fewer than 25 tool calls.
 
 ## Objective
 Every quality gate already passed on this pull request; GitHub Copilot then reviewed it. Address **all** of its comments in **one** stacked pull request, so the author reviews a single consolidated change instead of clicking through suggestions one by one. You are the only automatic round: comments you skip go to the author, so decide each one carefully.

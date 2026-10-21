@@ -10,7 +10,8 @@ This gate validates that pull requests compile and build without errors before r
 flowchart TD
     Stage1Pass[Pipeline autofix done] --> BuildGate[Build Gate, in parallel with the other gates\n.github/workflows/gate-build.yml]
     
-    BuildGate --> DetectLang{Detect Ecosystem}
+    BuildGate --> Apps[For each changed app folder under apps/]
+    Apps --> DetectLang{Detect Ecosystem}
     DetectLang -->|Node.js / TS| BuildNode[npm run build / npx tsc --noEmit]
     DetectLang -->|Go| BuildGo[go build -v ./...]
     DetectLang -->|Rust| BuildRust[cargo check]
@@ -32,7 +33,7 @@ flowchart TD
 
 ## 1. Deterministic Build Gate (`.github/workflows/gate-build.yml`)
 
-The build gate discovers project configuration files and executes standard compilation commands:
+Projects live in `apps/<app>/` (see [apps/README.md](../apps/README.md)). The build gate lists the app folders the PR changes and, inside each one, discovers its project configuration files and executes the standard compilation command. A PR that changes nothing under `apps/` (framework-only) passes cleanly; with several apps the gate stops at the first one that fails to build.
 
 - **TypeScript / Node.js**: Discovers `package.json` build scripts (`npm run build`) or falls back to TypeScript syntax/type verification (`npx tsc --noEmit`).
 - **Go**: Discovers `go.mod` and executes `go build -v ./...`.

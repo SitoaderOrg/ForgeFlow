@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { Stash } from '../apps/ferret-heist/src/game/stash.js';
-import { Loot } from '../apps/ferret-heist/src/game/loot.js';
-import { COUCH } from '../apps/ferret-heist/src/game/constants.js';
+import { Stash } from '../src/game/stash.js';
+import { Loot } from '../src/game/loot.js';
+import { COUCH } from '../src/game/constants.js';
 
 describe('Couch Stash Management', () => {
   it('correctly identifies coordinates under the couch', () => {

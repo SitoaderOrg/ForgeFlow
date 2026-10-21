@@ -98,8 +98,8 @@ Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `ite
 Confirm with `gh pr view ${{ github.event.inputs.pr_number }} --json state,headRefName` that the pull request is open and that its head branch is the branch checked out in the workspace (`git branch --show-current`). Your changes and any stacked pull request are based on this branch, and the sandbox cannot fetch other branches. If the pull request is not open or its head branch is different, change nothing: call `noop` explaining that this workflow must be re-dispatched with "Use workflow from" set to the pull request's head branch, and stop.
 
 ## Efficiency Rules (keep the run small)
-- Read the PR diff once with `gh pr diff ${{ github.event.inputs.pr_number }}` and run `npm ci` once before testing. Each finding already contains the rule id and `file:line`; open only those files.
-- Prefer safe DOM APIs (`textContent`, `createElement`) over `innerHTML` for untrusted input. Run `npm test` and `npm run lint` once after the fix. Finish in fewer than 15 tool calls.
+- Read the PR diff once with `gh pr diff ${{ github.event.inputs.pr_number }}`. Each application is a self-contained project in `apps/<app>/`: run `npm ci` once in that folder before testing. Each finding already contains the rule id and `file:line`; open only those files.
+- Prefer safe DOM APIs (`textContent`, `createElement`) over `innerHTML` for untrusted input. After the fix run the app's tests once in its folder (`npm test`) and the shared lint once from the repository root (`npm ci && npm run lint`). Finish in fewer than 15 tool calls.
 
 ## Objective
 Automatically create a stacked remediation pull request targeting the developer's feature branch to resolve CodeQL SAST vulnerabilities—leveraging GitHub Copilot Autofix suggestions when available or synthesizing defensive code patches—with distinct, itemized commit-style sections explaining each fix, allowing the developer to review and merge the solution.
@@ -112,7 +112,7 @@ Automatically create a stacked remediation pull request targeting the developer'
    - If a valid Copilot Autofix suggestion exists, validate its safety and apply the suggested patch.
    - If Copilot Autofix is not available: analyze the CodeQL taint path, vulnerable sink, and rule ID (e.g., SQL injection, unsanitized input/XSS, path traversal, command injection), and refactor the code defensively using parameterized queries, safe path resolution, or input sanitization.
    - Maintain a list of each distinct fix with a descriptive commit title (e.g., `fix(security): sanitize input to prevent path traversal in <file>`) and explanation.
-4. Keep behaviour intact: run `npm test` and `npm run lint` after patching and make sure both pass (format with `npx prettier --write <file>` if needed).
+4. Keep behaviour intact: run the app's tests in `apps/<app>/` (`npm test`) and `npm run lint` at the repository root after patching and make sure both pass (format with `npx prettier --write <file>` if needed).
 5. Apply safe outputs:
    - Call `create-pull-request` to open a stacked pull request:
      - Set `base` to the parent PR branch (`headRefName`).

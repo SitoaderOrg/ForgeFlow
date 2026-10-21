@@ -1,33 +1,20 @@
 {
-  "name": "ferret-heist",
+  "name": "forgeflow",
   "version": "1.0.0",
-  "description": "Ferret Heist: The Stash Under the Couch - A mischievous 2D stealth action game",
+  "private": true,
+  "description": "ForgeFlow: Build, inspect, repair, review. Framework tooling and shared lint configs; apps live in apps/<name>/.",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
     "test": "vitest run",
-    "test:cov": "vitest run --coverage",
     "test:workflows": "vitest run tests/workflows",
-    "lint": "eslint . && prettier --check . && htmlhint \"apps/**/*.html\" --ignore \"**/coverage/**,**/dist/**\"",
+    "lint": "eslint . && prettier --check . && htmlhint \"apps/**/*.html\" --ignore \"**/node_modules/**,**/coverage/**,**/dist/**\"",
     "lint:fix": "eslint . --fix && prettier --write ."
   },
-  "keywords": [
-    "game",
-    "ferret",
-    "stealth",
-    "html5-canvas",
-    "vitest"
-  ],
-  "author": "",
   "license": "MIT",
   "devDependencies": {
-    "@vitest/coverage-v8": "^5.0.1",
     "eslint": "^8.57.1",
     "htmlhint": "^1.9.2",
     "prettier": "^3.9.10",
-    "vite": "^6.2.0",
     "vitest": "^5.0.1",
     "yaml": "^2.9.1"
   }

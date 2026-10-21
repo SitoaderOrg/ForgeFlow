@@ -101,7 +101,7 @@ Always pass `pull_request_number: ${{ github.event.inputs.pr_number }}` (or `ite
 Confirm with `gh pr view ${{ github.event.inputs.pr_number }} --json state,headRefName` that the pull request is open and that its head branch is the branch checked out in the workspace (`git branch --show-current`). Your changes and any stacked pull request are based on this branch, and the sandbox cannot fetch other branches. If the pull request is not open or its head branch is different, change nothing: call `noop` explaining that this workflow must be re-dispatched with "Use workflow from" set to the pull request's head branch, and stop.
 
 ## Efficiency Rules (keep the run small)
-- Run `npm ci` once before linting; read the PR diff with `gh pr diff ${{ github.event.inputs.pr_number }}` only if needed. Fix only the files named in the gate findings. Finish in fewer than 15 tool calls.
+- Run `npm ci` once at the repository root before linting (the lint tooling and shared configs live there); read the PR diff with `gh pr diff ${{ github.event.inputs.pr_number }}` only if needed. Fix only the files named in the gate findings. Finish in fewer than 15 tool calls.
 
 ## Objective
 Automatically fix code formatting and lint issues on this pull request to help it pass the lint gate. Deliver the fixes as a single stacked pull request targeting the author's feature branch; it is auto-merged into that branch by the remediation relay.
@@ -113,7 +113,7 @@ Automatically fix code formatting and lint issues on this pull request to help i
    - `npm run lint:fix` — applies ESLint auto-fixes and Prettier formatting.
    - If the findings reference a run id you may also inspect `gh run view <run-id> --log-failed` (optional).
 3. The **Gate findings** above contain the exact Super-Linter output per linter (e.g. `JAVASCRIPT_ES`, `JAVASCRIPT_PRETTIER`, `CSS` = stylelint-config-standard, `HTML` = HTMLHint). Every listed issue must be fixed — `npm run lint` does not cover stylelint, so fix CSS findings by hand. Run `npm run lint:fix`, then fix any remaining errors by hand (e.g. remove unused variables/imports, prefer `const`) **without changing runtime behaviour**. Only touch files changed in this PR unless a linter explicitly requires otherwise. CSS must use modern color notation (`rgb(0 0 0 / 50%)`) and HTML ids/classes must be lowercase-dash-case.
-4. Re-run `npm run lint` until it passes, and run `npm test` to confirm nothing broke.
+4. Re-run `npm run lint` until it passes. Each application is a self-contained project in `apps/<app>/`; run its tests from that folder (e.g. `cd apps/<app> && npm ci && npm test`) to confirm nothing broke.
 5. Apply safe outputs:
    - Call `create-pull-request` to open a stacked pull request:
      - Set `base` to the parent PR branch (`headRefName`).
