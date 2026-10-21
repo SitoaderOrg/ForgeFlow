@@ -1,3 +1,7 @@
+# ForgeFlow
+
+**Build, inspect, repair, review.**
+
 ### End-to-End PR Quality Flow
 
 1. **Gate: PR metadata**: Validates PR metadata, templates, and branch rules. All six gates (1–6) run in parallel after a deterministic `eslint --fix`/`prettier --write` autofix (proposed as a stacked PR and auto-merged, like every automated change), so every failure is found in the first run.
