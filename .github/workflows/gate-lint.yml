@@ -106,6 +106,8 @@ jobs:
           VALIDATE_MARKDOWN_PRETTIER: false
           VALIDATE_JSCPD: false
           VALIDATE_GIT_COMMITLINT: false
+          # Secret detection is handled by GitHub Secret Protection (push protection), not the linter
+          VALIDATE_GITLEAKS: false
           # StandardJS enforces "no semicolons", which contradicts the repository's
           # Prettier config (semi: true) and would make the lint gate impossible to pass.
           VALIDATE_JAVASCRIPT_STANDARD: false
