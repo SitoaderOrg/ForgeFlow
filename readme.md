@@ -8,7 +8,7 @@
 2. **Linters & Static Formatters**: Prettier, ESLint, Stylelint, `gofmt` (runs standard linters).
 3. **Polyglot Build Verification**: Verifies compilation and build artifacts across ecosystems (TypeScript, Go, Rust, Java, .NET) for every app under `apps/` that the PR changes.
 4. **Automated Testing & Coverage**: Executes each changed app's test runner with diff-scoped coverage (configurable threshold, defaulting to 80%).
-5. **GitHub Security & Quality**: Native CodeQL static analysis (SARIF findings gated by security severity), Dependency Review, and secret detection (GITLEAKS in the lint stage).
+5. **GitHub Security & Quality**: Native CodeQL static analysis (SARIF findings gated by security severity), Dependency Review, and GitHub Secret Protection (secret scanning & push protection).
 6. **Documentation Drift Verification**: Detects when application code changes without documentation and hands the semantic decision to the documentation agent.
 7. **Autonomous `gh-aw` Remediation Loops**: Failing gates dispatch the matching agent with the concrete findings (bounded attempts); agents propose stacked PRs or metadata fixes but never mark a gate as passed (see [Remediation Chaining](docs/remediation-chaining.md)).
 8. **Automated Consolidation & Per-Gate Recheck**: The remediation relay squashes each stacked PR into the feature branch with a full audit trail. While other repairs are still in flight, it re-checks only the gate that was repaired, carrying the other gates' `gate/<id>` results over. A gate still failing after its repair fails `pr-quality`. The last repair on top of passing gates, and every Copilot review fix, goes straight to one full run of all gates together, which confirms the combined fixes.
