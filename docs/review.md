@@ -15,7 +15,7 @@ Without consolidation, autonomous agents running in parallel can overwhelm engin
 
 ### Impact on Delivery & Velocity
 
-| Metric | Traditional Human-Only CI/CD | Our Autonomous PR Lifecycle |
+| Metric | Traditional Human-Only CI/CD | ForgeFlow |
 | :--- | :--- | :--- |
 | **Average Time-to-Merge (TTM)** | **2 to 5 business days** (waiting for peer reviewers to wake up, point out missing tests, request formatting fixes, wait for changes, re-review) | **15 to 45 minutes** |
 | **CI/CD Pipeline Run Time** | 3 to 10 minutes per push | 2 to 5 minutes per push |
