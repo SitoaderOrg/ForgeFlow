@@ -2,10 +2,13 @@ import { GameEngine } from './game/engine.js';
 import { GameRenderer } from './game/render.js';
 import { SoundEffects } from './game/audio.js';
 import { GAME_STATES } from './game/constants.js';
+import { Scoreboard } from './scoreboard.js';
 
 window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('game-canvas');
   const sfx = new SoundEffects();
+  const scoreboard = new Scoreboard();
+  scoreboard.init();
 
   const engine = new GameEngine({
     onEvent: (event) => {
@@ -30,6 +33,10 @@ window.addEventListener('DOMContentLoaded', () => {
           break;
         case 'victory':
           sfx.victory();
+          scoreboard.record(engine, 'victory');
+          break;
+        case 'gameover':
+          scoreboard.record(engine, 'caught');
           break;
         default:
           break;
