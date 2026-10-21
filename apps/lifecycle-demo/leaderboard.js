@@ -9,7 +9,7 @@ export function escapePlayerLabel(name) {
 
 /** Return a score-descending export without modifying the caller's entries. */
 export function exportLeaderboard(entries, limit = 5) {
-  return entries
+  return [...entries]
     .sort((left, right) => right.score - left.score)
     .slice(0, limit)
     .map((entry, index) => ({
@@ -25,6 +25,6 @@ export function summarizeLeaderboard(entries) {
   return {
     count: entries.length,
     total,
-    average: total / entries.length
+    average: entries.length === 0 ? 0 : total / entries.length
   };
 }
