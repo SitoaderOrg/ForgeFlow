@@ -12,5 +12,12 @@
   },
   "rules": {
     "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["*.json"],
+      "parser": "jsonc-eslint-parser",
+      "rules": {}
+    }
+  ]
 }
