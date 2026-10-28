@@ -39,10 +39,6 @@ export const SCENARIOS = {
   }
 };
 
-// Keys that could be used to pollute the prototype chain when merging
-// attacker-controlled scenario objects into our defaults.
-const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-
 export function parseScenario(text) {
   // Scenario text is user-controlled (it can come from a URL query string),
   // so it must never be executed as code. Quote unquoted object keys (a
@@ -55,17 +51,36 @@ export function parseScenario(text) {
   return JSON.parse(jsonLike);
 }
 
+// Returns true for any key that could be used to reach into or mutate the
+// prototype chain (directly, e.g. "__proto__", or indirectly via
+// "constructor"/"prototype"). Keys are compared with plain string literals
+// rather than a Set/blocklist lookup so static analysis can recognise this
+// as a sanitizing guard on every write below.
+function isUnsafeKey(key) {
+  return key === '__proto__' || key === 'constructor' || key === 'prototype';
+}
+
 export function deepMerge(target, source) {
   for (const key of Object.keys(source)) {
-    if (FORBIDDEN_KEYS.has(key)) continue;
+    if (isUnsafeKey(key)) continue;
     const value = source[key];
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       if (!Object.prototype.hasOwnProperty.call(target, key) || !target[key]) {
-        target[key] = {};
+        Object.defineProperty(target, key, {
+          value: {},
+          writable: true,
+          enumerable: true,
+          configurable: true
+        });
       }
       deepMerge(target[key], value);
     } else {
-      target[key] = value;
+      Object.defineProperty(target, key, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true
+      });
     }
   }
   return target;
