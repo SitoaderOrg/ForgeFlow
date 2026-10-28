@@ -38,4 +38,14 @@ describe('Loot System', () => {
     expect(list.some((item) => item.type === 'keys')).toBe(true);
     expect(list.some((item) => item.type === 'sock')).toBe(true);
   });
+
+  it('generates loot from custom positions', () => {
+    const list = generateLootList([
+      { type: 'ring', x: 10, y: 20 },
+      { type: 'keys', x: 30, y: 40 }
+    ]);
+    expect(list.map((item) => item.type)).toEqual(['ring', 'keys']);
+    expect(list[1].id).toBe('loot-2');
+    expect(list[1].x).toBe(30);
+  });
 });

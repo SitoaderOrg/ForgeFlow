@@ -54,6 +54,24 @@
           </button>
         </div>
       </div>
+
+      <section class="scenario-panel" aria-labelledby="scenario-title">
+        <div class="scenario-header">
+          <h2 id="scenario-title" class="scenario-title">🗺️ Heist Scenarios</h2>
+          <p id="scenario-name" class="scenario-name"></p>
+        </div>
+        <div class="scenario-row">
+          <select
+            id="scenario-select"
+            class="scenario-select"
+            aria-label="Heist scenario"
+          ></select>
+          <button id="btn-start-scenario" class="control-btn btn-secondary">
+            Start scenario
+          </button>
+        </div>
+        <dl id="scenario-summary" class="scenario-summary"></dl>
+      </section>
     </div>
 
     <script type="module" src="./src/main.js"></script>

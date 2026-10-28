@@ -31,16 +31,16 @@ export class Loot {
   }
 }
 
-export function generateLootList() {
-  const lootPositions = [
-    { type: 'sock', x: 280, y: 220 },
-    { type: 'slipper', x: 500, y: 260 },
-    { type: 'keys', x: 620, y: 260 },
-    { type: 'remote', x: 420, y: 350 },
-    { type: 'sock', x: 670, y: 480 },
-    { type: 'ring', x: 710, y: 190 }
-  ];
+export const DEFAULT_LOOT_POSITIONS = [
+  { type: 'sock', x: 280, y: 220 },
+  { type: 'slipper', x: 500, y: 260 },
+  { type: 'keys', x: 620, y: 260 },
+  { type: 'remote', x: 420, y: 350 },
+  { type: 'sock', x: 670, y: 480 },
+  { type: 'ring', x: 710, y: 190 }
+];
 
+export function generateLootList(lootPositions = DEFAULT_LOOT_POSITIONS) {
   return lootPositions.map(
     (item, index) => new Loot(`loot-${index + 1}`, item.type, item.x, item.y)
   );

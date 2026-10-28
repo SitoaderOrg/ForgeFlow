@@ -4,23 +4,31 @@ import { Human } from './human.js';
 import { Vacuum } from './vacuum.js';
 import { Stash } from './stash.js';
 import { generateLootList } from './loot.js';
+import { SCENARIOS } from './scenarios.js';
 
 export class GameEngine {
   constructor(options = {}) {
     this.state = GAME_STATES.MENU;
-    this.ferret = new Ferret(120, 500);
-    this.human = new Human();
-    this.vacuum = new Vacuum();
-    this.lootList = generateLootList();
-    this.stash = new Stash(5);
+    this.scenario = options.scenario || SCENARIOS.classic;
+    this.setupScenario();
     this.message =
       'Sneak around, steal shiny things, and stash them under the couch!';
     this.messageTimer = 300;
     this.level = 1;
-    this.caughtCount = 0;
 
     // Event callbacks for audio/visual juice
     this.onEvent = options.onEvent || (() => {});
+  }
+
+  setupScenario() {
+    this.ferret = new Ferret(120, 500);
+    this.human = new Human();
+    this.human.sweepSpeed = this.scenario.human.sweepSpeed;
+    this.vacuum = new Vacuum();
+    this.vacuum.speed = this.scenario.vacuum.speed;
+    this.lootList = generateLootList(this.scenario.loot);
+    this.stash = new Stash(this.scenario.target);
+    this.caughtCount = 0;
   }
 
   start() {
@@ -30,15 +38,16 @@ export class GameEngine {
   }
 
   restart() {
-    this.ferret = new Ferret(120, 500);
-    this.human = new Human();
-    this.vacuum = new Vacuum();
-    this.lootList = generateLootList();
-    this.stash = new Stash(5);
+    this.setupScenario();
     this.state = GAME_STATES.PLAYING;
-    this.caughtCount = 0;
     this.setMessage('Fresh heist started! Be stealthy!');
     this.onEvent('restart');
+  }
+
+  loadScenario(scenario) {
+    this.scenario = scenario;
+    this.restart();
+    this.setMessage(`New scenario: ${scenario.name}! Be stealthy!`);
   }
 
   pause() {

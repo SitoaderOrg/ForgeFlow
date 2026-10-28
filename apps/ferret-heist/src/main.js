@@ -2,12 +2,16 @@ import { GameEngine } from './game/engine.js';
 import { GameRenderer } from './game/render.js';
 import { SoundEffects } from './game/audio.js';
 import { GAME_STATES } from './game/constants.js';
+import { ScenarioPanel, getLinkedScenario } from './scenario-panel.js';
+
+const FORM_FIELDS = ['SELECT', 'INPUT'];
 
 window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('game-canvas');
   const sfx = new SoundEffects();
 
   const engine = new GameEngine({
+    scenario: getLinkedScenario(),
     onEvent: (event) => {
       switch (event) {
         case 'pickup':
@@ -39,9 +43,11 @@ window.addEventListener('DOMContentLoaded', () => {
 
   const renderer = new GameRenderer(canvas);
   const keys = {};
+  new ScenarioPanel(engine).init();
 
-  // Keyboard handlers
+  // Keyboard handlers (ignored while a form field has focus)
   window.addEventListener('keydown', (e) => {
+    if (FORM_FIELDS.includes(e.target.tagName)) return;
     keys[e.code] = true;
 
     if (engine.state === GAME_STATES.MENU) {

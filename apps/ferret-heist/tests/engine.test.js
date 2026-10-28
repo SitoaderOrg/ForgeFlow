@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { GameEngine } from '../src/game/engine.js';
 import { GAME_STATES } from '../src/game/constants.js';
+import { SCENARIOS } from '../src/game/scenarios.js';
 
 describe('Game Engine & Loop Orchestration', () => {
   it('initializes in MENU state', () => {
@@ -166,5 +167,32 @@ describe('Game Engine & Loop Orchestration', () => {
 
     expect(engine.state).toBe(GAME_STATES.LEVEL_CLEARED);
     expect(onEvent).toHaveBeenCalledWith('victory');
+  });
+
+  it('builds the room from the selected scenario', () => {
+    const engine = new GameEngine({ scenario: SCENARIOS.jewel });
+
+    expect(engine.scenario).toBe(SCENARIOS.jewel);
+    expect(engine.lootList.length).toBe(SCENARIOS.jewel.loot.length);
+    expect(engine.lootList.every((loot) => loot.type !== 'sock')).toBe(true);
+    expect(engine.stash.targetCount).toBe(4);
+    expect(engine.human.sweepSpeed).toBe(0.035);
+    expect(engine.vacuum.speed).toBe(3.2);
+  });
+
+  it('loads a new scenario and restarts the run', () => {
+    const onEvent = vi.fn();
+    const engine = new GameEngine({ onEvent });
+    engine.start();
+    engine.caughtCount = 2;
+
+    engine.loadScenario(SCENARIOS.laundry);
+
+    expect(engine.state).toBe(GAME_STATES.PLAYING);
+    expect(engine.caughtCount).toBe(0);
+    expect(engine.lootList.length).toBe(8);
+    expect(engine.stash.targetCount).toBe(6);
+    expect(engine.message).toContain('Laundry Day');
+    expect(onEvent).toHaveBeenCalledWith('restart');
   });
 });
