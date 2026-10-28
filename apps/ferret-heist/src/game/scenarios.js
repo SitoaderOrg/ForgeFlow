@@ -39,15 +39,30 @@ export const SCENARIOS = {
   }
 };
 
+// Keys that could be used to pollute the prototype chain when merging
+// attacker-controlled scenario objects into our defaults.
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export function parseScenario(text) {
-  return eval(`(${text})`);
+  // Scenario text is user-controlled (it can come from a URL query string),
+  // so it must never be executed as code. Quote unquoted object keys (a
+  // convenience the UI/tests rely on) and parse the result as strict JSON
+  // instead of using eval/Function.
+  const jsonLike = text.replace(
+    /([{,]\s*)([A-Za-z_$][A-Za-z0-9_$]*)(\s*:)/g,
+    '$1"$2"$3'
+  );
+  return JSON.parse(jsonLike);
 }
 
 export function deepMerge(target, source) {
-  for (const key in source) {
+  for (const key of Object.keys(source)) {
+    if (FORBIDDEN_KEYS.has(key)) continue;
     const value = source[key];
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      if (!target[key]) target[key] = {};
+      if (!Object.prototype.hasOwnProperty.call(target, key) || !target[key]) {
+        target[key] = {};
+      }
       deepMerge(target[key], value);
     } else {
       target[key] = value;
