@@ -19,7 +19,11 @@ export class Scoreboard {
   }
 
   init() {
-    this.greetingEl.innerHTML = `Heisting as <strong>${this.player}</strong>`;
+    this.greetingEl.textContent = '';
+    this.greetingEl.append('Heisting as ');
+    const strong = document.createElement('strong');
+    strong.textContent = this.player;
+    this.greetingEl.append(strong);
     this.render(loadLeaderboard(this.storage));
   }
 
@@ -37,19 +41,30 @@ export class Scoreboard {
   }
 
   render(entries) {
+    this.listEl.textContent = '';
     if (entries.length === 0) {
-      this.listEl.innerHTML =
-        '<li class="scoreboard-empty">No heists yet. Go swipe something!</li>';
+      const emptyLi = document.createElement('li');
+      emptyLi.className = 'scoreboard-empty';
+      emptyLi.textContent = 'No heists yet. Go swipe something!';
+      this.listEl.append(emptyLi);
       return;
     }
-    this.listEl.innerHTML = entries
-      .map(
-        (entry) =>
-          `<li class="${entry.name === this.player ? 'scoreboard-you' : ''}">` +
-          `<span class="scoreboard-name">${OUTCOME_ICONS[entry.outcome]} ${entry.name}</span>` +
-          `<span class="scoreboard-score">${entry.score} pts · ${entry.items} items</span>` +
-          '</li>'
-      )
-      .join('');
+    for (const entry of entries) {
+      const li = document.createElement('li');
+      if (entry.name === this.player) {
+        li.className = 'scoreboard-you';
+      }
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'scoreboard-name';
+      nameSpan.textContent = `${OUTCOME_ICONS[entry.outcome]} ${entry.name}`;
+
+      const scoreSpan = document.createElement('span');
+      scoreSpan.className = 'scoreboard-score';
+      scoreSpan.textContent = `${entry.score} pts · ${entry.items} items`;
+
+      li.append(nameSpan, scoreSpan);
+      this.listEl.append(li);
+    }
   }
 }
