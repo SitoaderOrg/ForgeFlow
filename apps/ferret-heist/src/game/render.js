@@ -48,6 +48,9 @@ export class GameRenderer {
 
     // 10. Draw Screen Overlays for Menu, Victory, Caught
     this.drawOverlays(ctx, engine);
+
+    // 11. Draw bottom message bar above overlays so it's never obscured
+    this.drawMessage(ctx, engine);
   }
 
   drawFloor(ctx) {
@@ -402,17 +405,17 @@ export class GameRenderer {
     ctx.fillStyle = '#ef5350';
     ctx.font = 'bold 14px sans-serif';
     ctx.fillText(`🚨 Strikes: ${engine.caughtCount}/3`, 630, 30);
+  }
 
-    // Bottom Message bar
-    if (engine.message) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-      ctx.fillRect(CANVAS_WIDTH / 2 - 250, CANVAS_HEIGHT - 38, 500, 30);
-      ctx.fillStyle = '#fff';
-      ctx.font = '14px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(engine.message, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 18);
-      ctx.textAlign = 'left';
-    }
+  drawMessage(ctx, engine) {
+    if (!engine.message) return;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+    ctx.fillRect(CANVAS_WIDTH / 2 - 250, CANVAS_HEIGHT - 38, 500, 30);
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(engine.message, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 18);
+    ctx.textAlign = 'left';
   }
 
   drawOverlays(ctx, engine) {
