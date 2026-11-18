@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ROOT,
   createContext,
@@ -904,8 +904,8 @@ describe('verdict.yml watchdog', () => {
     'Publish pr-quality status'
   );
 
-  it('runs on a schedule with a configurable staleness', () => {
-    expect(wf.on.schedule).toEqual([{ cron: '*/15 * * * *' }]);
+  it('runs hourly with a configurable staleness', () => {
+    expect(wf.on.schedule).toEqual([{ cron: '0 * * * *' }]);
     expect(wf.jobs.verdict.steps[1].env.STALE_VERDICT_MINUTES).toBe(
       "${{ vars.STALE_VERDICT_MINUTES || '30' }}"
     );
@@ -927,5 +927,47 @@ describe('verdict.yml watchdog', () => {
     });
     expect(core.summaryText).toContain('### pr-quality watchdog');
     expect(core.summaryText).toContain('No stalled PRs.');
+  });
+
+  it('prunes only older successful scheduled sweeps in a bounded batch', async () => {
+    const cleanup = wf.jobs.verdict.steps.find(
+      (step) => step.name === 'Prune old successful sweeps'
+    );
+    expect(cleanup.if).toBe(
+      "github.event_name == 'schedule' && !inputs.pr_number"
+    );
+    const context = createContext({ eventName: 'schedule', runId: 60 });
+    const sweep = (id, overrides = {}) => ({
+      id,
+      run_number: id,
+      event: 'schedule',
+      status: 'completed',
+      conclusion: 'success',
+      ...overrides
+    });
+    const runs = [
+      ...Array.from({ length: 55 }, (_, i) => sweep(i + 1)),
+      sweep(56, { conclusion: 'failure' }),
+      sweep(57, { event: 'workflow_dispatch' }),
+      sweep(58, { status: 'in_progress', conclusion: null }),
+      sweep(60)
+    ];
+    const github = createGitHub();
+    const list = vi.fn().mockResolvedValue({ data: { workflow_runs: runs } });
+    const remove = vi.fn().mockResolvedValue({});
+    github.rest.actions.listWorkflowRuns = list;
+    github.rest.actions.deleteWorkflowRun = remove;
+    await runScript(cleanup.with.script, { github, context });
+
+    expect(list).toHaveBeenCalledWith({
+      ...context.repo,
+      workflow_id: 'verdict.yml',
+      event: 'schedule',
+      status: 'success',
+      per_page: 100
+    });
+    expect(remove.mock.calls.map(([args]) => args.run_id)).toEqual(
+      Array.from({ length: 50 }, (_, i) => 52 - i)
+    );
   });
 });

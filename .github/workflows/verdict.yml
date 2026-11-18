@@ -37,7 +37,7 @@ on:
         required: true
         type: string
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '0 * * * *'
 
 permissions:
   contents: read
@@ -91,3 +91,23 @@ jobs:
               reported: GATE && GATE_SHA ? { sha: GATE_SHA, results: { [GATE]: GATE_RESULT } } : undefined
             });
             await core.summary.addRaw(`### pr-quality: ${verdict.state}\n\n${verdict.summary}\n`).write();
+
+      - name: Prune old successful sweeps
+        if: github.event_name == 'schedule' && !inputs.pr_number
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: 'verdict.yml', event: 'schedule', status: 'success', per_page: 100
+            });
+            const olderSweeps = data.workflow_runs
+              .filter(run => run.id !== context.runId && run.event === 'schedule' &&
+                run.status === 'completed' && run.conclusion === 'success')
+              .sort((a, b) => b.run_number - a.run_number)
+              .slice(3, 53);
+            for (const { id } of olderSweeps) {
+              await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: id });
+              core.info(`Deleted successful watchdog sweep ${id}.`);
+            }
