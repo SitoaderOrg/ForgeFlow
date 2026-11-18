@@ -183,9 +183,9 @@ the `pr-quality` status, which is tied to the exact commit.
   been pending for `STALE_VERDICT_MINUTES` (repository variable, default `30`) with no pipeline or
   relay running — e.g. an agent run cancelled before its hand-off step could run — gets its stuck gates
   re-checked and a fresh verdict. Scheduled runs can be delayed or skipped by GitHub, so the
-  watchdog is a backstop, not the primary failure path. Each successful sweep keeps the three
-  most recent previously completed successful sweeps and deletes up to 50 older ones. Cleanup
-  leaves non-successful runs, manual verdicts, and gate runs untouched.
+  watchdog is a backstop, not the primary failure path. Each successful sweep deletes all
+  previously completed successful scheduled sweeps; the active sweep is eligible for deletion
+  on the next run. Cleanup leaves non-successful runs, manual verdicts, and gate runs untouched.
 - **Autofix**: only runs for same-repository PR branches (also for dispatched runs), never pushes
   to the feature branch (it force-pushes `lint-autofix/pr-<number>` and reuses that stacked PR if it
   is still open), skips a head that is an already merged auto-fix (`[pr-autofix]` in the squash

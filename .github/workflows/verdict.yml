@@ -99,14 +99,13 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const { data } = await github.rest.actions.listWorkflowRuns({
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
               owner, repo, workflow_id: 'verdict.yml', event: 'schedule', status: 'success', per_page: 100
             });
-            const olderSweeps = data.workflow_runs
+            const olderSweeps = runs
               .filter(run => run.id !== context.runId && run.event === 'schedule' &&
                 run.status === 'completed' && run.conclusion === 'success')
-              .sort((a, b) => b.run_number - a.run_number)
-              .slice(3, 53);
+              .sort((a, b) => b.run_number - a.run_number);
             for (const { id } of olderSweeps) {
               await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: id });
               core.info(`Deleted successful watchdog sweep ${id}.`);

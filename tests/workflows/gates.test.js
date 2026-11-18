@@ -929,7 +929,7 @@ describe('verdict.yml watchdog', () => {
     expect(core.summaryText).toContain('No stalled PRs.');
   });
 
-  it('prunes only older successful scheduled sweeps in a bounded batch', async () => {
+  it('prunes all older successful scheduled sweeps', async () => {
     const cleanup = wf.jobs.verdict.steps.find(
       (step) => step.name === 'Prune old successful sweeps'
     );
@@ -966,8 +966,8 @@ describe('verdict.yml watchdog', () => {
       status: 'success',
       per_page: 100
     });
-    expect(remove.mock.calls.map(([args]) => args.run_id)).toEqual(
-      Array.from({ length: 50 }, (_, i) => 52 - i)
-    );
+    expect(remove.mock.calls.map(([args]) => args.run_id)).toEqual([
+      ...Array.from({ length: 55 }, (_, i) => 55 - i)
+    ]);
   });
 });
