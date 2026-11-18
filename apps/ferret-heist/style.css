@@ -162,3 +162,59 @@ canvas {
 .btn-secondary:active {
   background: #4f4568;
 }
+
+.scoreboard {
+  width: 100%;
+  max-width: 800px;
+  background: var(--card-bg);
+  padding: 12px 18px;
+  border-radius: 10px;
+}
+
+.scoreboard-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.scoreboard-title {
+  font-size: 16px;
+  color: var(--accent-gold);
+}
+
+.player-greeting {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.player-greeting strong {
+  color: var(--accent-green);
+}
+
+.scoreboard-list {
+  list-style-position: inside;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.scoreboard-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 6px;
+  border-radius: 4px;
+}
+
+.scoreboard-list .scoreboard-you {
+  background: #392f50;
+}
+
+.scoreboard-score {
+  color: var(--text-dim);
+}
+
+.scoreboard-empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
