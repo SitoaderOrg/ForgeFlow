@@ -31,8 +31,8 @@ Navigate to **Settings → Code security and analysis**:
   > **How it works alongside our flow**: Dependabot patches *existing* dependencies on `main` over time, while our `fix-dependencies.md` autonomously intercepts and patches vulnerable packages *inside the active PR diff* before they reach `main`. They are fully complementary with zero conflicts.
 
 ### Static Analysis & Secret Protection
-- **CodeQL analysis**: Set up (Default or Advanced setup)
-  > **Why**: Enables SAST static code scanning in `gate-security.yml` and feeds alerts to `fix-codeql.md`.
+- **CodeQL analysis**: Advanced setup only, provided by `.github/workflows/scan-codeql.yml`. Keep **Default setup disabled** (or switch it to Advanced).
+  > **Why**: `scan-codeql.yml` is the repository's single CodeQL configuration: `gate-security.yml` calls it on every PR head and feeds findings to `fix-codeql.md`, and it scans `main` on push and weekly. With default setup enabled, every PR is scanned twice and the workflow's SARIF uploads are rejected.
 - **Copilot Autofix for CodeQL**: Enabled (optional but recommended)
   > **Why**: Generates AI-powered code fix suggestions on CodeQL alerts, which `fix-codeql.md` directly inspects and leverages to assemble defensive patches in stacked remediation PRs.
 - **Secret scanning**: Enabled
@@ -125,7 +125,7 @@ When developing and compiling workflows locally:
 | **Security** | Automatic dependency submission | Settings → Code security | Build-time dependency detection |
 | **Security** | Dependabot alerts & malware alerts | Settings → Code security | Vulnerability detection database |
 | **Security** | Secret scanning & push protection | Settings → Code security | Blocks secrets at `git push`; `fix-secrets.md` (manual run) |
-| **Security** | CodeQL analysis | Settings → Code security | Gate: Security (CodeQL) |
+| **Security** | CodeQL default setup **disabled** (advanced setup via `scan-codeql.yml`) | Settings → Code security | Gate: Security (CodeQL) |
 | **Security** | Copilot Autofix for CodeQL | Settings → Code security | AI fix suggestions for SAST alerts |
 | **AI / Copilot** | Copilot license & access | Organization / User Settings | Agentic reasoning & remediation |
 | **AI / Copilot** | Copilot code review enabled for the repository | Organization / Repository Copilot settings | Copilot review + Fix: Copilot review comments |
